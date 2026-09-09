@@ -1,0 +1,21 @@
+{"id":"c01","text":"你好,我 8 月 30 号下的单,订单号 20260830001,买的连衣裙尺码不对,吊牌还在,想退了把钱退给我","order_id":"20260830001","intent":"退货退款","expectation":"全额退款"}
+{"id":"c02","text":"买的鞋子穿了一天就开胶了,太离谱了,我要退货!订单 20260901007","order_id":"20260901007","intent":"退货退款","expectation":"全额退款"}
+{"id":"c03","text":"买重复了,多拍了一件,还没发货的那件帮我退了吧","order_id":null,"intent":"退货退款","expectation":"部分退款"}
+{"id":"c04","text":"订单 20260825003,外套买大了一号,想换个小一码的","order_id":"20260825003","intent":"换货","expectation":"换货"}
+{"id":"c05","text":"颜色发错了,我要的黑色发的白色,给我换一下","order_id":null,"intent":"换货","expectation":"换货"}
+{"id":"c06","text":"尺码不合适能换吗?不能换我就退了","order_id":null,"intent":"换货","expectation":"换货"}
+{"id":"c07","text":"快递显示签收但我根本没收到!订单 20260828012,我不要货了,直接把钱退我","order_id":"20260828012","intent":"仅退款","expectation":"全额退款"}
+{"id":"c08","text":"水果收到全烂了,这种情况不用退货了吧,退钱就行","order_id":null,"intent":"仅退款","expectation":"全额退款"}
+{"id":"c09","text":"少发了一件,订单 009123,缺的那件我不要了,把差价退我","order_id":"009123","intent":"仅退款","expectation":"部分退款"}
+{"id":"c10","text":"耳机用了两周左耳没声了,订单 20260815001,还在保修期,帮我修一下","order_id":"20260815001","intent":"维修","expectation":"维修"}
+{"id":"c11","text":"洗衣机脱水的时候巨响,你们能上门修吗","order_id":null,"intent":"维修","expectation":"维修"}
+{"id":"c12","text":"屏幕摔裂了,修一下大概多少钱?订单 20260905002","order_id":"20260905002","intent":"维修","expectation":"维修"}
+{"id":"c13","text":"订单 20260902009 都三天了还不发货,急用,搞快点","order_id":"20260902009","intent":"催发货","expectation":null}
+{"id":"c14","text":"我下周要出差,买的东西到底什么时候发?再不发我就退款了","order_id":null,"intent":"催发货","expectation":null}
+{"id":"c15","text":"催一下发货,订单 20260906003,顺便问下能改地址吗","order_id":"20260906003","intent":"催发货","expectation":null}
+{"id":"c16","text":"你们客服态度太差了,等了半小时没人理,我要投诉!","order_id":null,"intent":"投诉","expectation":null}
+{"id":"c17","text":"商品描述和实物完全不符,这不是骗人吗?我要投诉并且要求赔偿","order_id":null,"intent":"投诉","expectation":"赔偿"}
+{"id":"c18","text":"物流把我的包裹弄丢了,订单 20260820006,你们必须给我个说法,赔偿损失","order_id":"20260820006","intent":"投诉","expectation":"赔偿"}
+{"id":"c19","text":"你们店有会员制度吗?怎么积分?","order_id":null,"intent":"其他","expectation":"其他"}
+{"id":"c20","text":"在吗?忙不忙?","order_id":null,"intent":"其他","expectation":null}
+{"id":"c21","text":"发票怎么开?订单 20260904008","order_id":"20260904008","intent":"其他","expectation":"其他"}
