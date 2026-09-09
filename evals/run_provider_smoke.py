@@ -78,11 +78,13 @@ def main() -> int:
             r = httpx.post(f"{BASE}/v1/extract", json={"text": "订单 20260101001 收到就是坏的,我要退货退款"}, timeout=60)
             body = r.json()
             if r.status_code != 200 or not REQUIRED_KEYS.issubset(body.keys()):
-                failures.append(f"结构化输出不可用: status={r.status_code} body={body}")
+                failures.append(f"结构化输出能力不支持: status={r.status_code} body={body}")
             else:
                 print(f"结构化输出 OK: {body}")
-        except (httpx.TransportError, json.JSONDecodeError) as exc:
-            failures.append(f"结构化调用失败: {type(exc).__name__}: {exc}")
+        except httpx.TransportError as exc:
+            failures.append(f"网络故障(非能力问题,需排查连接): {type(exc).__name__}")
+        except json.JSONDecodeError as exc:
+            failures.append(f"结构化输出能力不支持: 响应非 JSON: {type(exc).__name__}")
     finally:
         proc.terminate()
         proc.wait(timeout=10)

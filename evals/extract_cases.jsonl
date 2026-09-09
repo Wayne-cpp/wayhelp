@@ -19,3 +19,5 @@
 {"id":"c19","text":"你们店有会员制度吗?怎么积分?","order_id":null,"intent":"其他","expectation":"其他"}
 {"id":"c20","text":"在吗?忙不忙?","order_id":null,"intent":"其他","expectation":null}
 {"id":"c21","text":"发票怎么开?订单 20260904008","order_id":"20260904008","intent":"其他","expectation":"其他"}
+{"id":"c22","text":"少发了一件,直接给我补上就行,订单 20260907010","order_id":"20260907010","intent":"其他","expectation":"补发"}
+{"id":"c23","text":"有个配件漏发了,不用退款,麻烦补寄一下","order_id":null,"intent":"其他","expectation":"补发"}

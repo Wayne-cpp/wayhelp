@@ -16,6 +16,7 @@ from langchain_openai import ChatOpenAI
 
 from app.chains.extract_chain import EXTRACT_INSTRUCTION, _FEW_SHOT, run_extraction
 from app.config import Settings
+from app.schemas import Expectation, Intent
 
 CASES = Path(__file__).parent / "extract_cases.jsonl"
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -38,12 +39,16 @@ def load_cases():
     problems = []
     if len(cases) < 21:
         problems.append(f"样例数 {len(cases)} < 21")
-    for intent, n in intents.items():
+    for intent in Intent:
+        n = intents.get(intent.value, 0)
         if n < 3:
-            problems.append(f"intent {intent} 仅 {n} 条 < 3")
-    for exp, n in expectations.items():
+            problems.append(f"intent {intent.value} 仅 {n} 条 < 3")
+    for exp in Expectation:
+        n = expectations.get(exp.value, 0)
         if n < 2:
-            problems.append(f"expectation {exp} 仅 {n} 次 < 2")
+            problems.append(f"expectation {exp.value} 仅 {n} 次 < 2")
+    if expectations.get("null", 0) < 2:
+        problems.append(f"expectation null 仅 {expectations.get('null', 0)} 次 < 2")
     if with_oid < 7 or len(cases) - with_oid < 7:
         problems.append("有/无订单号样例不足 7 条")
     return cases, problems
@@ -86,7 +91,10 @@ async def main() -> int:
         except Exception as exc:  # 异常/解析失败 = 三字段全错
             got_fields = {f: None for f in FIELDS}
             error = f"{type(exc).__name__}: {exc}"
-        hits = {f: got_fields[f] == case[f] for f in FIELDS}
+        if error is not None:
+            hits = {f: False for f in FIELDS}
+        else:
+            hits = {f: got_fields[f] == case[f] for f in FIELDS}
         for f in FIELDS:
             per_field_hits[f] += int(hits[f])
         exact_hits += int(all(hits.values()))
