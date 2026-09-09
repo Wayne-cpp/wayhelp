@@ -15,6 +15,7 @@ from app.errors import (
 )
 from app.prompts.service import SERVICE_SYSTEM_PROMPT
 from app.routers.chat import router as chat_router
+from app.routers.extract import router as extract_router
 from app.services.chat_service import ChatService
 from app.sessions import InMemorySessionStore
 
@@ -35,6 +36,14 @@ def create_app(settings: Settings | None = None, model: Any | None = None) -> Fa
     if count_tokens_approximately([SystemMessage(content=SERVICE_SYSTEM_PROMPT)]) >= settings.max_input_tokens:
         raise RuntimeError("system prompt alone exhausts the input token budget")
 
+    from app.chains.extract_chain import build_extract_prompt
+
+    if (
+        count_tokens_approximately(build_extract_prompt().invoke({"text": ""}).to_messages())
+        >= settings.max_input_tokens
+    ):
+        raise RuntimeError("extraction few-shot prompt alone exhausts the input token budget")
+
     store = InMemorySessionStore(
         settings.max_sessions, settings.max_messages_per_session, settings.max_message_chars
     )
@@ -46,6 +55,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None) -> Fa
     app.state.store = store
     app.state.chat_service = service
     app.include_router(chat_router)
+    app.include_router(extract_router)
 
     @app.exception_handler(MessageTooLongError)
     async def _(request: Request, exc: MessageTooLongError) -> JSONResponse:
