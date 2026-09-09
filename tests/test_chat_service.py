@@ -1,0 +1,176 @@
+import asyncio
+
+import pytest
+from langchain_core.messages import HumanMessage
+
+from app.errors import MessageTooLongError, SessionNotFoundError
+from app.services.chat_service import (
+    ChatService,
+    DeltaEvent,
+    DoneEvent,
+    ErrorEvent,
+    SessionEvent,
+)
+from app.sessions import InMemorySessionStore
+from tests.conftest import FakeChunk, FakeStreamModel, make_settings
+
+SYSTEM = "你是电商售后客服小蜜。"
+
+
+def make_service(script, **settings_over):
+    settings = make_settings(**settings_over)
+    store = InMemorySessionStore(
+        settings.max_sessions, settings.max_messages_per_session, settings.max_message_chars
+    )
+    model = FakeStreamModel(script)
+    return ChatService(store, model, settings, SYSTEM), store, model
+
+
+async def collect(service, turn):
+    return [e async for e in service.stream(turn)]
+
+
+async def test_happy_path_commits_turn():
+    service, store, model = make_service(["你好", ",我是", "小蜜"])
+    turn = await service.prepare(None, "你好")
+    events = await collect(service, turn)
+    assert isinstance(events[0], SessionEvent)
+    deltas = [e.content for e in events if isinstance(e, DeltaEvent)]
+    assert deltas == ["你好", ",我是", "小蜜"]
+    assert isinstance(events[-1], DoneEvent)
+    sid = events[0].session_id
+    snap = store.snapshot(sid)
+    assert [m.content for m in snap] == ["你好", "你好,我是小蜜"]
+
+
+async def test_prepare_reuse_existing_session():
+    service, store, _ = make_service(["答"])
+    turn = await service.prepare(None, "第一轮")
+    await collect(service, turn)
+    sid = turn.session_id
+    import uuid
+
+    turn2 = await service.prepare(uuid.UUID(sid), "第二轮")
+    await collect(service, turn2)
+    assert [m.role for m in store.snapshot(sid)] == ["user", "assistant"] * 2
+
+
+async def test_prepare_unknown_session_404():
+    service, _, _ = make_service([])
+    import uuid
+
+    with pytest.raises(SessionNotFoundError):
+        await service.prepare(uuid.uuid4(), "hi")
+
+
+async def test_overlong_input_no_session_created():
+    service, store, _ = make_service([], max_message_chars=10)
+    with pytest.raises(MessageTooLongError):
+        await service.prepare(None, "这" * 20)
+    assert store._sessions == {}
+
+
+async def test_current_input_enters_prompt_exactly_once():
+    service, _, model = make_service(["ok"])
+    turn = await service.prepare(None, "独一无二的问题")
+    await collect(service, turn)
+    sent = model.received[0]
+    humans = [m for m in sent if isinstance(m, HumanMessage)]
+    assert sum(1 for m in humans if m.content == "独一无二的问题") == 1
+
+
+async def test_upstream_error_no_commit_lock_released():
+    service, store, _ = make_service(["部分", RuntimeError("boom")])
+    turn = await service.prepare(None, "hi")
+    events = await collect(service, turn)
+    err = [e for e in events if isinstance(e, ErrorEvent)]
+    assert err and err[0].code == "upstream_error"
+    assert not any(isinstance(e, DoneEvent) for e in events)
+    assert store.snapshot(turn.session_id) == []
+    assert not turn.lock.locked()
+
+
+async def test_output_too_long_cancels_no_commit():
+    service, store, _ = make_service(["太" * 30, "多" * 30, "还" * 30], max_message_chars=50)
+    turn = await service.prepare(None, "hi")
+    events = await collect(service, turn)
+    codes = [e.code for e in events if isinstance(e, ErrorEvent)]
+    assert codes == ["output_too_long"]
+    assert store.snapshot(turn.session_id) == []
+
+
+async def test_finish_reason_length_is_failure():
+    service, store, _ = make_service(["被截断的回答", ("finish", "length")])
+    turn = await service.prepare(None, "hi")
+    events = await collect(service, turn)
+    assert any(isinstance(e, ErrorEvent) and e.code == "output_too_long" for e in events)
+    assert store.snapshot(turn.session_id) == []
+
+
+async def test_empty_response_is_failure():
+    service, store, _ = make_service(["", "  "])
+    turn = await service.prepare(None, "hi")
+    events = await collect(service, turn)
+    assert any(isinstance(e, ErrorEvent) and e.code == "empty_response" for e in events)
+    assert store.snapshot(turn.session_id) == []
+
+
+class GatedModel(FakeStreamModel):
+    """每次 astream 在首尾 delta 之间等待 gate;"finish" 后计数。"""
+
+    def __init__(self, gate: asyncio.Event):
+        super().__init__([])
+        self.gate = gate
+
+    async def astream(self, messages):
+        self.received.append(messages)
+        yield FakeChunk("开始")
+        await self.gate.wait()
+        yield FakeChunk("结束")
+
+
+async def _run_full(service, session_id, message):
+    turn = await service.prepare(session_id, message)
+    events = [e async for e in service.stream(turn)]
+    return events, turn.session_id
+
+
+async def test_same_session_serialized():
+    import uuid
+
+    gate = asyncio.Event()
+    settings = make_settings()
+    store = InMemorySessionStore(10, 10, 100)
+    model = GatedModel(gate)
+    service = ChatService(store, model, settings, SYSTEM)
+
+    task1 = asyncio.create_task(_run_full(service, None, "一"))
+    await asyncio.sleep(0.05)
+    assert len(model.received) == 1  # 第一个流已进入模型并持锁
+    sid = next(iter(store._sessions))
+    task2 = asyncio.create_task(_run_full(service, uuid.UUID(sid), "二"))
+    await asyncio.sleep(0.05)
+    assert len(model.received) == 1  # 同 session 第二个请求在等锁,未进模型
+    gate.set()
+    (events1, sid1), (events2, sid2) = await asyncio.gather(task1, task2)
+    assert sid1 == sid2
+    assert len(model.received) == 2
+    assert [m.content for m in store.snapshot(sid1)] == ["一", "开始结束", "二", "开始结束"]
+
+
+async def test_different_sessions_concurrent():
+    gate = asyncio.Event()
+    settings = make_settings()
+    store = InMemorySessionStore(10, 10, 100)
+    model = GatedModel(gate)
+    service = ChatService(store, model, settings, SYSTEM)
+
+    task1 = asyncio.create_task(_run_full(service, None, "甲"))
+    task2 = asyncio.create_task(_run_full(service, None, "乙"))
+    await asyncio.sleep(0.05)
+    assert len(model.received) == 2  # 不同 session 同时进入模型
+    gate.set()
+    (_, sid1), (_, sid2) = await asyncio.gather(task1, task2)
+    assert sid1 != sid2
+    assert [m.content for m in store.snapshot(sid1)] == ["甲", "开始结束"]
+    assert [m.content for m in store.snapshot(sid2)] == ["乙", "开始结束"]
