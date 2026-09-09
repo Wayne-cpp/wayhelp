@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 
 from app.config import Settings
 from app.errors import (
+    AppError,
     MessageTooLongError,
     SessionCapacityReachedError,
     SessionNotFoundError,
@@ -72,6 +73,14 @@ def create_app(settings: Settings | None = None, model: Any | None = None) -> Fa
     @app.exception_handler(UpstreamError)
     async def _(request: Request, exc: UpstreamError) -> JSONResponse:
         return JSONResponse(status_code=502, content=_error_body(exc.code, "上游模型暂时不可用"))
+
+    @app.exception_handler(AppError)
+    async def _(request: Request, exc: AppError) -> JSONResponse:
+        return JSONResponse(status_code=500, content=_error_body(exc.code, "服务内部错误"))
+
+    @app.exception_handler(Exception)
+    async def _(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=500, content=_error_body("internal_error", "服务内部错误"))
 
     return app
 

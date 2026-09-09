@@ -1,4 +1,5 @@
 import httpx
+import logging
 
 from app.chains.extract_chain import run_extraction
 from app.errors import MessageTooLongError, UpstreamError
@@ -88,3 +89,27 @@ async def test_extract_token_budget_precheck():
     model = FakeStructuredModel(output={"raw": None, "parsed": GOOD, "parsing_error": None})
     with pytest.raises(MessageTooLongError):
         await run_extraction(model, "json_schema", "一" * 500, max_input_tokens=50)
+
+
+async def test_extract_parsing_error_log_sanitized(caplog):
+    model = FakeStructuredModel(output={"raw": None, "parsed": None, "parsing_error": ValueError("secret-x")})
+    app = make_extract_app(model)
+    with caplog.at_level(logging.WARNING, logger="app.chains.extract_chain"):
+        resp = await post_extract(app, "随便一段描述")
+    assert resp.status_code == 502
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "parsing failed" in joined
+    assert "ValueError" in joined
+    assert "secret-x" not in joined
+
+
+async def test_extract_upstream_exception_log_sanitized(caplog):
+    model = FakeStructuredModel(error=RuntimeError("boom"))
+    app = make_extract_app(model)
+    with caplog.at_level(logging.WARNING, logger="app.chains.extract_chain"):
+        resp = await post_extract(app, "随便一段描述")
+    assert resp.status_code == 502
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "upstream error" in joined
+    assert "RuntimeError" in joined
+    assert "boom" not in joined

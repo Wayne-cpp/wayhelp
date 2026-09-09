@@ -1,7 +1,11 @@
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from app.chains.chat_chain import build_chat_messages, check_input_budget
+from app.chains.chat_chain import (
+    _validate_trimmed,
+    build_chat_messages,
+    check_input_budget,
+)
 from app.errors import MessageTooLongError
 from app.sessions import StoredMessage
 
@@ -47,3 +51,16 @@ def test_current_input_over_budget_raises():
         check_input_budget(SYSTEM, "超" * 10000, 100)
     with pytest.raises(MessageTooLongError):
         build_chat_messages(SYSTEM, [], "超" * 10000, 100)
+
+
+def test_validate_trimmed_rejects_bad_role_order():
+    good = [SystemMessage(content="s"), HumanMessage(content="q"), AIMessage(content="a"), HumanMessage(content="now")]
+    _validate_trimmed(good, "now", 100)  # 好序列不炸
+
+    bad_starts_with_ai = [SystemMessage(content="s"), AIMessage(content="a"), HumanMessage(content="now")]
+    with pytest.raises(RuntimeError):
+        _validate_trimmed(bad_starts_with_ai, "now", 100)
+
+    bad_adjacent_humans = [SystemMessage(content="s"), HumanMessage(content="q"), HumanMessage(content="now")]
+    with pytest.raises(RuntimeError):
+        _validate_trimmed(bad_adjacent_humans, "now", 100)

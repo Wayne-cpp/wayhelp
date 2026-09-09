@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from langchain_core.messages.utils import count_tokens_approximately
@@ -5,6 +6,8 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from app.errors import MessageTooLongError, UpstreamError
 from app.schemas import AfterSaleExtraction
+
+logger = logging.getLogger(__name__)
 
 EXTRACT_INSTRUCTION = """你是售后工单信息提取器。从用户的售后描述中提取四个字段,输出严格的 JSON 对象,不要输出任何其他内容。
 
@@ -53,7 +56,13 @@ async def run_extraction(
     except MessageTooLongError:
         raise
     except Exception as exc:
+        logger.warning("extract upstream error: %s", type(exc).__name__)
         raise UpstreamError("extraction upstream call failed") from exc
     if result.get("parsing_error") is not None or result.get("parsed") is None:
+        parsing_error = result.get("parsing_error")
+        logger.warning(
+            "extract parsing failed: %s",
+            type(parsing_error).__name__ if parsing_error is not None else "missing_parsed",
+        )
         raise UpstreamError("structured output parsing failed")
     return result["parsed"]

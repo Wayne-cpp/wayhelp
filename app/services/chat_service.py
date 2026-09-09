@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Union
@@ -10,6 +11,8 @@ from app.chains.chat_chain import build_chat_messages, check_input_budget
 from app.config import Settings
 from app.errors import MessageTooLongError, SessionNotFoundError
 from app.sessions import SessionStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,7 @@ class PreparedTurn:
     user_text: str
     messages: list[BaseMessage]
     lock: asyncio.Lock
+    released: bool = False
 
 
 class ChatService:
@@ -75,6 +79,12 @@ class ChatService:
             raise
         return PreparedTurn(sid, message, messages, lock)
 
+    def release_turn(self, turn: PreparedTurn) -> None:
+        if turn.released:
+            return
+        turn.released = True
+        turn.lock.release()
+
     async def stream(self, turn: PreparedTurn) -> AsyncIterator[ChatEvent]:
         agen = self._model.astream(turn.messages)
         try:
@@ -96,7 +106,8 @@ class ChatService:
                         return
                     parts.append(text)
                     yield DeltaEvent(text)
-            except Exception:
+            except Exception as exc:
+                logger.warning("chat stream upstream error: %s", type(exc).__name__)
                 yield ErrorEvent("upstream_error", "上游模型暂时不可用")
                 return
             full = "".join(parts)
@@ -111,4 +122,4 @@ class ChatService:
         finally:
             with contextlib.suppress(Exception):
                 await agen.aclose()
-            turn.lock.release()
+            self.release_turn(turn)

@@ -49,5 +49,11 @@ def _validate_trimmed(messages: list[BaseMessage], current_input: str, max_input
         raise RuntimeError("trimmed messages lost the system prompt")
     if not isinstance(messages[-1], HumanMessage) or messages[-1].content != current_input:
         raise RuntimeError("trimmed messages lost the current human message")
+    rest = messages[1:]
+    if not isinstance(rest[0], HumanMessage):
+        raise RuntimeError("trimmed messages must start with a human message after system")
+    for a, b in zip(rest, rest[1:]):
+        if type(a) is type(b):
+            raise RuntimeError("trimmed messages must alternate human/assistant")
     if count_tokens_approximately(messages) > max_input_tokens:
         raise RuntimeError("trimmed messages still exceed input token budget")

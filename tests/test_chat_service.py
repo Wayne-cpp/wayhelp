@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 from langchain_core.messages import HumanMessage
@@ -70,6 +71,16 @@ async def test_overlong_input_no_session_created():
     assert store._sessions == {}
 
 
+async def test_release_turn_idempotent():
+    service, _, _ = make_service([])
+    turn = await service.prepare(None, "hi")
+    assert turn.lock.locked()
+    service.release_turn(turn)
+    assert not turn.lock.locked()
+    service.release_turn(turn)  # 第二次调用不炸,锁仍为已释放
+    assert not turn.lock.locked()
+
+
 async def test_current_input_enters_prompt_exactly_once():
     service, _, model = make_service(["ok"])
     turn = await service.prepare(None, "独一无二的问题")
@@ -88,6 +99,17 @@ async def test_upstream_error_no_commit_lock_released():
     assert not any(isinstance(e, DoneEvent) for e in events)
     assert store.snapshot(turn.session_id) == []
     assert not turn.lock.locked()
+
+
+async def test_upstream_error_log_sanitized(caplog):
+    service, _, _ = make_service(["部分", RuntimeError("boom")])
+    turn = await service.prepare(None, "hi")
+    with caplog.at_level(logging.WARNING, logger="app.services.chat_service"):
+        await collect(service, turn)
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "upstream error" in joined
+    assert "RuntimeError" in joined
+    assert "boom" not in joined
 
 
 async def test_output_too_long_cancels_no_commit():
@@ -113,6 +135,44 @@ async def test_empty_response_is_failure():
     events = await collect(service, turn)
     assert any(isinstance(e, ErrorEvent) and e.code == "empty_response" for e in events)
     assert store.snapshot(turn.session_id) == []
+
+
+async def test_done_send_fail_keeps_full_turn():
+    service, store, _ = make_service(["完整回答"])
+    turn = await service.prepare(None, "hi")
+    agen = service.stream(turn)
+    async for event in agen:
+        if isinstance(event, DoneEvent):
+            break  # 模拟 [DONE] 帧发送失败:消费者拿到 Done 后立即断开
+    await agen.aclose()
+    assert [m.content for m in store.snapshot(turn.session_id)] == ["hi", "完整回答"]
+    assert not turn.lock.locked()
+
+
+async def test_cancel_before_commit_no_partial_turn():
+    gate = asyncio.Event()
+    settings = make_settings()
+    store = InMemorySessionStore(10, 10, 100)
+    model = GatedModel(gate)
+    service = ChatService(store, model, settings, SYSTEM)
+
+    holder = {}
+
+    async def run():
+        turn = await service.prepare(None, "hi")
+        holder["turn"] = turn
+        async for _ in service.stream(turn):
+            pass
+
+    task = asyncio.create_task(run())
+    await asyncio.sleep(0.05)
+    assert len(model.received) == 1  # 已进入模型、尚未提交
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    turn = holder["turn"]
+    assert store.snapshot(turn.session_id) == []
+    assert not turn.lock.locked()
 
 
 class GatedModel(FakeStreamModel):

@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.main import create_app
+from app.routers.chat import event_stream
 from tests.conftest import FakeStreamModel, make_settings
 
 
@@ -92,6 +93,41 @@ async def test_upstream_error_frame_no_done():
     assert frames[-1]["code"] == "upstream_error"
     assert "[DONE]" not in frames
     assert "boom" not in json.dumps(frames, ensure_ascii=False)
+
+
+async def test_unhandled_exception_500_sanitized():
+    app = make_app([])
+
+    @app.get("/_boom")
+    async def _boom():
+        raise RuntimeError("boom")
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/_boom")
+        assert resp.status_code == 500
+        assert resp.json() == {"error": {"code": "internal_error", "message": "服务内部错误"}}
+        assert "boom" not in resp.text
+
+
+async def test_aclose_before_iteration_releases_lock():
+    app = make_app(["x"])
+    service = app.state.chat_service
+    turn = await service.prepare(None, "hi")
+    g = event_stream(service, turn)
+    await g.aclose()  # 从未迭代
+    assert not turn.lock.locked()
+
+
+async def test_aclose_after_partial_iteration_releases_lock():
+    app = make_app(["你", "好"])
+    service = app.state.chat_service
+    turn = await service.prepare(None, "hi")
+    g = event_stream(service, turn)
+    first = await g.__aiter__().__anext__()  # 消费到第一个事件(session 帧)
+    assert first.startswith("data: ")
+    await g.aclose()
+    assert not turn.lock.locked()
 
 
 async def test_second_turn_carries_context():
