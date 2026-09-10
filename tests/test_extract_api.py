@@ -5,7 +5,7 @@ from app.chains.extract_chain import run_extraction
 from app.errors import MessageTooLongError, UpstreamError
 from app.main import create_app
 from app.schemas import AfterSaleExtraction, Intent
-from tests.conftest import make_settings
+from tests.conftest import make_runtime, make_settings
 import pytest
 
 GOOD = AfterSaleExtraction(order_id="001", intent=Intent.REFUND_ONLY, expectation=None, summary="未收到货要求退款")
@@ -31,7 +31,8 @@ class FakeStructuredModel:
 
 
 def make_extract_app(model, **over):
-    return create_app(settings=make_settings(**over), model=model)
+    return create_app(settings=make_settings(**over), model=model,
+                      runtime=make_runtime(tools=[]))
 
 
 async def post_extract(app, text):

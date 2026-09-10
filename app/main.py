@@ -1,13 +1,16 @@
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
 from app.config import Settings
+from app.db import make_engine, make_session_factory, ping
 from app.errors import (
     AppError,
     MessageTooLongError,
@@ -19,14 +22,37 @@ from app.prompts.service import SERVICE_SYSTEM_PROMPT
 from app.routers.chat import router as chat_router
 from app.routers.extract import router as extract_router
 from app.services.chat_service import ChatService
-from app.sessions import InMemorySessionStore
+from app.store_db import DbSessionStore
+from app.tools.business import build_tools
 
 
 def _error_body(code: str, message: str) -> dict:
     return {"error": {"code": code, "message": message}}
 
 
-def create_app(settings: Settings | None = None, model: Any | None = None) -> FastAPI:
+@dataclass(frozen=True)
+class AppRuntime:
+    store: Any  # SessionStore 协议
+    toolset_factory: Callable[[str], list[BaseTool]]
+
+
+def _build_production_runtime(settings: Settings) -> AppRuntime:
+    try:
+        engine = make_engine(settings.database_url)
+        ping(engine)
+    except Exception as exc:
+        raise RuntimeError(f"database ping failed: {type(exc).__name__}") from exc
+    session_factory = make_session_factory(engine)
+
+    def toolset_factory(session_id: str) -> list[BaseTool]:
+        return build_tools(session_factory, int(session_id))
+
+    return AppRuntime(store=DbSessionStore(session_factory, settings.max_message_chars),
+                      toolset_factory=toolset_factory)
+
+
+def create_app(settings: Settings | None = None, model: Any | None = None,
+               runtime: AppRuntime | None = None) -> FastAPI:
     settings = settings or Settings()
     if model is None:
         model = ChatOpenAI(
@@ -35,6 +61,8 @@ def create_app(settings: Settings | None = None, model: Any | None = None) -> Fa
             base_url=settings.openai_base_url,
             max_tokens=settings.max_output_tokens,
         )
+    if runtime is None:
+        runtime = _build_production_runtime(settings)
     if count_tokens_approximately([SystemMessage(content=SERVICE_SYSTEM_PROMPT)]) >= settings.max_input_tokens:
         raise RuntimeError("system prompt alone exhausts the input token budget")
 
@@ -46,15 +74,13 @@ def create_app(settings: Settings | None = None, model: Any | None = None) -> Fa
     ):
         raise RuntimeError("extraction few-shot prompt alone exhausts the input token budget")
 
-    store = InMemorySessionStore(
-        settings.max_sessions, settings.max_messages_per_session, settings.max_message_chars
-    )
-    service = ChatService(store, model, settings, SERVICE_SYSTEM_PROMPT)
+    service = ChatService(runtime.store, model, settings, SERVICE_SYSTEM_PROMPT,
+                          runtime.toolset_factory)
 
-    app = FastAPI(title="wayhelp-ch01")
+    app = FastAPI(title="wayhelp-ch02")
     app.state.settings = settings
     app.state.model = model
-    app.state.store = store
+    app.state.store = runtime.store
     app.state.chat_service = service
     app.include_router(chat_router)
     app.include_router(extract_router)
@@ -94,6 +120,3 @@ def create_app(settings: Settings | None = None, model: Any | None = None) -> Fa
         return JSONResponse(status_code=500, content=_error_body("internal_error", "服务内部错误"))
 
     return app
-
-
-app = create_app()

@@ -3,8 +3,35 @@ import asyncio
 import pytest
 
 from app.config import Settings
+from app.main import AppRuntime
+from app.sessions import InMemorySessionStore
+from app.tools.business import MOCK_TOOLS
 
 TEST_USER_ID = "11111111-1111-1111-1111-111111111111"
+
+
+class UserBoundMemoryStore(InMemorySessionStore):
+    """测试用内存存储。app 层的 InMemorySessionStore 按 T3 计划不核对 user_id,
+    而 user_mismatch 404 契约测试需要可校验归属 —— 在测试侧补上绑定。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._owners: dict[str, str] = {}
+
+    async def create(self, user_id: str) -> str:
+        sid = await super().create(user_id)
+        self._owners[sid] = user_id
+        return sid
+
+    async def exists(self, session_id: str, user_id: str) -> bool:
+        return session_id in self._sessions and self._owners.get(session_id) == user_id
+
+
+def make_runtime(tools=None, store=None):
+    return AppRuntime(
+        store=store or UserBoundMemoryStore(1000, 100, 8000),
+        toolset_factory=lambda sid: list(MOCK_TOOLS if tools is None else tools),
+    )
 
 
 def make_settings(**overrides) -> Settings:

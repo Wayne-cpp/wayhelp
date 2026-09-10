@@ -1,11 +1,12 @@
 import httpx
 
 from app.main import create_app
-from tests.conftest import FakeStreamModel, make_settings
+from tests.conftest import FakeStreamModel, make_runtime, make_settings
 
 
 async def test_root_serves_chat_page():
-    app = create_app(settings=make_settings(), model=FakeStreamModel([]))
+    app = create_app(settings=make_settings(), model=FakeStreamModel([]),
+                     runtime=make_runtime(tools=[]))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         resp = await client.get("/")
@@ -17,7 +18,8 @@ async def test_root_serves_chat_page():
 
 
 async def test_brand_mark_asset_served():
-    app = create_app(settings=make_settings(), model=FakeStreamModel([]))
+    app = create_app(settings=make_settings(), model=FakeStreamModel([]),
+                     runtime=make_runtime(tools=[]))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         resp = await client.get("/1784959384051.jpg")

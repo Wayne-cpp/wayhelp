@@ -5,11 +5,21 @@ import pytest
 
 from app.main import create_app
 from app.routers.chat import event_stream
-from tests.conftest import TEST_USER_ID, FakeStreamModel, make_settings
+from tests.conftest import (
+    TEST_USER_ID,
+    FakeStreamModel,
+    UserBoundMemoryStore,
+    make_runtime,
+    make_settings,
+)
 
 
 def make_app(script, **over):
-    return create_app(settings=make_settings(**over), model=FakeStreamModel(script))
+    settings = make_settings(**over)
+    return create_app(settings=settings, model=FakeStreamModel(script),
+                      runtime=make_runtime(tools=[], store=UserBoundMemoryStore(
+                          settings.max_sessions, settings.max_messages_per_session,
+                          settings.max_message_chars)))
 
 
 async def post_stream(app, payload):
@@ -132,7 +142,8 @@ async def test_aclose_after_partial_iteration_releases_lock():
 
 async def test_second_turn_carries_context():
     model = FakeStreamModel(["回答一"])
-    app = create_app(settings=make_settings(), model=model)
+    app = create_app(settings=make_settings(), model=model,
+                     runtime=make_runtime(tools=[]))
     _, lines1 = await post_stream(app, {"user_id": TEST_USER_ID, "message": "记住数字42"})
     sid = parse_frames(lines1)[0]["session_id"]
     await post_stream(app, {"user_id": TEST_USER_ID, "session_id": sid, "message": "我刚说的数字是?"})

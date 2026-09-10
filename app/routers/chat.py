@@ -12,6 +12,8 @@ from app.services.chat_service import (
     ErrorEvent,
     PreparedTurn,
     SessionEvent,
+    ToolEndEvent,
+    ToolStartEvent,
 )
 
 router = APIRouter()
@@ -41,6 +43,13 @@ class _EventStream:
                     yield _sse({"type": "session", "session_id": event.session_id})
                 elif isinstance(event, DeltaEvent):
                     yield _sse({"type": "delta", "content": event.content})
+                elif isinstance(event, ToolStartEvent):
+                    yield _sse({"type": "tool_start", "tool_call_id": event.tool_call_id,
+                                "name": event.name, "args": event.args})
+                elif isinstance(event, ToolEndEvent):
+                    yield _sse({"type": "tool_end", "tool_call_id": event.tool_call_id,
+                                "name": event.name, "ok": event.ok,
+                                "summary": event.summary})
                 elif isinstance(event, DoneEvent):
                     yield "data: [DONE]\n\n"
                 elif isinstance(event, ErrorEvent):
