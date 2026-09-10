@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 import pytest
@@ -115,8 +116,11 @@ async def test_result_truncated_but_valid_envelope_content():
                       max_result_chars=300)
     outcome = await ex.execute(_call("big_tool", {"x": "1"}))
     assert outcome.message.status == "success"
+    assert len(outcome.message.content) < 5000  # 回灌模型的内容本身已截断
     from app.tool_envelope import wrap
-    assert len(wrap(outcome.message.content, True, None, 300)) <= 300
+    payload = json.loads(wrap(outcome.message.content, True, None, 300))
+    assert "truncated" not in payload  # truncate_content 已一次到位,wrap 不再二次截断
+    assert payload["content"] == outcome.message.content  # 落库与模型所见逐字一致
 
 
 async def test_write_tool_no_wait_for_no_retry(monkeypatch):

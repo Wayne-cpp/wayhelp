@@ -28,8 +28,27 @@ def test_wrap_respects_max_chars():
 
 
 def test_truncate_content_matches_wrap():
-    truncated = truncate_content("x" * 10000, True, None, 300)
-    assert wrap(truncated, True, None, 300) == wrap("x" * 10000, True, None, 300)
+    content = "订单详情abc中文混合" * 1000  # 万级字符,中英混合
+    truncated = truncate_content(content, True, None, 300)
+    assert truncated != content  # 必须真的截断(原实现恒不截断)
+    payload = json.loads(wrap(truncated, True, None, 300))
+    assert "truncated" not in payload  # 一次到位,wrap 不再二次截断
+    assert payload["content"] == truncated  # 落库与回灌模型所见逐字一致
+
+
+def test_truncate_content_error_envelope_matches_wrap():
+    message = "超时请重试timeout" * 500
+    truncated = truncate_content(message, False, "timeout", 300)
+    assert truncated != message
+    payload = json.loads(wrap(truncated, False, "timeout", 300))
+    assert "truncated" not in payload
+    assert payload["message"] == truncated
+
+
+def test_truncate_content_short_untouched():
+    assert truncate_content("余额查询成功", True, None, 300) == "余额查询成功"
+    assert truncate_content("工具暂时不可用(已重试)", False, "tool_unavailable", 300) == \
+        "工具暂时不可用(已重试)"
 
 
 def test_unwrap_corrupted_raises():

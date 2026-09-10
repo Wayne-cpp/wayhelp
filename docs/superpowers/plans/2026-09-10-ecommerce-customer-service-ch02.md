@@ -588,12 +588,19 @@ def wrap(content: str, ok: bool, error_code: str | None, max_chars: int) -> str:
 
 def truncate_content(content: str, ok: bool, error_code: str | None, max_chars: int) -> str:
     """返回使 wrap(...) 不超长的 content(供回灌模型与落库一致使用)。"""
-    if len(wrap(content, ok, error_code, max_chars)) <= max_chars:
+    # wrap 内部循环保证返回值必 <= max_chars,不能用它判断是否超长;
+    # 精确式:空 content 的 envelope(含两个引号)+ json 序列化后的 content 长度,与 wrap 输出逐字节一致
+    base = len(wrap("", ok, error_code, max_chars)) - 2
+
+    def fits(candidate: str) -> bool:
+        return base + len(json.dumps(candidate, ensure_ascii=False)) <= max_chars
+
+    if fits(content):
         return content
     lo, hi = 0, len(content)
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        if len(wrap(content[:mid], ok, error_code, max_chars)) <= max_chars:
+        if fits(content[:mid]):
             lo = mid
         else:
             hi = mid - 1
