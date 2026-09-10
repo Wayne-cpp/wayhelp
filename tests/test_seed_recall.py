@@ -32,16 +32,8 @@ def _count_like(sf, keyword):
 
 
 async def test_seed_has_no_youfei_anywhere(db_engine):
-    """02-seed.sql 数据行不得出现「邮费」二字。
-
-    计划原文断言全文件不含,但 seed 首行注释(meta 描述验收 3)本身含该词,
-    自相矛盾;剥注释行后断言,与 dbfixtures._split_statements 同一约定。
-    """
-    data_text = "\n".join(
-        ln for ln in SEED_PATH.read_text(encoding="utf-8").splitlines()
-        if not ln.strip().startswith("--")
-    )
-    assert "邮费" not in data_text
+    """02-seed.sql 全文件不得出现「邮费」二字。"""
+    assert "邮费" not in SEED_PATH.read_text(encoding="utf-8")
 
 
 async def test_return_policy_hit(seeded_factory):
