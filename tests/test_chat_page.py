@@ -35,3 +35,15 @@ async def test_chat_page_tool_badge_hooks():
     assert "crypto.randomUUID" in html
     assert "tool_start" in html and "tool_end" in html
     assert "tool-badge" in html
+
+
+def test_chat_page_settle_badge_safe_lookup():
+    from pathlib import Path
+    html = (Path(__file__).parent.parent / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    # settleBadge 须用 Map 索引徽标:tool_call_id 含引号/反斜杠时拼 CSS 选择器会失效或注入
+    assert "badgeById = new Map()" in html
+    assert "badgeById.set(id, badge)" in html
+    assert "badgeById.get(id)" in html
+    # dataset 写入侧保持不变(赋值安全);旧的属性选择器字符串拼接不得复活
+    assert "badge.dataset.toolCallId = id" in html
+    assert '[data-tool-call-id="' not in html

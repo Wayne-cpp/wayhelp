@@ -534,17 +534,19 @@
   var TOOL_LABELS = { query_order: "查订单", query_product: "查商品",
     query_logistics: "查物流", query_faq: "查常见问题", create_ticket: "创建工单" };
 
-  function addBadge(badgesEl, id, name) {
+  function addBadge(badgesEl, badgeById, id, name) {
     var badge = document.createElement("span");
     badge.className = "tool-badge running";
     badge.dataset.toolCallId = id;
     badge.innerHTML = '<span class="dot"></span><span class="label"></span>';
     badge.querySelector(".label").textContent = "调用工具 " + (TOOL_LABELS[name] || name);
     badgesEl.appendChild(badge);
+    badgeById.set(id, badge);
   }
 
-  function settleBadge(badgesEl, id, name, ok) {
-    var badge = badgesEl.querySelector('[data-tool-call-id="' + id + '"]');
+  function settleBadge(badgeById, id, name, ok) {
+    // 用 Map 直接取节点,不拼 CSS 选择器(tool_call_id 含引号/反斜杠时会失效或注入)
+    var badge = badgeById.get(id);
     if (!badge) return;
     badge.classList.remove("running");
     badge.classList.add(ok ? "ok" : "failed");
@@ -594,6 +596,7 @@
     var bubble = row.querySelector(".msg");
     var badgesEl = document.createElement("div");
     badgesEl.className = "tool-badges";
+    var badgeById = new Map(); // tool_call_id -> 徽标节点,本轮会话内有效
     row.insertBefore(badgesEl, bubble);
     row.classList.add("streaming");
     // 首个 token 到达前显示"正在输入"指示;textContent 赋值会自动将其替换
@@ -636,10 +639,10 @@
             bubble.textContent = reply;
             scrollToBottom();
           } else if (evt.type === "tool_start") {
-            addBadge(badgesEl, evt.tool_call_id, evt.name);
+            addBadge(badgesEl, badgeById, evt.tool_call_id, evt.name);
             scrollToBottom();
           } else if (evt.type === "tool_end") {
-            settleBadge(badgesEl, evt.tool_call_id, evt.name, evt.ok);
+            settleBadge(badgeById, evt.tool_call_id, evt.name, evt.ok);
             scrollToBottom();
           } else if (evt.type === "error") {
             row.classList.add("error");
