@@ -26,3 +26,12 @@ async def test_brand_mark_asset_served():
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
     assert len(resp.content) > 0
+
+
+async def test_chat_page_tool_badge_hooks():
+    from pathlib import Path
+    html = (Path(__file__).parent.parent / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    assert "wayhelp_user_id" in html
+    assert "crypto.randomUUID" in html
+    assert "tool_start" in html and "tool_end" in html
+    assert "tool-badge" in html
