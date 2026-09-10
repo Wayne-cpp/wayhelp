@@ -54,11 +54,6 @@ async def test_commit_rolls_back_on_failure(db_session_factory, monkeypatch):
 
     real_flush = Session.flush
 
-    def boom(self):
-        if getattr(self, "_boom_armed", False):
-            raise RuntimeError("simulated mid-transaction failure")
-        return real_flush(self)
-
     # 实测整个 _commit_sync 只有一次 flush(execute(update) 触发的 autoflush;此后
     # session 已净,commit() 不再 flush),计划原文的"第二次引爆"永不满足 —— 在该次
     # flush 即引爆,同样构成事务中途失败,断言(无半个 turn)不变
