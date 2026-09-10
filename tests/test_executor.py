@@ -123,6 +123,28 @@ async def test_result_truncated_but_valid_envelope_content():
     assert payload["content"] == outcome.message.content  # 落库与模型所见逐字一致
 
 
+async def test_write_tool_cancel_waits_for_thread_to_land():
+    events = []  # 记录先后:线程落地 vs 取消抛给调用方
+
+    @tool
+    def slow_write(x: str) -> str:
+        """慢写工具"""
+        time.sleep(0.25)
+        events.append("thread-done")
+        return "written"
+
+    ex = ToolExecutor(ToolRegistry([slow_write]), timeout_seconds=5, max_retries=0,
+                      max_result_chars=4000, write_tools={"slow_write"})
+    task = asyncio.ensure_future(ex.execute(_call("slow_write", {"x": "1"})))
+    await asyncio.sleep(0.05)  # 已进入写路径
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task  # 取消仍传播(不转成 error outcome)
+    events.append("cancel-raised")
+    assert task.cancelled()
+    assert events == ["thread-done", "cancel-raised"]  # 取消放行前线程已落地
+
+
 async def test_write_tool_no_wait_for_no_retry(monkeypatch):
     called = {"wait_for": 0}
     real_wait_for = asyncio.wait_for

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass
 
@@ -92,13 +93,18 @@ class ToolExecutor:
                                    type(exc).__name__, started, retries)
 
     async def _run_write(self, tool: BaseTool, call: dict, started: float) -> ToolOutcome:
+        write_task = asyncio.ensure_future(asyncio.to_thread(tool.invoke, call))
         try:
-            result = await asyncio.to_thread(tool.invoke, call)  # 不 wait_for,不重试
-            return self._success(tool, call, result, 0, started)
+            result = await asyncio.shield(write_task)  # 不 wait_for,不重试
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await write_task  # 等写操作落地再放行取消(否则锁先于事务释放)
+            raise
         except Exception as exc:
             return self._error(call.get("name", ""), call.get("args") or {},
                                call.get("id") or "", "tool_error",
                                type(exc).__name__, started, 0)
+        return self._success(tool, call, result, 0, started)
 
     def _success(self, tool, call, result, retries, started) -> ToolOutcome:
         content = result.content if isinstance(result, ToolMessage) else str(result)
