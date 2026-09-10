@@ -10,6 +10,7 @@ def make_settings(**overrides) -> Settings:
         openai_base_url="http://test/v1",
         openai_api_key="test-key",
         model_name="test-model",
+        database_url="mysql+pymysql://u:p@127.0.0.1:9/wayhelp",  # 占位,测试注入 runtime 不连接
     )
     base.update(overrides)
     return Settings(_env_file=None, **base)

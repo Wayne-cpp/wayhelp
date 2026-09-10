@@ -2,11 +2,13 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import Settings
+from tests.conftest import make_settings
 
 REQUIRED_ENV = {
     "OPENAI_BASE_URL": "http://localhost:11434/v1",
     "OPENAI_API_KEY": "test-key",
     "MODEL_NAME": "qwen2.5",
+    "DATABASE_URL": "mysql+pymysql://u:p@127.0.0.1:9/wayhelp",
 }
 
 
@@ -43,13 +45,6 @@ def test_invalid_structured_method_fails(monkeypatch):
         Settings(_env_file=None)
 
 
-def test_odd_max_messages_fails(monkeypatch):
-    _set_required(monkeypatch)
-    monkeypatch.setenv("MAX_MESSAGES_PER_SESSION", "3")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
 def test_non_positive_value_fails(monkeypatch):
     _set_required(monkeypatch)
     monkeypatch.setenv("MAX_SESSIONS", "0")
@@ -62,3 +57,32 @@ def test_kwargs_override_env(monkeypatch):
     s = Settings(_env_file=None, max_sessions=5, max_messages_per_session=10)
     assert s.max_sessions == 5
     assert s.max_messages_per_session == 10
+
+
+def test_odd_max_messages_allowed():
+    s = make_settings(max_messages_per_session=7)
+    assert s.max_messages_per_session == 7
+
+
+def test_tool_settings_defaults():
+    s = make_settings()
+    assert s.tool_timeout_seconds == 5
+    assert s.tool_max_retries == 2
+    assert s.max_tool_calls_per_turn == 5
+    assert s.max_tool_result_chars == 4000
+
+
+def test_tool_max_retries_zero_allowed():
+    assert make_settings(tool_max_retries=0).tool_max_retries == 0
+
+
+def test_bad_tool_settings_rejected():
+    import pydantic
+    with pytest.raises(pydantic.ValidationError):
+        make_settings(tool_timeout_seconds=0)
+    with pytest.raises(pydantic.ValidationError):
+        make_settings(tool_max_retries=-1)
+    with pytest.raises(pydantic.ValidationError):
+        make_settings(max_tool_result_chars=100)  # < 256
+    with pytest.raises(pydantic.ValidationError):
+        make_settings(database_url="")

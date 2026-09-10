@@ -9,6 +9,9 @@ dependencies = [
   "pydantic-settings>=2.4",
   "langchain-core>=0.3",
   "langchain-openai>=0.3",
+  "sqlalchemy>=2.0",
+  "pymysql>=1.1",
+  "cryptography>=43",
 ]
 
 [dependency-groups]
