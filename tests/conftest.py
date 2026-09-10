@@ -4,6 +4,8 @@ import pytest
 
 from app.config import Settings
 
+TEST_USER_ID = "11111111-1111-1111-1111-111111111111"
+
 
 def make_settings(**overrides) -> Settings:
     base = dict(

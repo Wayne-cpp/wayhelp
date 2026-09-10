@@ -13,7 +13,7 @@ from app.services.chat_service import (
     SessionEvent,
 )
 from app.sessions import InMemorySessionStore
-from tests.conftest import FakeChunk, FakeStreamModel, make_settings
+from tests.conftest import TEST_USER_ID, FakeChunk, FakeStreamModel, make_settings
 
 SYSTEM = "你是电商售后客服小蜜。"
 
@@ -33,27 +33,25 @@ async def collect(service, turn):
 
 async def test_happy_path_commits_turn():
     service, store, model = make_service(["你好", ",我是", "小蜜"])
-    turn = await service.prepare(None, "你好")
+    turn = await service.prepare(TEST_USER_ID, None,"你好")
     events = await collect(service, turn)
     assert isinstance(events[0], SessionEvent)
     deltas = [e.content for e in events if isinstance(e, DeltaEvent)]
     assert deltas == ["你好", ",我是", "小蜜"]
     assert isinstance(events[-1], DoneEvent)
     sid = events[0].session_id
-    snap = store.snapshot(sid)
+    snap = await store.snapshot(sid)
     assert [m.content for m in snap] == ["你好", "你好,我是小蜜"]
 
 
 async def test_prepare_reuse_existing_session():
     service, store, _ = make_service(["答"])
-    turn = await service.prepare(None, "第一轮")
+    turn = await service.prepare(TEST_USER_ID, None,"第一轮")
     await collect(service, turn)
     sid = turn.session_id
-    import uuid
-
-    turn2 = await service.prepare(uuid.UUID(sid), "第二轮")
+    turn2 = await service.prepare(TEST_USER_ID, sid, "第二轮")
     await collect(service, turn2)
-    assert [m.role for m in store.snapshot(sid)] == ["user", "assistant"] * 2
+    assert [m.role for m in await store.snapshot(sid)] == ["user", "assistant"] * 2
 
 
 async def test_prepare_unknown_session_404():
@@ -61,19 +59,19 @@ async def test_prepare_unknown_session_404():
     import uuid
 
     with pytest.raises(SessionNotFoundError):
-        await service.prepare(uuid.uuid4(), "hi")
+        await service.prepare(TEST_USER_ID, str(uuid.uuid4()), "hi")
 
 
 async def test_overlong_input_no_session_created():
     service, store, _ = make_service([], max_message_chars=10)
     with pytest.raises(MessageTooLongError):
-        await service.prepare(None, "这" * 20)
+        await service.prepare(TEST_USER_ID, None,"这" * 20)
     assert store._sessions == {}
 
 
 async def test_release_turn_idempotent():
     service, _, _ = make_service([])
-    turn = await service.prepare(None, "hi")
+    turn = await service.prepare(TEST_USER_ID, None,"hi")
     assert turn.lock.locked()
     service.release_turn(turn)
     assert not turn.lock.locked()
@@ -83,7 +81,7 @@ async def test_release_turn_idempotent():
 
 async def test_current_input_enters_prompt_exactly_once():
     service, _, model = make_service(["ok"])
-    turn = await service.prepare(None, "独一无二的问题")
+    turn = await service.prepare(TEST_USER_ID, None,"独一无二的问题")
     await collect(service, turn)
     sent = model.received[0]
     humans = [m for m in sent if isinstance(m, HumanMessage)]
@@ -92,18 +90,18 @@ async def test_current_input_enters_prompt_exactly_once():
 
 async def test_upstream_error_no_commit_lock_released():
     service, store, _ = make_service(["部分", RuntimeError("boom")])
-    turn = await service.prepare(None, "hi")
+    turn = await service.prepare(TEST_USER_ID, None,"hi")
     events = await collect(service, turn)
     err = [e for e in events if isinstance(e, ErrorEvent)]
     assert err and err[0].code == "upstream_error"
     assert not any(isinstance(e, DoneEvent) for e in events)
-    assert store.snapshot(turn.session_id) == []
+    assert await store.snapshot(turn.session_id) == []
     assert not turn.lock.locked()
 
 
 async def test_upstream_error_log_sanitized(caplog):
     service, _, _ = make_service(["部分", RuntimeError("boom")])
-    turn = await service.prepare(None, "hi")
+    turn = await service.prepare(TEST_USER_ID, None,"hi")
     with caplog.at_level(logging.WARNING, logger="app.services.chat_service"):
         await collect(service, turn)
     joined = "\n".join(r.getMessage() for r in caplog.records)
@@ -114,38 +112,38 @@ async def test_upstream_error_log_sanitized(caplog):
 
 async def test_output_too_long_cancels_no_commit():
     service, store, _ = make_service(["太" * 30, "多" * 30, "还" * 30], max_message_chars=50)
-    turn = await service.prepare(None, "hi")
+    turn = await service.prepare(TEST_USER_ID, None,"hi")
     events = await collect(service, turn)
     codes = [e.code for e in events if isinstance(e, ErrorEvent)]
     assert codes == ["output_too_long"]
-    assert store.snapshot(turn.session_id) == []
+    assert await store.snapshot(turn.session_id) == []
 
 
 async def test_finish_reason_length_is_failure():
     service, store, _ = make_service(["被截断的回答", ("finish", "length")])
-    turn = await service.prepare(None, "hi")
+    turn = await service.prepare(TEST_USER_ID, None,"hi")
     events = await collect(service, turn)
     assert any(isinstance(e, ErrorEvent) and e.code == "output_too_long" for e in events)
-    assert store.snapshot(turn.session_id) == []
+    assert await store.snapshot(turn.session_id) == []
 
 
 async def test_empty_response_is_failure():
     service, store, _ = make_service(["", "  "])
-    turn = await service.prepare(None, "hi")
+    turn = await service.prepare(TEST_USER_ID, None,"hi")
     events = await collect(service, turn)
     assert any(isinstance(e, ErrorEvent) and e.code == "empty_response" for e in events)
-    assert store.snapshot(turn.session_id) == []
+    assert await store.snapshot(turn.session_id) == []
 
 
 async def test_done_send_fail_keeps_full_turn():
     service, store, _ = make_service(["完整回答"])
-    turn = await service.prepare(None, "hi")
+    turn = await service.prepare(TEST_USER_ID, None,"hi")
     agen = service.stream(turn)
     async for event in agen:
         if isinstance(event, DoneEvent):
             break  # 模拟 [DONE] 帧发送失败:消费者拿到 Done 后立即断开
     await agen.aclose()
-    assert [m.content for m in store.snapshot(turn.session_id)] == ["hi", "完整回答"]
+    assert [m.content for m in await store.snapshot(turn.session_id)] == ["hi", "完整回答"]
     assert not turn.lock.locked()
 
 
@@ -159,7 +157,7 @@ async def test_cancel_before_commit_no_partial_turn():
     holder = {}
 
     async def run():
-        turn = await service.prepare(None, "hi")
+        turn = await service.prepare(TEST_USER_ID, None,"hi")
         holder["turn"] = turn
         async for _ in service.stream(turn):
             pass
@@ -171,7 +169,7 @@ async def test_cancel_before_commit_no_partial_turn():
     with pytest.raises(asyncio.CancelledError):
         await task
     turn = holder["turn"]
-    assert store.snapshot(turn.session_id) == []
+    assert await store.snapshot(turn.session_id) == []
     assert not turn.lock.locked()
 
 
@@ -190,14 +188,12 @@ class GatedModel(FakeStreamModel):
 
 
 async def _run_full(service, session_id, message):
-    turn = await service.prepare(session_id, message)
+    turn = await service.prepare(TEST_USER_ID, session_id, message)
     events = [e async for e in service.stream(turn)]
     return events, turn.session_id
 
 
 async def test_same_session_serialized():
-    import uuid
-
     gate = asyncio.Event()
     settings = make_settings()
     store = InMemorySessionStore(10, 10, 100)
@@ -208,14 +204,14 @@ async def test_same_session_serialized():
     await asyncio.sleep(0.05)
     assert len(model.received) == 1  # 第一个流已进入模型并持锁
     sid = next(iter(store._sessions))
-    task2 = asyncio.create_task(_run_full(service, uuid.UUID(sid), "二"))
+    task2 = asyncio.create_task(_run_full(service, sid, "二"))
     await asyncio.sleep(0.05)
     assert len(model.received) == 1  # 同 session 第二个请求在等锁,未进模型
     gate.set()
     (events1, sid1), (events2, sid2) = await asyncio.gather(task1, task2)
     assert sid1 == sid2
     assert len(model.received) == 2
-    assert [m.content for m in store.snapshot(sid1)] == ["一", "开始结束", "二", "开始结束"]
+    assert [m.content for m in await store.snapshot(sid1)] == ["一", "开始结束", "二", "开始结束"]
 
 
 async def test_different_sessions_concurrent():
@@ -232,5 +228,5 @@ async def test_different_sessions_concurrent():
     gate.set()
     (_, sid1), (_, sid2) = await asyncio.gather(task1, task2)
     assert sid1 != sid2
-    assert [m.content for m in store.snapshot(sid1)] == ["甲", "开始结束"]
-    assert [m.content for m in store.snapshot(sid2)] == ["乙", "开始结束"]
+    assert [m.content for m in await store.snapshot(sid1)] == ["甲", "开始结束"]
+    assert [m.content for m in await store.snapshot(sid2)] == ["乙", "开始结束"]

@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import logging
-import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Union
 
@@ -10,7 +9,7 @@ from langchain_core.messages import BaseMessage
 from app.chains.chat_chain import build_chat_messages, check_input_budget
 from app.config import Settings
 from app.errors import MessageTooLongError, SessionNotFoundError
-from app.sessions import SessionStore
+from app.sessions import SessionStore, StoredMessage
 
 logger = logging.getLogger(__name__)
 
@@ -56,21 +55,21 @@ class ChatService:
         self._system_prompt = system_prompt
         self._locks: dict[str, asyncio.Lock] = {}
 
-    async def prepare(self, session_id: uuid.UUID | None, message: str) -> PreparedTurn:
+    async def prepare(self, user_id: str, session_id: str | None, message: str) -> PreparedTurn:
         if len(message) > self._settings.max_message_chars:
             raise MessageTooLongError("message exceeds MAX_MESSAGE_CHARS")
         check_input_budget(self._system_prompt, message, self._settings.max_input_tokens)
         if session_id is None:
-            sid = self._store.create()
+            sid = await self._store.create(user_id)
             self._locks[sid] = asyncio.Lock()
         else:
-            sid = str(session_id)
-            if not self._store.exists(sid):
+            sid = session_id
+            if not await self._store.exists(sid, user_id):
                 raise SessionNotFoundError("session not found")
         lock = self._locks[sid]
         await lock.acquire()
         try:
-            history = self._store.snapshot(sid)
+            history = await self._store.snapshot(sid)
             messages = build_chat_messages(
                 self._system_prompt, history, message, self._settings.max_input_tokens
             )
@@ -117,7 +116,10 @@ class ChatService:
             if not full.strip():
                 yield ErrorEvent("empty_response", "上游返回了空回复")
                 return
-            self._store.commit_turn(turn.session_id, turn.user_text, full)
+            await self._store.commit_turn(turn.session_id, [
+                StoredMessage("user", turn.user_text),
+                StoredMessage("assistant", full),
+            ])
             yield DoneEvent()
         finally:
             with contextlib.suppress(Exception):

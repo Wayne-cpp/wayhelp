@@ -68,7 +68,7 @@ def event_stream(service: ChatService, prepared: PreparedTurn) -> _EventStream:
 @router.post("/v1/chat/stream")
 async def chat_stream(body: ChatStreamRequest, request: Request) -> StreamingResponse:
     service: ChatService = request.app.state.chat_service
-    prepared = await service.prepare(body.session_id, body.message)
+    prepared = await service.prepare(body.user_id, body.session_id, body.message)
 
     return StreamingResponse(
         event_stream(service, prepared),

@@ -1,3 +1,4 @@
+import re
 import uuid
 from enum import Enum
 
@@ -30,9 +31,31 @@ def _require_non_blank(v: str) -> str:
     return v
 
 
+_SESSION_ID_RE = re.compile(r"^([1-9]\d{0,18}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
+
+
 class ChatStreamRequest(BaseModel):
-    session_id: uuid.UUID | None = None
+    user_id: str
+    session_id: str | None = None
     message: str
+
+    @field_validator("user_id")
+    @classmethod
+    def _user_id_must_be_uuid(cls, v: str) -> str:
+        try:
+            uuid.UUID(v)
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError("user_id must be a canonical UUID string")
+        return v
+
+    @field_validator("session_id")
+    @classmethod
+    def _session_id_form(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not _SESSION_ID_RE.match(v):
+            raise ValueError("session_id must be a decimal id or canonical UUID string")
+        return v
 
     @field_validator("message")
     @classmethod
