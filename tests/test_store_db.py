@@ -1,10 +1,13 @@
 import asyncio
 
+import httpx
 import pytest
 
+from app.main import AppRuntime, create_app
 from app.store_db import DbSessionStore
 from app.sessions import StoredMessage
 from app.tool_envelope import wrap
+from tests.conftest import FakeStreamModel, make_settings
 from tests.dbfixtures import db_engine, db_session_factory  # noqa: F401  (fixture 注册,依赖需一并导入)
 
 USER = "11111111-1111-1111-1111-111111111111"
@@ -96,3 +99,38 @@ async def test_survives_restart(db_session_factory):
     store2 = DbSessionStore(db_session_factory, max_message_chars=8000)
     assert await store2.exists(sid, USER) is True
     assert len(await store2.snapshot(sid)) == 2
+
+
+async def test_uuid_session_id_form_404_on_db_store(db_session_factory):
+    """spec §4:规范 UUID 形态 session_id 打生产 DB adapter 按不存在处理(API 404,而非 500)。"""
+    runtime = AppRuntime(
+        store=DbSessionStore(db_session_factory, max_message_chars=8000),
+        toolset_factory=lambda sid: [],
+    )
+    app = create_app(settings=make_settings(), model=FakeStreamModel(["答"]),
+                     runtime=runtime)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/v1/chat/stream", json={
+            "user_id": USER,
+            "session_id": "00000000-0000-0000-0000-000000000000",
+            "message": "hi",
+        })
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "session_not_found"
+
+
+async def test_uuid_session_id_treated_as_missing(db_session_factory):
+    """内存 store 对未知会话 exists→False;DB store 对 UUID 形态(非自己创建的合法形态)对齐为不存在。"""
+    store = DbSessionStore(db_session_factory, max_message_chars=8000)
+    sid = "00000000-0000-0000-0000-000000000000"
+    assert await store.exists(sid, USER) is False
+    assert await store.snapshot(sid) == []
+
+
+async def test_decimal_beyond_bigint_treated_as_missing(db_session_factory):
+    """schema 放行 19 位十进制,超出 BIGINT 正范围的同样按不存在处理,不查库。"""
+    store = DbSessionStore(db_session_factory, max_message_chars=8000)
+    sid = "9223372036854775808"  # 2^63;[1-9]\d{0,18} 仍放行但越界
+    assert await store.exists(sid, USER) is False
+    assert await store.snapshot(sid) == []

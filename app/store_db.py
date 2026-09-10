@@ -6,6 +6,17 @@ from sqlalchemy import select, update
 from app.models import Conversation, Message
 from app.sessions import StoredMessage, validate_turn
 
+_BIGINT_MAX = (1 << 63) - 1  # conversations.id 为 BIGINT 自增
+
+
+def _as_db_id(session_id: str) -> int | None:
+    """spec §4:仅正十进制且在 BIGINT 正范围内才是 DB 形态 id;
+    另一种合法形态(规范 UUID)按不存在处理,返回 None 不查库。"""
+    if not session_id.isdecimal():
+        return None
+    n = int(session_id)
+    return n if 0 < n <= _BIGINT_MAX else None
+
 
 class DbSessionStore:
     """SessionStore 的 MySQL 实现;所有方法 async,同步 Session 在线程内创建/关闭。"""
@@ -28,10 +39,13 @@ class DbSessionStore:
         return await asyncio.to_thread(self._exists_sync, session_id, user_id)
 
     def _exists_sync(self, session_id: str, user_id: str) -> bool:
+        cid = _as_db_id(session_id)
+        if cid is None:
+            return False  # 外来合法形态(规范 UUID)/越界十进制:按不存在处理
         with self._sf() as s:
             row = s.execute(
                 select(Conversation.id).where(
-                    Conversation.id == int(session_id),
+                    Conversation.id == cid,
                     Conversation.user_id == user_id,
                 )
             ).first()
@@ -41,10 +55,13 @@ class DbSessionStore:
         return await asyncio.to_thread(self._snapshot_sync, session_id)
 
     def _snapshot_sync(self, session_id: str) -> list[StoredMessage]:
+        cid = _as_db_id(session_id)
+        if cid is None:
+            return []  # 同 exists:外来合法形态视为无历史
         with self._sf() as s:
             rows = (
                 s.query(Message)
-                .filter(Message.conversation_id == int(session_id))
+                .filter(Message.conversation_id == cid)
                 .order_by(Message.created_at, Message.id)
                 .all()
             )
