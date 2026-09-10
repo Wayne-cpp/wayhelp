@@ -70,12 +70,21 @@ class SessionLockRegistry:
     async def acquire(self, session_id: str) -> asyncio.Lock:
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         self._users[session_id] = self._users.get(session_id, 0) + 1
-        await lock.acquire()
+        try:
+            await lock.acquire()
+        except asyncio.CancelledError:
+            # 等待中被取消:未持有锁,只回滚计数(不得 release 未获得的锁)
+            self._retire(session_id)
+            raise
         return lock
 
     def release(self, session_id: str) -> None:
         lock = self._locks[session_id]
         lock.release()
+        self._retire(session_id)
+
+    def _retire(self, session_id: str) -> None:
+        """计数减一;归零即删条目(懒清理)。"""
         self._users[session_id] -= 1
         if self._users[session_id] == 0:
             del self._users[session_id]
@@ -128,16 +137,18 @@ class ChatService:
         self._locks.release(turn.lock_key)
 
     async def stream(self, turn: PreparedTurn) -> AsyncIterator[ChatEvent]:
-        tools = self._toolset_factory(turn.session_id) if self._toolset_factory else []
-        registry = ToolRegistry(tools)
-        executor = ToolExecutor(registry, self._settings.tool_timeout_seconds,
-                                self._settings.tool_max_retries,
-                                self._settings.max_tool_result_chars)
-        first_model = self._model.bind_tools(registry.tools) if tools else self._model
-        agen = first_model.astream(turn.messages)
         visible_chars = 0
         committed = False
         try:
+            # 工具装配须在 finally 覆盖内:factory/registry/bind_tools/astream
+            # 任一抛异常都经 finally 释放锁,不得永久持锁
+            tools = self._toolset_factory(turn.session_id) if self._toolset_factory else []
+            registry = ToolRegistry(tools)
+            executor = ToolExecutor(registry, self._settings.tool_timeout_seconds,
+                                    self._settings.tool_max_retries,
+                                    self._settings.max_tool_result_chars)
+            first_model = self._model.bind_tools(registry.tools) if tools else self._model
+            agen = first_model.astream(turn.messages)
             yield SessionEvent(turn.session_id)
             text_parts: list[str] = []
             acc: dict[int, dict] = {}
@@ -177,6 +188,7 @@ class ChatService:
                 return
 
             tool_messages: list[ToolMessage] = []
+            tool_error_codes: list[str | None] = []
             ai_with_calls: AIMessage | None = None
             if calls:
                 ai_with_calls = AIMessage(content="".join(text_parts), tool_calls=calls)
@@ -184,6 +196,7 @@ class ChatService:
                     yield ToolStartEvent(call["id"], call["name"], call["args"])
                     outcome = await executor.execute(call)
                     tool_messages.append(outcome.message)
+                    tool_error_codes.append(outcome.record.error_code)
                     logger.info("tool %s ok=%s retries=%d ms=%d err=%s",
                                 outcome.record.name, outcome.record.ok,
                                 outcome.record.retry_count, outcome.record.duration_ms,
@@ -237,11 +250,11 @@ class ChatService:
             if calls:
                 stored.append(StoredMessage("assistant", "".join(text_parts) or None,
                                             tool_calls=calls))
-                for tm in tool_messages:
+                for tm, error_code in zip(tool_messages, tool_error_codes):
                     stored.append(StoredMessage(
                         "tool",
                         wrap(tm.content, tm.status != "error",
-                             None if tm.status != "error" else "tool_error",
+                             None if tm.status != "error" else error_code,
                              self._settings.max_tool_result_chars),
                         tool_call_id=tm.tool_call_id,
                     ))

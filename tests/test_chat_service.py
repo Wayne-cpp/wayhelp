@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 import pytest
@@ -11,6 +12,7 @@ from app.services.chat_service import (
     DoneEvent,
     ErrorEvent,
     SessionEvent,
+    SessionLockRegistry,
 )
 from app.sessions import InMemorySessionStore
 from tests.conftest import TEST_USER_ID, FakeChunk, FakeStreamModel, make_settings
@@ -79,6 +81,21 @@ async def test_release_turn_idempotent():
     assert turn.lock_key not in service._locks._locks
 
 
+async def test_acquire_cancelled_while_waiting_rolls_back_user_count():
+    """M2:等待锁的协程被取消,_users 计数必须回滚,不得残留。"""
+    reg = SessionLockRegistry()
+    await reg.acquire("s1")  # 持有者
+    waiter = asyncio.create_task(reg.acquire("s1"))
+    await asyncio.sleep(0.05)  # 等待者已挂起在 lock.acquire
+    assert reg._users["s1"] == 2
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert reg._users["s1"] == 1  # 回滚等待者的计数,不影响持有者
+    reg.release("s1")
+    assert "s1" not in reg._users and "s1" not in reg._locks  # release 语义不变
+
+
 async def test_current_input_enters_prompt_exactly_once():
     service, _, model = make_service(["ok"])
     turn = await service.prepare(TEST_USER_ID, None,"独一无二的问题")
@@ -108,6 +125,45 @@ async def test_upstream_error_log_sanitized(caplog):
     assert "upstream error" in joined
     assert "RuntimeError" in joined
     assert "boom" not in joined
+
+
+async def test_toolset_factory_failure_releases_lock():
+    """M3:工具装配(toolset_factory/registry/bind_tools/astream)抛异常时,
+    锁必须随 finally 释放,不得永久持锁。"""
+    settings = make_settings()
+    store = InMemorySessionStore(10, 10, 100)
+
+    def boom(sid):
+        raise RuntimeError("toolset boom")
+
+    service = ChatService(store, FakeStreamModel(["答"]), settings, SYSTEM,
+                          toolset_factory=boom)
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
+    with pytest.raises(RuntimeError):
+        await collect(service, turn)
+    assert turn.lock_key not in service._locks._locks
+
+
+async def test_bind_tools_failure_releases_lock():
+    from langchain_core.tools import tool as lc_tool
+
+    @lc_tool
+    def query_order(order_id: str) -> str:
+        """查订单"""
+        return "ok"
+
+    class BindBoomModel(FakeStreamModel):
+        def bind_tools(self, tools):
+            raise RuntimeError("bind boom")
+
+    settings = make_settings()
+    store = InMemorySessionStore(10, 10, 100)
+    service = ChatService(store, BindBoomModel(["答"]), settings, SYSTEM,
+                          toolset_factory=lambda sid: [query_order])
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
+    with pytest.raises(RuntimeError):
+        await collect(service, turn)
+    assert turn.lock_key not in service._locks._locks
 
 
 async def test_output_too_long_cancels_no_commit():
@@ -199,6 +255,36 @@ async def test_tool_context_too_long_when_dropping_human_would_fit():
     assert codes == ["tool_context_too_long"]
     assert len(model.received) == 1  # 第二次调用不得发生(旧写法会删当前 human 后继续)
     assert await store.snapshot(turn.session_id) == []
+
+
+async def test_stored_tool_envelope_keeps_real_error_code():
+    """M1:落库 tool 行 envelope 的 error_code 必须是 executor 的真实码
+    (unknown_tool / invalid_args),不得一律写 tool_error。"""
+    from langchain_core.tools import tool as lc_tool
+
+    @lc_tool
+    def strict_tool(n: int) -> str:
+        """严格参数"""
+        return str(n)
+
+    settings = make_settings()
+    store = InMemorySessionStore(10, 10, 100)
+    model = FakeStreamModel([
+        ("tool", [
+            {"name": "ghost_tool", "args": "{\"x\": \"1\"}", "id": "call_1", "index": 0},
+            {"name": "strict_tool", "args": "{\"n\": \"不是数字\"}", "id": "call_2", "index": 1},
+        ]),
+        ("then", ["最终答复"]),
+    ])
+    service = ChatService(store, model, settings, SYSTEM,
+                          toolset_factory=lambda sid: [strict_tool])
+    turn = await service.prepare(TEST_USER_ID, None, "两个工具调用")
+    events = await collect(service, turn)
+    assert any(isinstance(e, DoneEvent) for e in events)  # 工具失败不阻断本轮
+    tool_rows = [m for m in await store.snapshot(turn.session_id) if m.role == "tool"]
+    assert len(tool_rows) == 2
+    codes = {m.tool_call_id: json.loads(m.content)["error_code"] for m in tool_rows}
+    assert codes == {"call_1": "unknown_tool", "call_2": "invalid_args"}
 
 
 class GatedModel(FakeStreamModel):

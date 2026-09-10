@@ -21,6 +21,7 @@ class ToolExecutionRecord:
     duration_ms: int
     retry_count: int
     error_type: str | None
+    error_code: str | None = None  # 机器码(unknown_tool 等);error_type 是异常类名
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,7 @@ class ToolExecutor:
                           name=tool.name, status="success")
         return ToolOutcome(msg, ToolExecutionRecord(
             tool.name, call.get("args") or {}, True,
-            int((time.monotonic() - started) * 1000), retries, None))
+            int((time.monotonic() - started) * 1000), retries, None, None))
 
     _ERROR_TEXT = {
         "unknown_tool": "调用了未注册的工具",
@@ -120,4 +121,5 @@ class ToolExecutor:
         msg = ToolMessage(content=text, tool_call_id=call_id, name=name or "unknown",
                           status="error")
         return ToolOutcome(msg, ToolExecutionRecord(
-            name, args, False, int((time.monotonic() - started) * 1000), retries, error_type))
+            name, args, False, int((time.monotonic() - started) * 1000), retries, error_type,
+            code))
