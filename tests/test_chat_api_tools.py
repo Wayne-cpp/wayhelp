@@ -1,6 +1,7 @@
 import httpx
 
 from app.main import create_app
+from app.prompts.service import SERVICE_SYSTEM_PROMPT
 from tests.conftest import TEST_USER_ID, FakeStreamModel, make_runtime, make_settings
 from tests.test_chat_api import parse_frames, post_stream
 
@@ -75,3 +76,8 @@ async def test_bad_session_id_form_422():
         resp = await client.post("/v1/chat/stream", json={
             "user_id": TEST_USER_ID, "session_id": "abc!!", "message": "hi"})
         assert resp.status_code == 422
+
+
+def test_system_prompt_rule_demo_data_honesty():
+    assert "演示数据" in SERVICE_SYSTEM_PROMPT
+    assert "不得承诺" in SERVICE_SYSTEM_PROMPT
