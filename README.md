@@ -4,11 +4,15 @@
 - `uv sync`(自动建 Python 3.12 虚拟环境)
 - `cp .env.example .env` 并填写 OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME
 
-## 启动(单进程)
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+## 运行
+```bash
+docker compose up -d          # 启动 MySQL(首启自动建表+灌 faq seed)
+uv run pytest                 # 测试(DB 用例需 Docker 在线)
+uv run uvicorn app.main:create_app --factory   # 起服
+# 浏览器打开 http://127.0.0.1:8000/
+```
 
-## 验证
-- uv run pytest
+## 验证(eval 脚本)
 - uv run python evals/run_provider_smoke.py
 - uv run python evals/run_extract_eval.py
 
