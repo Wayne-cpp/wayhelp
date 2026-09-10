@@ -116,7 +116,7 @@ async def test_aclose_before_iteration_releases_lock():
     turn = await service.prepare(TEST_USER_ID, None, "hi")
     g = event_stream(service, turn)
     await g.aclose()  # 从未迭代
-    assert not turn.lock.locked()
+    assert turn.lock_key not in service._locks._locks
 
 
 async def test_aclose_after_partial_iteration_releases_lock():
@@ -127,7 +127,7 @@ async def test_aclose_after_partial_iteration_releases_lock():
     first = await g.__aiter__().__anext__()  # 消费到第一个事件(session 帧)
     assert first.startswith("data: ")
     await g.aclose()
-    assert not turn.lock.locked()
+    assert turn.lock_key not in service._locks._locks
 
 
 async def test_second_turn_carries_context():

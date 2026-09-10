@@ -72,11 +72,11 @@ async def test_overlong_input_no_session_created():
 async def test_release_turn_idempotent():
     service, _, _ = make_service([])
     turn = await service.prepare(TEST_USER_ID, None,"hi")
-    assert turn.lock.locked()
+    assert turn.lock_key in service._locks._locks  # 持锁期间 registry 保有该 session 条目
     service.release_turn(turn)
-    assert not turn.lock.locked()
-    service.release_turn(turn)  # 第二次调用不炸,锁仍为已释放
-    assert not turn.lock.locked()
+    assert turn.lock_key not in service._locks._locks
+    service.release_turn(turn)  # 第二次调用不炸,条目保持已清理
+    assert turn.lock_key not in service._locks._locks
 
 
 async def test_current_input_enters_prompt_exactly_once():
@@ -96,7 +96,7 @@ async def test_upstream_error_no_commit_lock_released():
     assert err and err[0].code == "upstream_error"
     assert not any(isinstance(e, DoneEvent) for e in events)
     assert await store.snapshot(turn.session_id) == []
-    assert not turn.lock.locked()
+    assert turn.lock_key not in service._locks._locks
 
 
 async def test_upstream_error_log_sanitized(caplog):
@@ -144,7 +144,7 @@ async def test_done_send_fail_keeps_full_turn():
             break  # 模拟 [DONE] 帧发送失败:消费者拿到 Done 后立即断开
     await agen.aclose()
     assert [m.content for m in await store.snapshot(turn.session_id)] == ["hi", "完整回答"]
-    assert not turn.lock.locked()
+    assert turn.lock_key not in service._locks._locks
 
 
 async def test_cancel_before_commit_no_partial_turn():
@@ -170,7 +170,7 @@ async def test_cancel_before_commit_no_partial_turn():
         await task
     turn = holder["turn"]
     assert await store.snapshot(turn.session_id) == []
-    assert not turn.lock.locked()
+    assert turn.lock_key not in service._locks._locks
 
 
 class GatedModel(FakeStreamModel):
