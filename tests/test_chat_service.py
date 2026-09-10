@@ -173,6 +173,34 @@ async def test_cancel_before_commit_no_partial_turn():
     assert turn.lock_key not in service._locks._locks
 
 
+async def test_tool_context_too_long_when_dropping_human_would_fit():
+    """预算卡在「含当前 human 超限 / 不含当前 human 达标」窗口:必须发 tool_context_too_long,
+    不得丢掉当前 human 后在没有用户问题的上下文里静默第二次调用(review I1 调用点 off-by-one)。"""
+    from langchain_core.tools import tool as lc_tool
+
+    @lc_tool
+    def query_order(order_id: str) -> str:
+        """查订单"""
+        return "长" * 400
+
+    # count_tokens_approximately: [sys,human,ai,tool]=151 > 147 >= [sys,ai,tool]=144
+    settings = make_settings(max_input_tokens=147)
+    store = InMemorySessionStore(10, 10, 100)
+    model = FakeStreamModel([
+        ("tool", [{"name": "query_order", "args": "{\"order_id\": \"1001\"}",
+                   "id": "call_1", "index": 0}]),
+        ("then", ["最终答复"]),
+    ])
+    service = ChatService(store, model, settings, SYSTEM,
+                          toolset_factory=lambda sid: [query_order])
+    turn = await service.prepare(TEST_USER_ID, None, "查订单 1001 的物流")
+    events = await collect(service, turn)
+    codes = [e.code for e in events if isinstance(e, ErrorEvent)]
+    assert codes == ["tool_context_too_long"]
+    assert len(model.received) == 1  # 第二次调用不得发生(旧写法会删当前 human 后继续)
+    assert await store.snapshot(turn.session_id) == []
+
+
 class GatedModel(FakeStreamModel):
     """每次 astream 在首尾 delta 之间等待 gate;"finish" 后计数。"""
 

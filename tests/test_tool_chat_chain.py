@@ -6,6 +6,7 @@ from app.chains.tool_chat_chain import (
     _validate,
     build_messages_with_tools,
     finalize_tool_calls,
+    fit_tool_context,
     merge_tool_call_chunks,
     rebuild_messages,
 )
@@ -175,3 +176,37 @@ def test_validate_rejects_bad_role_order():
     bad_starts_with_ai = [SystemMessage(content="s"), AIMessage(content="a"), HumanMessage(content="now")]
     with pytest.raises(RuntimeError):
         _validate(bad_starts_with_ai, "now", 100)
+
+
+# ---- fit_tool_context(第二次调用预算)----
+
+
+def _second_call_messages():
+    """模拟 chat_service 第二次调用的入参形状:[system, ...历史..., 当前human, AI(tool_calls), Tool]。"""
+    base = [
+        SystemMessage(content="s"),
+        HumanMessage(content="旧问题" + "甲" * 60),
+        AIMessage(content="旧回答" + "甲" * 60),
+        HumanMessage(content="当前问题"),
+    ]
+    second = [
+        *base,
+        AIMessage(content="", tool_calls=[
+            {"name": "query_order", "args": {"order_id": "1"}, "id": "c1", "type": "tool_call"}]),
+        ToolMessage(content="结果" * 20, tool_call_id="c1", name="query_order"),
+    ]
+    return base, second
+
+
+def test_fit_drops_oldest_history_turn_keeps_current_human():
+    # 预算够丢历史:丢最旧完整历史 turn 达标,当前 human 与工具组原样保留
+    base, second = _second_call_messages()
+    # count_tokens_approximately: 全量 96 > 70 >= 丢历史后 55
+    fitted = fit_tool_context(second, max_input_tokens=70,
+                              protected_from=len(base) - 1)  # 当前 human 下标
+    assert fitted is not None
+    assert [m.content for m in fitted] == [
+        "s", "当前问题", "",
+        "结果" * 20,
+    ]
+    assert not any("旧问题" in m.content or "旧回答" in m.content for m in fitted)

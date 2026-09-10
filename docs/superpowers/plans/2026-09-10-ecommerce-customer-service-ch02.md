@@ -2260,7 +2260,7 @@ class ChatService:
                 second_messages = fit_tool_context(
                     [*turn.messages, ai_with_calls, *tool_messages],
                     self._settings.max_input_tokens,
-                    protected_from=len(turn.messages),
+                    protected_from=len(turn.messages) - 1,  # 当前 human 的下标(turn.messages 末位)
                 )
                 if second_messages is None:
                     yield ErrorEvent("tool_context_too_long", "工具结果超出上下文预算")
