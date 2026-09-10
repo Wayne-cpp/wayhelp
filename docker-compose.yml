@@ -9,7 +9,7 @@ services:
       MYSQL_PASSWORD: wayhelp
       MYSQL_ROOT_HOST: "%"
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - ./db/init:/docker-entrypoint-initdb.d:ro
       - mysql-data:/var/lib/mysql
