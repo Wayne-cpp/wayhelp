@@ -1,4 +1,4 @@
-# mewhelp — 电商智能客服(ch01 纯对话)
+# wayhelp — 电商智能客服(ch01 纯对话)
 
 ## 环境
 - `uv sync`(自动建 Python 3.12 虚拟环境)

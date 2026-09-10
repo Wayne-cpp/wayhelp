@@ -1,7 +1,8 @@
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_openai import ChatOpenAI
@@ -50,13 +51,23 @@ def create_app(settings: Settings | None = None, model: Any | None = None) -> Fa
     )
     service = ChatService(store, model, settings, SERVICE_SYSTEM_PROMPT)
 
-    app = FastAPI(title="mewhelp-ch01")
+    app = FastAPI(title="wayhelp-ch01")
     app.state.settings = settings
     app.state.model = model
     app.state.store = store
     app.state.chat_service = service
     app.include_router(chat_router)
     app.include_router(extract_router)
+
+    static_dir = Path(__file__).parent / "static"
+
+    @app.get("/", include_in_schema=False)
+    async def chat_ui() -> FileResponse:
+        return FileResponse(static_dir / "chat.html")
+
+    @app.get("/1784959384051.jpg", include_in_schema=False)
+    async def brand_mark() -> FileResponse:
+        return FileResponse(static_dir / "1784959384051.jpg")
 
     @app.exception_handler(MessageTooLongError)
     async def _(request: Request, exc: MessageTooLongError) -> JSONResponse:
