@@ -1,0 +1,503 @@
+{
+  "endpoint": "https://api.deepseek.com",
+  "model": "deepseek-v4-flash",
+  "structured_output_method": "json_mode",
+  "generation": {
+    "temperature": "temperature=0",
+    "max_tokens": 1000
+  },
+  "prompt_sha256_12": "3f35d290e235",
+  "per_field_accuracy": {
+    "order_id": 1.0,
+    "intent": 0.9130434782608695,
+    "expectation": 0.7391304347826086
+  },
+  "macro_avg": 0.8840579710144927,
+  "exact_match": 0.7391304347826086,
+  "passed": true,
+  "records": [
+    {
+      "id": "c01",
+      "text": "你好,我 8 月 30 号下的单,订单号 20260830001,买的连衣裙尺码不对,吊牌还在,想退了把钱退给我",
+      "expected": {
+        "order_id": "20260830001",
+        "intent": "退货退款",
+        "expectation": "全额退款"
+      },
+      "got": {
+        "order_id": "20260830001",
+        "intent": "退货退款",
+        "expectation": "全额退款"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "连衣裙尺码不对且吊牌还在，想退货退款"
+    },
+    {
+      "id": "c02",
+      "text": "买的鞋子穿了一天就开胶了,太离谱了,我要退货!订单 20260901007",
+      "expected": {
+        "order_id": "20260901007",
+        "intent": "退货退款",
+        "expectation": "全额退款"
+      },
+      "got": {
+        "order_id": "20260901007",
+        "intent": "退货退款",
+        "expectation": "其他"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": false
+      },
+      "error": null,
+      "summary_text": "鞋子穿一天就开胶,要求退货"
+    },
+    {
+      "id": "c03",
+      "text": "买重复了,多拍了一件,还没发货的那件帮我退了吧",
+      "expected": {
+        "order_id": null,
+        "intent": "退货退款",
+        "expectation": "部分退款"
+      },
+      "got": {
+        "order_id": null,
+        "intent": "仅退款",
+        "expectation": "全额退款"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": false,
+        "expectation": false
+      },
+      "error": null,
+      "summary_text": "买重复了，多拍了一件，申请退掉未发货的那件"
+    },
+    {
+      "id": "c04",
+      "text": "订单 20260825003,外套买大了一号,想换个小一码的",
+      "expected": {
+        "order_id": "20260825003",
+        "intent": "换货",
+        "expectation": "换货"
+      },
+      "got": {
+        "order_id": "20260825003",
+        "intent": "换货",
+        "expectation": "换货"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "外套买大了一号，想换小一码的"
+    },
+    {
+      "id": "c05",
+      "text": "颜色发错了,我要的黑色发的白色,给我换一下",
+      "expected": {
+        "order_id": null,
+        "intent": "换货",
+        "expectation": "换货"
+      },
+      "got": {
+        "order_id": null,
+        "intent": "换货",
+        "expectation": "换货"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "商家发错颜色，要求换货"
+    },
+    {
+      "id": "c06",
+      "text": "尺码不合适能换吗?不能换我就退了",
+      "expected": {
+        "order_id": null,
+        "intent": "换货",
+        "expectation": "换货"
+      },
+      "got": {
+        "order_id": null,
+        "intent": "换货",
+        "expectation": "换货"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "尺码不合适，询问能否换货，不能换则退货"
+    },
+    {
+      "id": "c07",
+      "text": "快递显示签收但我根本没收到!订单 20260828012,我不要货了,直接把钱退我",
+      "expected": {
+        "order_id": "20260828012",
+        "intent": "仅退款",
+        "expectation": "全额退款"
+      },
+      "got": {
+        "order_id": "20260828012",
+        "intent": "仅退款",
+        "expectation": "全额退款"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "快递显示已签收但未收到货，要求直接退款"
+    },
+    {
+      "id": "c08",
+      "text": "水果收到全烂了,这种情况不用退货了吧,退钱就行",
+      "expected": {
+        "order_id": null,
+        "intent": "仅退款",
+        "expectation": "全额退款"
+      },
+      "got": {
+        "order_id": null,
+        "intent": "仅退款",
+        "expectation": "全额退款"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "水果收到全烂了,要求不退货直接退钱"
+    },
+    {
+      "id": "c09",
+      "text": "少发了一件,订单 009123,缺的那件我不要了,把差价退我",
+      "expected": {
+        "order_id": "009123",
+        "intent": "仅退款",
+        "expectation": "部分退款"
+      },
+      "got": {
+        "order_id": "009123",
+        "intent": "仅退款",
+        "expectation": "部分退款"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "订单少发一件，买家不要缺件，要求退还差价"
+    },
+    {
+      "id": "c10",
+      "text": "耳机用了两周左耳没声了,订单 20260815001,还在保修期,帮我修一下",
+      "expected": {
+        "order_id": "20260815001",
+        "intent": "维修",
+        "expectation": "维修"
+      },
+      "got": {
+        "order_id": "20260815001",
+        "intent": "维修",
+        "expectation": "维修"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "耳机使用两周后左耳无声，在保修期内，要求维修"
+    },
+    {
+      "id": "c11",
+      "text": "洗衣机脱水的时候巨响,你们能上门修吗",
+      "expected": {
+        "order_id": null,
+        "intent": "维修",
+        "expectation": "维修"
+      },
+      "got": {
+        "order_id": null,
+        "intent": "维修",
+        "expectation": "维修"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "洗衣机脱水时噪音巨大，询问能否上门维修"
+    },
+    {
+      "id": "c12",
+      "text": "屏幕摔裂了,修一下大概多少钱?订单 20260905002",
+      "expected": {
+        "order_id": "20260905002",
+        "intent": "维修",
+        "expectation": "维修"
+      },
+      "got": {
+        "order_id": "20260905002",
+        "intent": "维修",
+        "expectation": null
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": false
+      },
+      "error": null,
+      "summary_text": "屏幕摔裂,咨询维修费用"
+    },
+    {
+      "id": "c13",
+      "text": "订单 20260902009 都三天了还不发货,急用,搞快点",
+      "expected": {
+        "order_id": "20260902009",
+        "intent": "催发货",
+        "expectation": null
+      },
+      "got": {
+        "order_id": "20260902009",
+        "intent": "催发货",
+        "expectation": null
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "订单已三天未发货,用户急用催促尽快发货"
+    },
+    {
+      "id": "c14",
+      "text": "我下周要出差,买的东西到底什么时候发?再不发我就退款了",
+      "expected": {
+        "order_id": null,
+        "intent": "催发货",
+        "expectation": null
+      },
+      "got": {
+        "order_id": null,
+        "intent": "仅退款",
+        "expectation": "全额退款"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": false,
+        "expectation": false
+      },
+      "error": null,
+      "summary_text": "催促发货，称再不发就退款"
+    },
+    {
+      "id": "c15",
+      "text": "催一下发货,订单 20260906003,顺便问下能改地址吗",
+      "expected": {
+        "order_id": "20260906003",
+        "intent": "催发货",
+        "expectation": null
+      },
+      "got": {
+        "order_id": "20260906003",
+        "intent": "催发货",
+        "expectation": null
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "催促订单尽快发货,并咨询能否修改收货地址"
+    },
+    {
+      "id": "c16",
+      "text": "你们客服态度太差了,等了半小时没人理,我要投诉!",
+      "expected": {
+        "order_id": null,
+        "intent": "投诉",
+        "expectation": null
+      },
+      "got": {
+        "order_id": null,
+        "intent": "投诉",
+        "expectation": null
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "客服态度差,等待半小时无人理会,要求投诉"
+    },
+    {
+      "id": "c17",
+      "text": "商品描述和实物完全不符,这不是骗人吗?我要投诉并且要求赔偿",
+      "expected": {
+        "order_id": null,
+        "intent": "投诉",
+        "expectation": "赔偿"
+      },
+      "got": {
+        "order_id": null,
+        "intent": "投诉",
+        "expectation": "赔偿"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "商品与描述完全不符,要求投诉并赔偿"
+    },
+    {
+      "id": "c18",
+      "text": "物流把我的包裹弄丢了,订单 20260820006,你们必须给我个说法,赔偿损失",
+      "expected": {
+        "order_id": "20260820006",
+        "intent": "投诉",
+        "expectation": "赔偿"
+      },
+      "got": {
+        "order_id": "20260820006",
+        "intent": "投诉",
+        "expectation": "赔偿"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "物流把包裹弄丢，要求给说法并赔偿损失"
+    },
+    {
+      "id": "c19",
+      "text": "你们店有会员制度吗?怎么积分?",
+      "expected": {
+        "order_id": null,
+        "intent": "其他",
+        "expectation": "其他"
+      },
+      "got": {
+        "order_id": null,
+        "intent": "其他",
+        "expectation": null
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": false
+      },
+      "error": null,
+      "summary_text": "咨询店铺会员制度及积分规则"
+    },
+    {
+      "id": "c20",
+      "text": "在吗?忙不忙?",
+      "expected": {
+        "order_id": null,
+        "intent": "其他",
+        "expectation": null
+      },
+      "got": {
+        "order_id": null,
+        "intent": "其他",
+        "expectation": null
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "询问是否在线、是否忙碌"
+    },
+    {
+      "id": "c21",
+      "text": "发票怎么开?订单 20260904008",
+      "expected": {
+        "order_id": "20260904008",
+        "intent": "其他",
+        "expectation": "其他"
+      },
+      "got": {
+        "order_id": "20260904008",
+        "intent": "其他",
+        "expectation": null
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": false
+      },
+      "error": null,
+      "summary_text": "咨询订单如何开具发票"
+    },
+    {
+      "id": "c22",
+      "text": "少发了一件,直接给我补上就行,订单 20260907010",
+      "expected": {
+        "order_id": "20260907010",
+        "intent": "其他",
+        "expectation": "补发"
+      },
+      "got": {
+        "order_id": "20260907010",
+        "intent": "其他",
+        "expectation": "补发"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "订单少发一件商品,要求补发"
+    },
+    {
+      "id": "c23",
+      "text": "有个配件漏发了,不用退款,麻烦补寄一下",
+      "expected": {
+        "order_id": null,
+        "intent": "其他",
+        "expectation": "补发"
+      },
+      "got": {
+        "order_id": null,
+        "intent": "其他",
+        "expectation": "补发"
+      },
+      "hits": {
+        "order_id": true,
+        "intent": true,
+        "expectation": true
+      },
+      "error": null,
+      "summary_text": "配件漏发,要求补寄"
+    }
+  ]
+}
