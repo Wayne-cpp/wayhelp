@@ -288,12 +288,18 @@
   }
 
   /* ─── tool trace badges ────────────────────────────────────────── */
+  .msg-col {
+    display: flex; flex-direction: column; align-items: flex-start;
+    gap: var(--space-2);
+    min-width: 0;
+  }
   .tool-badges {
     display: flex; flex-wrap: wrap; gap: var(--space-2);
-    margin-bottom: var(--space-2);
   }
+  .tool-badges:empty { display: none; }
   .tool-badge {
     display: inline-flex; align-items: center; gap: 6px;
+    white-space: nowrap;
     padding: 3px 10px;
     font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.03em;
     border-radius: var(--radius-pill);
@@ -597,7 +603,12 @@
     var badgesEl = document.createElement("div");
     badgesEl.className = "tool-badges";
     var badgeById = new Map(); // tool_call_id -> 徽标节点,本轮会话内有效
-    row.insertBefore(badgesEl, bubble);
+    // 徽章条与气泡包进同一纵列(徽章在气泡正上方),不再作为头像旁的第三个 flex 子项被挤窄
+    var col = document.createElement("div");
+    col.className = "msg-col";
+    row.insertBefore(col, bubble);
+    col.appendChild(badgesEl);
+    col.appendChild(bubble);
     row.classList.add("streaming");
     // 首个 token 到达前显示"正在输入"指示;textContent 赋值会自动将其替换
     bubble.innerHTML = '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>';
