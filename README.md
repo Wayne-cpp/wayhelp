@@ -51,7 +51,7 @@ curl -X POST http://127.0.0.1:8000/v1/extract \
 - 知识文档建库:`uv run python -m app.jobs.ingest_docs [knowledge_docs/]`
 - 对话挖知识:`uv run python -m app.jobs.mine_qa`
 - 召回评估:`uv run python evals/run_knowledge_eval.py`
-- 新增环境变量:EMBEDDING_BASE_URL / EMBEDDING_API_KEY(硅基流动,必填后两个命令才可运行)/ EMBEDDING_MODEL(BAAI/bge-m3)/ MILVUS_URI(./data/milvus_lite.db)等,见 .env.example
+- 新增环境变量:EMBEDDING_BASE_URL / EMBEDDING_API_KEY(硅基流动;上面三个命令都要先填它,在线服务缺它降级为「知识检索未配置」但不拒启动)/ EMBEDDING_MODEL(BAAI/bge-m3)/ MILVUS_URI(./data/milvus_lite.db)等,见 .env.example
 
 ### 数据库初始化与升级
 

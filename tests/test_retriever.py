@@ -109,11 +109,20 @@ def test_missing_file_not_created(store):
 def test_missing_collection(store):
     store._cli()  # 建文件但不建集合
     store.close()
+
+    class CountingEmbed(FakeEmbeddings):
+        calls = 0
+
+        def embed_query(self, text):
+            type(self).calls += 1
+            return super().embed_query(text)
+
     settings = make_settings()
-    r = KnowledgeRetriever(settings, embed=FakeEmbeddings(), store=store,
+    r = KnowledgeRetriever(settings, embed=CountingEmbed(), store=store,
                            session_factory=None)
     hits, note = r.search("邮费")
     assert hits == [] and note == "知识库尚未建立"
+    assert CountingEmbed.calls == 0  # 集合未建:不打远程 embedding 调用(spec §8 顺序)
 
 
 def test_disabled_without_key(db_session_factory, store):

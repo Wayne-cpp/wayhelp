@@ -52,8 +52,8 @@ def vectorize_pending(settings: Settings, session_factory: sessionmaker,
                 raise IngestError(
                     f"返回向量数 {len(vectors)} ≠ 输入 {len(payloads)}")
             for v in vectors:
-                if len(v) != store._dim:
-                    raise IngestError(f"向量维度 {len(v)} ≠ 集合维度 {store._dim}")
+                if len(v) != store.dim:
+                    raise IngestError(f"向量维度 {len(v)} ≠ 集合维度 {store.dim}")
             store.upsert(list(zip([i for i, _ in payloads], vectors)))
             with session_factory() as s:
                 for chunk_id, _ in payloads:

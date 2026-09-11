@@ -70,17 +70,23 @@ class KnowledgeRetriever:
         if not self._store.file_exists():
             return [], NOTE_NOT_BUILT
         try:
+            if not self._store.has_collection():
+                return [], NOTE_NOT_BUILT
+        except Exception as exc:
+            retryable = _as_retryable(exc)
+            if retryable is not None:
+                raise retryable from exc
+            raise
+        try:
             vector = self._embed.embed_query(query)
         except Exception as exc:
             retryable = _as_retryable(exc)
             if retryable is not None:
                 raise retryable from exc
             raise
-        if len(vector) != self._store._dim:
-            raise ValueError(f"查询向量维度 {len(vector)} ≠ 集合维度 {self._store._dim}")
+        if len(vector) != self._store.dim:
+            raise ValueError(f"查询向量维度 {len(vector)} ≠ 集合维度 {self._store.dim}")
         try:
-            if not self._store.has_collection():
-                return [], NOTE_NOT_BUILT
             raw = self._store.search(vector, self._settings.knowledge_top_k)
         except Exception as exc:
             retryable = _as_retryable(exc)

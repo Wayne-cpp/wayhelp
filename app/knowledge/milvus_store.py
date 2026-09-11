@@ -39,6 +39,10 @@ class MilvusKnowledgeStore:
     def file_exists(self) -> bool:
         return Path(self._uri).exists()
 
+    @property
+    def dim(self) -> int:
+        return self._dim
+
     def has_collection(self) -> bool:
         return self._cli().has_collection(COLLECTION)
 
