@@ -4,7 +4,7 @@
 
 **Goal:** 在 Ch01 纯对话客服上接入 Function Calling 工具链:Docker MySQL 四表、五个 @tool 业务工具、单轮工具编排、SSE 工具帧与落库、聊天页工具徽章。
 
-**Architecture:** FastAPI + SQLAlchemy 2.0 同步 Session(线程内创建销毁,`asyncio.to_thread` 接入异步流程);手写单轮编排(第一次 bind_tools 聚合 tool_calls → 顺序执行 → 第二次不绑工具收敛);DDL 文件经 MySQL initdb 首启执行,是建表唯一事实源;会话存储扩展为可持久化完整工具轨迹。
+**Architecture:** FastAPI + SQLAlchemy 2.0 同步 Session(线程内创建销毁,`asyncio.to_thread` 接入异步流程);手写单轮编排(第一次 bind_tools 聚合 tool_calls → 顺序执行 → 第二次绑定工具承接结构化通道但不执行其 tool_calls,以固定话术兜底);DDL 文件经 MySQL initdb 首启执行,是建表唯一事实源;会话存储扩展为可持久化完整工具轨迹。
 
 **Tech Stack:** Python 3.12(uv)、FastAPI 0.141、SQLAlchemy>=2.0、PyMySQL、MySQL 8.4(Docker)、langchain-core 1.6.2 / langchain-openai 1.6.1、pytest 9.1。
 
@@ -17,7 +17,7 @@
 - `db/init/01-ddl.sql` 是用户手写 DDL(`sql/ch02-ddl.sql` 原样复制),本章不得改动其字段定义;ORM 与之逐字段一致
 - 四张表:conversations(id BIGINT 自增 / user_id VARCHAR(64) / status 中文枚举) / messages(role ENUM user,assistant,tool / content 可空 / tool_calls JSON / tool_call_id VARCHAR(64)) / faq / tickets(ticket_no 主键 / ticket_type ENUM('售后','投诉','咨询') / status ENUM('待处理','已处理'))
 - seed 只灌 faq ≥8 条;含「退货政策」可命中条目;**全表不出现「邮费」二字**(验收 3 的漏召回是预期结果)
-- 单轮调用:第二次模型调用不得绑定工具;`MAX_TOOL_CALLS_PER_TURN=5`
+- 单轮调用:第二次模型调用绑定工具以承接结构化通道,但不得执行其返回的任何 tool_calls;模型仍试图调用则丢弃并以固定话术兜底,落库时剥离未执行的 tool_calls;`MAX_TOOL_CALLS_PER_TURN=5`
 - 只有只读工具(query_order/query_product/query_logistics/query_faq)享受超时重试(wait_for + 最多 2 次额外重试,退避 `0.5*2^(n-1)` 秒);`create_ticket` 独立事务、不 wait_for、不自动重试,同事务把 conversation 状态改为「已转人工」
 - 工具结果落库格式:tool 行 content = JSON envelope `{"v":1,"ok":bool,"content"|"error_code","message",...}`,envelope 序列化 ≤ `MAX_TOOL_RESULT_CHARS`(默认 4000,≥256),超出截断 content 并标 `truncated=true`
 - 原子提交分界:除已独立提交的工单外,任何 messages 提交前错误/取消都不保存半个 turn;最终 commit 用 `asyncio.shield` 保护,取消期间等事务落地再释放锁
@@ -1576,7 +1576,7 @@ class FakeChunk:
 
 class FakeStreamModel:
     """script 元素:str(delta 文本)| Exception | ("finish", reason) | ("tool", [tool_call_chunks...])
-    多段脚本用 ("then", next_script) 分隔第二次调用(bind_tools 后第一次、plain 第二次)。"""
+    多段脚本用 ("then", next_script) 分隔第二次调用(两次均可绑定工具,由调用方决定)。"""
 
     def __init__(self, script):
         self._scripts = [list(script)]
@@ -1969,9 +1969,10 @@ async def test_tool_call_full_sequence():
     assert start.args == {"order_id": "1001"}
     end = events[2]
     assert end.ok is True and end.summary
-    # 第二次调用未绑工具
+    # 第二次调用绑定工具承接结构化通道,但不再执行任何 tool_calls
+    # (types 已断言无第二次 ToolStart/ToolEnd 帧)
     assert model.received_tools[0] == ["query_order", "query_product", "query_logistics"]
-    assert model.received_tools[1] is None
+    assert model.received_tools[1] == ["query_order", "query_product", "query_logistics"]
     # 落库 4 条:user / assistant(tool_calls) / tool / assistant
     snap = await store.snapshot(turn.session_id)
     assert [m.role for m in snap] == ["user", "assistant", "tool", "assistant"]
@@ -2143,6 +2144,9 @@ class ErrorEvent:
 
 ChatEvent = Union[SessionEvent, DeltaEvent, ToolStartEvent, ToolEndEvent, DoneEvent, ErrorEvent]
 
+# 第二次调用若模型只产出 tool_calls(本轮一律不执行)而无任何文本,以该话术兜底作答
+FALLBACK_ANSWER = "抱歉,暂时没有查到相关信息。您可以换个说法问我,或回复「转人工」,让人工客服帮您处理。"
+
 
 class SessionLockRegistry:
     """懒创建 session 锁;持有+等待计数归零后删除条目。"""
@@ -2284,7 +2288,10 @@ class ChatService:
                     return
                 final_parts: list[str] = []
                 finish2: str | None = None
-                agen2 = self._model.astream(second_messages)  # 不绑工具,单轮收敛
+                # 第二次同样绑定工具:给工具意图结构化通道,避免其以标记语法裸文本泄漏;
+                # 但本轮不再执行任何 tool_calls(不聚合不推帧,徽章只代表真实执行)
+                second_model = self._model.bind_tools(registry.tools) if tools else self._model
+                agen2 = second_model.astream(second_messages)
                 try:
                     async for chunk in agen2:
                         meta = getattr(chunk, "response_metadata", None) or {}
@@ -2310,6 +2317,10 @@ class ChatService:
                     yield ErrorEvent("output_too_long", "回复超出长度限制")
                     return
                 final_text = "".join(final_parts)
+                if not final_text.strip():
+                    # 模型只给了未执行的 tool_calls:落库须剥离它们,以兜底话术作答
+                    yield DeltaEvent(FALLBACK_ANSWER)
+                    final_text = FALLBACK_ANSWER
             else:
                 final_text = "".join(text_parts)
 

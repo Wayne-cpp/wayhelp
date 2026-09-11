@@ -13,7 +13,7 @@
 2. 五个 LangChain `@tool` 业务工具: `query_order` / `query_product` / `query_logistics`(工具内随机生成演示数据,不接真实接口、不建表)、`query_faq`(SQL LIKE 查 faq 表)、`create_ticket`(写 tickets 表并更新会话状态)
 3. 工具基础设施: 注册管理、参数 Schema 校验、执行错误处理、只读工具超时重试、工具结果回灌模型
 4. 工具链接入现有 SSE 聊天: 模型选工具 -> 执行 -> 回灌收敛;推送工具状态帧;完整工具轨迹落 conversations/messages 表;聊天页显示工具徽章
-5. 只做一个工具阶段: 第一次模型调用可申请 1 至 `MAX_TOOL_CALLS_PER_TURN` 个工具,按顺序执行;第二次模型调用不绑定工具,必须直接收敛
+5. 只做一个工具阶段: 第一次模型调用可申请 1 至 `MAX_TOOL_CALLS_PER_TURN` 个工具,按顺序执行;第二次模型调用绑定工具以承接结构化通道,但不再执行任何 tool_calls,必须直接收敛
 
 技术栈(定死): Python 3.12(uv) + FastAPI + SQLAlchemy 2.x + MySQL 8(Docker) + LangChain(`langchain-core` / `langchain-openai`) `@tool` 装饰器。依赖版本写入并提交 `uv.lock`。
 
@@ -27,7 +27,7 @@
 - **工具模块**(`app/tools/`): `business.py` 定义五个 `@tool` 与每轮工具工厂;`executor.py` 提供 `ToolRegistry` 与工具执行器
 - **组合入口**(`app/main.py`): `create_app` 接收可选的 `AppRuntime`;生产路径在未注入 runtime 时构造 DB Store 和真实工具,测试注入内存 Store 与 fake/空工具集
 
-单轮编排手写实现(不引入 LangGraph / AgentExecutor): 第一次 `bind_tools` 调用聚合 tool calls,有则执行回灌;第二次调用不绑定工具,物理保证本轮收敛。落选方案: B(LangGraph `create_react_agent`,为单轮引入整个 LangGraph 不值,且 Agent Loop 是本章排除项)、C(LangChain `AgentExecutor` 限轮,当前官方主路径已转向 `create_agent`)。
+单轮编排手写实现(不引入 LangGraph / AgentExecutor): 第一次 `bind_tools` 调用聚合 tool calls,有则执行回灌;第二次调用绑定工具以承接结构化通道,但不再执行任何 tool_calls;模型仍试图调用则丢弃并以固定话术兜底;落库时剥离未执行的 tool_calls。落选方案: B(LangGraph `create_react_agent`,为单轮引入整个 LangGraph 不值,且 Agent Loop 是本章排除项)、C(LangChain `AgentExecutor` 限轮,当前官方主路径已转向 `create_agent`)。
 
 `ChatService` 继续作为聊天流程的主要接口,集中处理会话锁、模型编排、输出校验和提交分界。chain 模块只负责消息构造、预算与模型调用;路由只编码 SSE;工具执行器只处理一次工具调用。调用方无需理解这些实现细节。
 
@@ -192,7 +192,7 @@ DB 按 `created_at, id` 升序读取。历史先按完整 turn 分组,再沿用 
 3. 聚合完成后:
    - 无 tool calls: 校验第一次回答并提交 user + assistant,发送 `[DONE]`
    - 有 tool calls: 保存完整 `AIMessage(content + tool_calls)`;按顺序为每个 call 发送 ToolStartEvent、执行工具、发送 ToolEndEvent,构造对应 ToolMessage
-4. 重新执行 §5.3 的第二次输入预算;调用原始 `model.astream(...)`,不绑定工具;文本 chunk 继续转发为 delta
+4. 重新执行 §5.3 的第二次输入预算;第二次调用绑定工具以承接结构化通道,但不再执行任何 tool_calls;文本 chunk 继续转发为 delta;若流结束时无任何文本(模型只给了 tool_calls),推送固定兜底话术并作为最终回答;落库时剥离未执行的 tool_calls
 5. 校验两次调用累计对用户可见文本、第二次 finish_reason 与最终回答;通过后一次性提交 user + assistant(tool_calls) + tool messages + final assistant,再发送 `[DONE]`
 
 如果第一次响应同时包含文本和工具调用,前置文本已经流给用户并保存在 assistant(tool_calls) 行的 content 中;第二次回答接在同一前端回答气泡中。`MAX_MESSAGE_CHARS` 同时限制单条持久化消息和本轮累计可见 assistant 文本;超限发 error 帧且不提交 messages。
@@ -272,7 +272,7 @@ uv run uvicorn app.main:create_app --factory
 - 线程/取消: Session 在线程内创建关闭;取消期间 commit 完成前不释放锁;commit 成功后断开仍保留 turn
 - 五工具: FAQ 命中与“邮费”漏召回;LIKE wildcard 按字面匹配;`create_ticket` 的 Literal schema 拒绝越界值;建单与会话状态同事务;三个 mock 返回可解析 JSON
 - 执行器: 只读工具超时重试次数与退避;业务异常不重试;未知工具生成同 id ToolMessage;结果截断仍是合法 envelope;写工具不经过 `wait_for`/自动重试
-- 编排: 无工具路径只有一次模型调用;有工具路径第二次未绑定工具;多个工具串行且一一回灌;非法/过多 tool calls 不执行;第一次前置文本 + 工具帧 + 第二次文本顺序;第二次预算不足受控失败
+- 编排: 无工具路径只有一次模型调用;有工具路径第二次绑定工具但不执行其返回的 tool_calls(模型仍试图调用则丢弃并以固定话术兜底);多个工具串行且一一回灌;非法/过多 tool calls 不执行;第一次前置文本 + 工具帧 + 第二次文本顺序;第二次预算不足受控失败
 - 副作用分界: 工单成功后模拟第二次模型失败/客户端取消,断言 ticket 与“已转人工”保留而 messages 不提交
 - SSE/页面: 新帧 JSON 转义、80 字符摘要、徽章状态;Ch01 的 session/delta/error/[DONE]、并发、取消和结构化提取行为回归
 
@@ -306,7 +306,7 @@ uv run uvicorn app.main:create_app --factory
 | 模型自选工具 + 徽章 | 编排/SSE/页面测试;浏览器验收 1 |
 | query_faq 命中与预期漏召回 | 工具/SQL 测试;浏览器验收 2、3 |
 | 聊天记录落表 | store 测试断言 `3 + N` 条工具 turn 消息;验收后 SQL 抽查 |
-| 单轮收敛 | 编排测试断言第二次调用未绑定工具 |
+| 单轮收敛 | 编排测试断言第二次调用绑定的 tool_calls 不被执行、模型仍试图调用时以固定话术兜底 |
 | 超时重试不复制写副作用 | 执行器测试断言只读重试、写工具不自动重试 |
 | 工单与转人工状态一致 | 事务测试 + 后续失败测试 + 浏览器验收 4 |
 | 持久会话并发安全 | 重启后锁懒创建测试 + 同 session 串行测试 |
