@@ -94,7 +94,7 @@ def test_ch03_defaults():
     assert s.embedding_dim == 1024
     assert s.milvus_uri == "./data/milvus_lite.db"
     assert s.knowledge_top_k == 5
-    assert s.knowledge_min_score == 0.35
+    assert s.knowledge_min_score == 0.623  # 评估冻结值(2026-09-11)
     assert s.mining_batch_size == 10
     assert s.max_chunk_chars == 500
     assert s.chunk_overlap_chars == 80

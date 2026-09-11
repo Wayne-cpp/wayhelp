@@ -1,0 +1,187 @@
+{
+  "ts": "2026-09-11T10:07:09+00:00",
+  "model": "BAAI/bge-m3",
+  "threshold": 0.623246431350708,
+  "top_k": 5,
+  "test_recall_at_5": 0.9,
+  "test_false_recall_rate": 0.0,
+  "youfei_hit": true,
+  "cases": [
+    {
+      "id": "p_youfei",
+      "answerable": true,
+      "returned": [
+        "('knowledge_docs/售后手册.md', 2)",
+        "('knowledge_docs/售后手册.md', 3)",
+        "('knowledge_docs/售后手册.md', 4)",
+        "('knowledge_docs/商品FAQ.md', 1)"
+      ],
+      "relevant": [
+        "('knowledge_docs/商品FAQ.md', 1)"
+      ]
+    },
+    {
+      "id": "p13",
+      "answerable": true,
+      "returned": [
+        "('knowledge_docs/售后手册.md', 1)",
+        "('knowledge_docs/售后手册.md', 5)",
+        "('knowledge_docs/退货政策.md', 4)"
+      ],
+      "relevant": [
+        "('knowledge_docs/售后手册.md', 1)"
+      ]
+    },
+    {
+      "id": "p14",
+      "answerable": true,
+      "returned": [
+        "('knowledge_docs/售后手册.md', 2)",
+        "('knowledge_docs/售后手册.md', 3)",
+        "('knowledge_docs/商品FAQ.md', 1)"
+      ],
+      "relevant": [
+        "('knowledge_docs/售后手册.md', 3)"
+      ]
+    },
+    {
+      "id": "p15",
+      "answerable": true,
+      "returned": [
+        "('knowledge_docs/退货政策.md', 2)"
+      ],
+      "relevant": [
+        "('knowledge_docs/退货政策.md', 2)"
+      ]
+    },
+    {
+      "id": "p16",
+      "answerable": true,
+      "returned": [
+        "('knowledge_docs/售后手册.md', 1)",
+        "('knowledge_docs/商品FAQ.md', 2)",
+        "('knowledge_docs/退货政策.md', 3)"
+      ],
+      "relevant": [
+        "('knowledge_docs/售后手册.md', 1)"
+      ]
+    },
+    {
+      "id": "p17",
+      "answerable": true,
+      "returned": [],
+      "relevant": [
+        "('knowledge_docs/商品FAQ.md', 4)"
+      ]
+    },
+    {
+      "id": "p18",
+      "answerable": true,
+      "returned": [
+        "('knowledge_docs/售后手册.md', 1)",
+        "('knowledge_docs/退货政策.md', 1)",
+        "('knowledge_docs/退货政策.md', 2)",
+        "('knowledge_docs/退货政策.md', 3)",
+        "('knowledge_docs/退货政策.md', 4)"
+      ],
+      "relevant": [
+        "('knowledge_docs/退货政策.md', 3)"
+      ]
+    },
+    {
+      "id": "p19",
+      "answerable": true,
+      "returned": [
+        "('knowledge_docs/售后手册.md', 5)",
+        "('knowledge_docs/商品FAQ.md', 2)"
+      ],
+      "relevant": [
+        "('knowledge_docs/售后手册.md', 5)"
+      ]
+    },
+    {
+      "id": "p20",
+      "answerable": true,
+      "returned": [
+        "('knowledge_docs/商品FAQ.md', 1)"
+      ],
+      "relevant": [
+        "('knowledge_docs/商品FAQ.md', 1)"
+      ]
+    },
+    {
+      "id": "p21",
+      "answerable": true,
+      "returned": [
+        "('knowledge_docs/售后手册.md', 5)",
+        "('knowledge_docs/退货政策.md', 3)",
+        "('knowledge_docs/退货政策.md', 4)"
+      ],
+      "relevant": [
+        "('knowledge_docs/退货政策.md', 4)"
+      ]
+    },
+    {
+      "id": "n11",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    },
+    {
+      "id": "n12",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    },
+    {
+      "id": "n13",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    },
+    {
+      "id": "n14",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    },
+    {
+      "id": "n15",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    },
+    {
+      "id": "n16",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    },
+    {
+      "id": "n17",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    },
+    {
+      "id": "n18",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    },
+    {
+      "id": "n19",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    },
+    {
+      "id": "n20",
+      "answerable": false,
+      "returned": [],
+      "relevant": []
+    }
+  ],
+  "cases_file": "knowledge_recall.jsonl",
+  "corpus": "knowledge_docs/"
+}

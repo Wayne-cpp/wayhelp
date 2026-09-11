@@ -50,8 +50,10 @@ def false_recall_rate(returned_nonempty: list[bool]) -> float:
 
 
 def choose_threshold(cases: list[dict], max_fpr: float) -> tuple[float, float]:
-    """只用 calibration 分片:先满足 FPR ≤ max_fpr,再最大化宏平均召回,并列取高阈值。
-    返回 (threshold, calibration_recall);无可行阈值直接 SystemExit。"""
+    """只用 calibration 分片:先满足 FPR ≤ max_fpr,再最大化宏平均召回,并列取低阈值
+    (对负例留最大间隔;2026-09-11 勘误:原「取高」实测压在正例分数悬崖边上,泛化差)。
+    返回 (threshold, calibration_recall);无可行阈值直接 SystemExit。
+    候选按升序遍历,仅在召回严格更大时更新,实现并列取低。"""
     candidates = {-1.0, 1.0}
     for c in cases:
         candidates.update(score for _, score in c["hits"])
@@ -67,7 +69,7 @@ def choose_threshold(cases: list[dict], max_fpr: float) -> tuple[float, float]:
         if false_recall_rate(negs) > max_fpr:
             continue
         recall = macro_average(recalls)
-        if recall > best_recall or (recall == best_recall and (best_t is None or t > best_t)):
+        if recall > best_recall:
             best_t, best_recall = t, recall
     if best_t is None:
         raise SystemExit("[eval] 校准失败: 不存在满足负例约束的阈值")
@@ -125,6 +127,9 @@ def _load_cases(corpus_keys: set[tuple[str, int]]) -> list[dict]:
             assert key in corpus_keys, f"标注引用不存在的块: {key}"
     youfei = [c for c in cases if c["id"] == YOUFEI_CASE]
     assert len(youfei) == 1 and youfei[0]["split"] == "test" and youfei[0]["answerable"]
+    for c in cases:  # 派生可比对的关键集合,hits 里的 key 也是 (source_doc, chunk_index)
+        c["relevant"] = frozenset((r["source_doc"], r["chunk_index"])
+                                  for r in c["relevant_chunks"])
     return cases
 
 

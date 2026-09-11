@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     embedding_dim: Literal[1024] = 1024
     milvus_uri: str = "./data/milvus_lite.db"
     knowledge_top_k: int = Field(default=5, gt=0)
-    knowledge_min_score: float = Field(default=0.35, ge=-1, le=1)
+    knowledge_min_score: float = Field(default=0.623, ge=-1, le=1)  # 2026-09-11 真实评估冻结(evals/results/20260911T100709Z.json)
     mining_batch_size: int = Field(default=10, gt=0)
     max_chunk_chars: int = Field(default=500, gt=0)
     chunk_overlap_chars: int = Field(default=80, ge=0)
