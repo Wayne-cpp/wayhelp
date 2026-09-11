@@ -12,6 +12,7 @@ dependencies = [
   "sqlalchemy>=2.0",
   "pymysql>=1.1",
   "cryptography>=43",
+  "pymilvus[milvus-lite]>=3.0.1",
 ]
 
 [dependency-groups]

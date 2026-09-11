@@ -12,8 +12,12 @@ from sqlalchemy import text
 from app.config import Settings
 from app.db import make_engine, make_session_factory
 
-DDL_PATH = Path(__file__).resolve().parent.parent / "db" / "init" / "01-ddl.sql"
-TABLES = ("messages", "tickets", "faq", "conversations")  # 先子后父
+DDL_PATHS = [
+    Path(__file__).resolve().parent.parent / "db" / "init" / "01-ddl.sql",
+    Path(__file__).resolve().parent.parent / "db" / "init" / "03-ddl.sql",
+]
+TABLES = ("knowledge_chunks", "qa_extraction_staging", "qa_mining_progress",
+          "messages", "tickets", "faq", "conversations")  # 先子后父
 
 
 def _split_statements(sql_text: str) -> list[str]:
@@ -39,15 +43,15 @@ def db_engine():
         pytest.exit(f"DB 测试需要 Docker MySQL 在线(docker compose up -d): "
                     f"{type(exc).__name__}", returncode=3)
     engine = make_engine(settings.test_database_url)
-    ddl = DDL_PATH.read_text(encoding="utf-8")
     with engine.connect() as conn:
         # 用户 DDL 不带 IF NOT EXISTS,重跑会 1050;先按先子后父清场再重放,保证幂等
         conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))
         for table in TABLES:
             conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
-        for stmt in _split_statements(ddl):
-            conn.execute(text(stmt))
+        for ddl_path in DDL_PATHS:
+            for stmt in _split_statements(ddl_path.read_text(encoding="utf-8")):
+                conn.execute(text(stmt))
         conn.commit()
     yield engine
     engine.dispose()

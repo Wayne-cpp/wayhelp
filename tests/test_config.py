@@ -86,3 +86,36 @@ def test_bad_tool_settings_rejected():
         make_settings(max_tool_result_chars=100)  # < 256
     with pytest.raises(pydantic.ValidationError):
         make_settings(database_url="")
+
+
+def test_ch03_defaults():
+    s = make_settings()
+    assert s.embedding_model == "BAAI/bge-m3"
+    assert s.embedding_dim == 1024
+    assert s.milvus_uri == "./data/milvus_lite.db"
+    assert s.knowledge_top_k == 5
+    assert s.knowledge_min_score == 0.35
+    assert s.mining_batch_size == 10
+    assert s.max_chunk_chars == 500
+    assert s.chunk_overlap_chars == 80
+    assert s.has_embedding_key() is False  # 默认空 key
+
+
+def test_ch03_overlap_must_be_less_than_chunk():
+    with pytest.raises(ValidationError):
+        make_settings(max_chunk_chars=80, chunk_overlap_chars=80)
+
+
+def test_ch03_min_score_range():
+    with pytest.raises(ValidationError):
+        make_settings(knowledge_min_score=1.5)
+
+
+def test_ch03_dim_fixed_1024():
+    with pytest.raises(ValidationError):
+        make_settings(embedding_dim=768)
+
+
+def test_has_embedding_key_strips_whitespace():
+    assert make_settings(embedding_api_key="  sk-x  ").has_embedding_key() is True
+    assert make_settings(embedding_api_key="   ").has_embedding_key() is False

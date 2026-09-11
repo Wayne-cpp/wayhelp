@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,3 +27,22 @@ class Settings(BaseSettings):
     tool_max_retries: int = Field(default=2, ge=0)
     max_tool_calls_per_turn: int = Field(default=5, gt=0)
     max_tool_result_chars: int = Field(default=4000, ge=256)
+    embedding_base_url: str = "https://api.siliconflow.cn/v1"
+    embedding_api_key: str = ""
+    embedding_model: str = "BAAI/bge-m3"
+    embedding_dim: Literal[1024] = 1024
+    milvus_uri: str = "./data/milvus_lite.db"
+    knowledge_top_k: int = Field(default=5, gt=0)
+    knowledge_min_score: float = Field(default=0.35, ge=-1, le=1)
+    mining_batch_size: int = Field(default=10, gt=0)
+    max_chunk_chars: int = Field(default=500, gt=0)
+    chunk_overlap_chars: int = Field(default=80, ge=0)
+
+    @model_validator(mode="after")
+    def _overlap_less_than_chunk(self):
+        if self.chunk_overlap_chars >= self.max_chunk_chars:
+            raise ValueError("chunk_overlap_chars 必须小于 max_chunk_chars")
+        return self
+
+    def has_embedding_key(self) -> bool:
+        return bool(self.embedding_api_key.strip())
