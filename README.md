@@ -45,3 +45,20 @@ curl -X POST http://127.0.0.1:8000/v1/extract \
 - 「退货政策是什么」→ query_faq 命中 faq 表并作答
 - 「邮费是多少」→ query_faq 关键词查不到,如实说明(漏召回为预期结果,留待下一步升级 RAG)
 - 「转人工」→ create_ticket 建工单,作答引用工单号
+
+## 知识库与向量语义检索(ch03 新增)
+
+- 知识文档建库:`uv run python -m app.jobs.ingest_docs [knowledge_docs/]`
+- 对话挖知识:`uv run python -m app.jobs.mine_qa`
+- 召回评估:`uv run python evals/run_knowledge_eval.py`
+- 新增环境变量:EMBEDDING_BASE_URL / EMBEDDING_API_KEY(硅基流动,必填后两个命令才可运行)/ EMBEDDING_MODEL(BAAI/bge-m3)/ MILVUS_URI(./data/milvus_lite.db)等,见 .env.example
+
+### 数据库初始化与升级
+
+- 全新环境:`docker compose up -d` 首启自动执行 db/init 全部 DDL(含 ch03)
+- 已有 ch02 数据卷的升级(不得删卷):`docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch03-ddl.sql`
+
+### 运行约束
+
+- Milvus Lite 本地库独占打开:跑建库/挖矿/评估前先停在线服务(uvicorn),完成后再起;服务单 worker
+- 不并行运行两个知识任务;缺 EMBEDDING_API_KEY 时在线检索降级为「知识检索未配置」,服务正常启动
