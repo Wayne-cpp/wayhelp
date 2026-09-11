@@ -119,3 +119,16 @@ def test_ch03_dim_fixed_1024():
 def test_has_embedding_key_strips_whitespace():
     assert make_settings(embedding_api_key="  sk-x  ").has_embedding_key() is True
     assert make_settings(embedding_api_key="   ").has_embedding_key() is False
+
+
+def test_embedding_dim_env_string_coerced(monkeypatch):
+    """.env 里 EMBEDDING_DIM=1024 是字符串;Literal[1024] 不得因此拒启动(.env.example 自带该行)。"""
+    from app.config import Settings
+    monkeypatch.setenv("EMBEDDING_DIM", "1024")
+    s = Settings(_env_file=None, openai_base_url="http://t/v1", openai_api_key="k",
+                 model_name="m", database_url="mysql+pymysql://u:p@127.0.0.1:9/wayhelp")
+    assert s.embedding_dim == 1024
+    monkeypatch.setenv("EMBEDDING_DIM", "768")
+    with pytest.raises(ValidationError):  # 非 1024 仍拒绝
+        Settings(_env_file=None, openai_base_url="http://t/v1", openai_api_key="k",
+                 model_name="m", database_url="mysql+pymysql://u:p@127.0.0.1:9/wayhelp")

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     mining_batch_size: int = Field(default=10, gt=0)
     max_chunk_chars: int = Field(default=500, gt=0)
     chunk_overlap_chars: int = Field(default=80, ge=0)
+
+    @field_validator("embedding_dim", mode="before")
+    @classmethod
+    def _coerce_dim(cls, v):
+        # env/.env 读进来是字符串,Literal[1024] 不做 str→int 强转,先归一
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+        return v
 
     @model_validator(mode="after")
     def _overlap_less_than_chunk(self):
