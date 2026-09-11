@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from langchain_core.tools import BaseTool, tool
 from pydantic import StringConstraints
 
-from app.models import Conversation, Faq, Ticket
+from app.models import Conversation, Ticket
 
 OrderId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
 ProductName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
@@ -67,30 +67,20 @@ def query_logistics(order_id: OrderId) -> str:
 MOCK_TOOLS: list[BaseTool] = [query_order, query_product, query_logistics]
 
 
-def _escape_like(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def build_tools(session_factory, conversation_id: int) -> list[BaseTool]:
+def build_tools(session_factory, conversation_id: int, retriever=None) -> list[BaseTool]:
     """每轮请求构造绑定该会话的工具实例;conversation_id 经闭包注入,不对模型暴露。"""
 
     @tool
     def query_faq(keyword: Keyword) -> str:
-        """查询常见问题库。参数 keyword 为关键词,对问题与答案做模糊匹配,返回最相关的前 5 条。"""
-        pattern = f"%{_escape_like(keyword)}%"
-        with session_factory() as s:
-            rows = (
-                s.query(Faq)
-                .filter((Faq.question.like(pattern, escape="\\"))
-                        | (Faq.answer.like(pattern, escape="\\")))
-                .order_by(Faq.id)
-                .limit(5)
-                .all()
-            )
-        if not rows:
-            return _json({"results": [], "note": "未找到与关键词相关的常见问题"})
+        """查询知识库。参数 keyword 为用户问题或关键词,语义检索返回最相关的前 5 条。"""
+        if retriever is None:
+            return _json({"results": [], "note": "知识检索未配置"})
+        hits, note = retriever.search(keyword)
+        if not hits:
+            return _json({"results": [], "note": note or "未找到与关键词相关的常见问题"})
         return _json({"results": [
-            {"question": r.question, "answer": r.answer, "category": r.category} for r in rows
+            {"question": h.questions, "answer": h.answer, "category": h.category}
+            for h in hits
         ]})
 
     @tool

@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -11,6 +12,8 @@ from langchain_openai import ChatOpenAI
 
 from app.config import Settings
 from app.db import make_engine, make_session_factory, ping
+from app.knowledge.embedding import build_embeddings
+from app.knowledge.retriever import KnowledgeRetriever
 from app.errors import (
     AppError,
     MessageTooLongError,
@@ -34,6 +37,7 @@ def _error_body(code: str, message: str) -> dict:
 class AppRuntime:
     store: Any  # SessionStore 协议
     toolset_factory: Callable[[str], list[BaseTool]]
+    retriever: Any = None
 
 
 def _build_production_runtime(settings: Settings) -> AppRuntime:
@@ -43,12 +47,15 @@ def _build_production_runtime(settings: Settings) -> AppRuntime:
     except Exception as exc:
         raise RuntimeError(f"database ping failed: {type(exc).__name__}") from exc
     session_factory = make_session_factory(engine)
+    # 缺 Key 时构造禁用检索的实例,不构造需要 Key 的 embedding 客户端(spec §8)
+    embed = build_embeddings(settings) if settings.has_embedding_key() else None
+    retriever = KnowledgeRetriever(settings, embed=embed, session_factory=session_factory)
 
     def toolset_factory(session_id: str) -> list[BaseTool]:
-        return build_tools(session_factory, int(session_id))
+        return build_tools(session_factory, int(session_id), retriever)
 
     return AppRuntime(store=DbSessionStore(session_factory, settings.max_message_chars),
-                      toolset_factory=toolset_factory)
+                      toolset_factory=toolset_factory, retriever=retriever)
 
 
 def create_app(settings: Settings | None = None, model: Any | None = None,
@@ -77,7 +84,15 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     service = ChatService(runtime.store, model, settings, SERVICE_SYSTEM_PROMPT,
                           runtime.toolset_factory)
 
-    app = FastAPI(title="wayhelp-ch02")
+    owns_runtime = runtime is None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        if owns_runtime and runtime.retriever is not None:
+            runtime.retriever.close()
+
+    app = FastAPI(title="wayhelp-ch03", lifespan=lifespan)
     app.state.settings = settings
     app.state.model = model
     app.state.store = runtime.store

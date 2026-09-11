@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from app.models import Conversation, Faq, Ticket
+from app.models import Conversation, Ticket
 from app.tools.business import MOCK_TOOLS, build_tools
 from tests.dbfixtures import db_engine, db_session_factory  # noqa: F401  (fixture 注册,依赖需一并导入)
 
@@ -30,46 +30,6 @@ def test_mock_tools_arg_constraints():
         _invoke(by_name["query_order"], order_id="   ")
     with pytest.raises(ValidationError):
         _invoke(by_name["query_order"], order_id="x" * 65)
-
-
-async def test_query_faq_hit_and_miss(db_session_factory):
-    def _seed(sf):
-        with sf() as s:
-            s.add_all([
-                Faq(question="退货政策是什么", answer="七天无理由", category="退货"),
-                Faq(question="运费怎么算", answer="满 99 包邮", category="运费"),
-            ])
-            s.commit()
-
-    await asyncio.to_thread(_seed, db_session_factory)
-    tools = {t.name: t for t in build_tools(db_session_factory, conversation_id=1)}
-    hit = json.loads(await asyncio.to_thread(
-        lambda: _invoke(tools["query_faq"], keyword="退货政策").content))
-    # query_faq 返回 JSON 字符串: {"results": [...]}
-    assert hit["results"] and "七天无理由" in hit["results"][0]["answer"]
-    miss = json.loads(await asyncio.to_thread(
-        lambda: _invoke(tools["query_faq"], keyword="邮费").content))
-    assert miss["results"] == [] and "未找到" in miss["note"]
-
-
-async def test_query_faq_like_wildcards_literal(db_session_factory):
-    def _seed(sf):
-        with sf() as s:
-            from app.models import Faq
-            s.add(Faq(question="100% 正品吗", answer="是", category="其他"))
-            s.add(Faq(question="怎么开发票", answer="订单详情页申请", category="发票"))
-            s.commit()
-
-    await asyncio.to_thread(_seed, db_session_factory)
-    tools = {t.name: t for t in build_tools(db_session_factory, conversation_id=1)}
-    # "%" 按字面匹配:keyword="100%" 命中;"%"(裸通配)若未转义会捞全表,
-    # 转义后只命中含字面 % 的那一行(计划原断言 == [] 与其自身种子矛盾,见任务汇报)
-    hit = json.loads(await asyncio.to_thread(
-        lambda: _invoke(tools["query_faq"], keyword="100%").content))
-    assert len(hit["results"]) == 1
-    wild = json.loads(await asyncio.to_thread(
-        lambda: _invoke(tools["query_faq"], keyword="%").content))
-    assert [r["question"] for r in wild["results"]] == ["100% 正品吗"]
 
 
 async def test_create_ticket_writes_and_flips_status(db_session_factory):

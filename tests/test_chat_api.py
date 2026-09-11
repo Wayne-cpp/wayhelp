@@ -12,6 +12,7 @@ from tests.conftest import (
     make_runtime,
     make_settings,
 )
+from tests.dbfixtures import db_engine, db_session_factory  # noqa: F401  (fixture 注册,依赖需一并导入)
 
 
 def make_app(script, **over):
@@ -150,3 +151,16 @@ async def test_second_turn_carries_context():
     sent = model.received[1]
     texts = [m.content for m in sent]
     assert "记住数字42" in texts and "回答一" in texts
+
+
+def test_app_starts_without_embedding_key(db_session_factory):
+    from app.config import Settings
+    from app.main import create_app
+    settings = Settings(_env_file=None, **{
+        "openai_base_url": "http://test/v1", "openai_api_key": "test-key",
+        "model_name": "test-model",
+        "database_url": Settings().test_database_url,
+        "embedding_api_key": "",
+    })
+    app = create_app(settings=settings, model=object())  # 生产 runtime 路径
+    assert app.state.chat_service is not None  # 缺 Key 也能启动

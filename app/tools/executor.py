@@ -8,9 +8,11 @@ from langchain_core.tools import BaseTool
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
+from app.knowledge.retriever import RetryableKnowledgeError
 from app.tool_envelope import truncate_content
 
-RETRYABLE = (TimeoutError, asyncio.TimeoutError, OperationalError, ConnectionError)
+RETRYABLE = (TimeoutError, asyncio.TimeoutError, OperationalError, ConnectionError,
+             RetryableKnowledgeError)
 WRITE_TOOLS = {"create_ticket"}
 
 
