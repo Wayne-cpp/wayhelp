@@ -68,6 +68,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
             base_url=settings.openai_base_url,
             max_tokens=settings.max_output_tokens,
         )
+    owns_runtime = runtime is None
     if runtime is None:
         runtime = _build_production_runtime(settings)
     if count_tokens_approximately([SystemMessage(content=SERVICE_SYSTEM_PROMPT)]) >= settings.max_input_tokens:
@@ -83,8 +84,6 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
 
     service = ChatService(runtime.store, model, settings, SERVICE_SYSTEM_PROMPT,
                           runtime.toolset_factory)
-
-    owns_runtime = runtime is None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
