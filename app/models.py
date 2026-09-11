@@ -1,7 +1,9 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, JSON, String, Text, func
-from sqlalchemy.dialects.mysql import BIGINT
+from sqlalchemy import (
+    Boolean, DateTime, Enum, ForeignKey, JSON, String, Text, UniqueConstraint, func,
+)
+from sqlalchemy.dialects.mysql import BIGINT, INTEGER
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -65,3 +67,51 @@ class Ticket(Base):
         Enum("待处理", "已处理", name="ticket_status"), default="待处理"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (UniqueConstraint("source_doc", "chunk_index", name="uk_doc_chunk"),)
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    category: Mapped[str] = mapped_column(String(255))
+    questions: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text)
+    section_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_key_clause: Mapped[bool] = mapped_column(Boolean, default=False)
+    prev_chunk_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("knowledge_chunks.id"), nullable=True)
+    next_chunk_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("knowledge_chunks.id"), nullable=True)
+    source_doc: Mapped[str | None] = mapped_column(
+        String(255, collation="utf8mb4_bin"), nullable=True)
+    chunk_index: Mapped[int | None] = mapped_column(INTEGER(unsigned=True), nullable=True)
+    vector_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    vectorize_status: Mapped[str] = mapped_column(
+        Enum("pending", "done", name="vec_status"), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class QaExtractionStaging(Base):
+    __tablename__ = "qa_extraction_staging"
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    batch_no: Mapped[str] = mapped_column(String(64))
+    source_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    question: Mapped[str] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        Enum("extracted", "kept", "discarded", name="qa_status"), default="extracted")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class QaMiningProgress(Base):
+    __tablename__ = "qa_mining_progress"
+
+    conversation_id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True)
+    batch_no: Mapped[str] = mapped_column(String(64))
+    qa_count: Mapped[int] = mapped_column(INTEGER(unsigned=True))
+    extracted_at: Mapped[datetime] = mapped_column(DateTime)
