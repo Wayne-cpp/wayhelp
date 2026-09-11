@@ -71,3 +71,30 @@ def test_ensure_collection_creates_missing_parent_dir(tmp_path):
         assert s.has_collection() is True
     finally:
         s.close()
+
+
+def test_dotenv_milvus_uri_does_not_break_lite(tmp_path):
+    """CWD/.env 带 MILVUS_URI(我们文档要求用户配置)时,pymilvus import 期
+    load_dotenv 会把它烧进 Config.MILVUS_URI,Lite 本地路径被判非法;
+    _load_milvus_client 必须连同 Config 一起隔离。子进程模拟真实 CLI 冷启动。"""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    (tmp_path / ".env").write_text("MILVUS_URI=./data/milvus_lite.db\n", encoding="utf-8")
+    repo = Path(__file__).resolve().parent.parent
+    script = (
+        "import os\n"
+        "from app.knowledge.milvus_store import MilvusKnowledgeStore\n"
+        "s = MilvusKnowledgeStore('kb.db', dim=4)\n"
+        "s.ensure_collection()\n"
+        "assert s.has_collection()\n"
+        "assert 'MILVUS_URI' not in os.environ  # .env 污染已回滚\n"
+        "s.close()\n"
+        "print('OK')\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(repo)}
+    r = subprocess.run([sys.executable, "-c", script], cwd=tmp_path, env=env,
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-500:]
+    assert "OK" in r.stdout
