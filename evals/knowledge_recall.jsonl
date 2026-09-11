@@ -1,0 +1,42 @@
+{"id": "p01", "split": "calibration", "query": "退货多久内可以申请", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/退货政策.md", "chunk_index": 1}], "answer_points": ["7天", "原包装"]}
+{"id": "p02", "split": "calibration", "query": "付款以后多久能发货", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/商品FAQ.md", "chunk_index": 2}], "answer_points": ["16点", "当天"]}
+{"id": "p03", "split": "calibration", "query": "产品的保修期是多长时间", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/商品FAQ.md", "chunk_index": 3}], "answer_points": ["一年", "人为损坏"]}
+{"id": "p04", "split": "calibration", "query": "加入会员有什么好处", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/商品FAQ.md", "chunk_index": 4}], "answer_points": ["95折", "免运费券", "100积分抵1元"]}
+{"id": "p05", "split": "calibration", "query": "定制的商品是不是不给退", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/退货政策.md", "chunk_index": 2}], "answer_points": ["定制类", "不支持"]}
+{"id": "p06", "split": "calibration", "query": "退了货钱多少天能到账", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/退货政策.md", "chunk_index": 3}], "answer_points": ["1-3", "工作日", "原路"]}
+{"id": "p07", "split": "calibration", "query": "我想退货应该怎么操作", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/退货政策.md", "chunk_index": 4}], "answer_points": ["申请售后", "寄回商品"]}
+{"id": "p08", "split": "calibration", "query": "换货最晚什么时候能提出来", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/售后手册.md", "chunk_index": 1}], "answer_points": ["15天", "换货"]}
+{"id": "p09", "split": "calibration", "query": "寄到北京的首重费用多少", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/售后手册.md", "chunk_index": 2}], "answer_points": ["8元", "2元/公斤"]}
+{"id": "p10", "split": "calibration", "query": "退回去的运费谁来承担", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/退货政策.md", "chunk_index": 1}], "answer_points": ["运费险", "首重运费"]}
+{"id": "p11", "split": "calibration", "query": "货到付款能配合优惠券一起用吗", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/商品FAQ.md", "chunk_index": 5}], "answer_points": ["不支持使用优惠券"]}
+{"id": "p12", "split": "calibration", "query": "发厦门的快递运费多少钱", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/售后手册.md", "chunk_index": 4}], "answer_points": ["10元", "4元/公斤"]}
+{"id": "n01", "split": "calibration", "query": "你们支持微信支付吗", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n02", "split": "calibration", "query": "可以用支付宝分期吗", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n03", "split": "calibration", "query": "你们有线下的门店吗", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n04", "split": "calibration", "query": "客服电话号码是多少", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n05", "split": "calibration", "query": "怎么加盟你们的店铺", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n06", "split": "calibration", "query": "发票怎么开", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n07", "split": "calibration", "query": "你们的客服几点上班", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n08", "split": "calibration", "query": "怎么修改收货地址", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n09", "split": "calibration", "query": "支持花呗付款吗", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n10", "split": "calibration", "query": "怎么注销我的账户", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "p_youfei", "split": "test", "query": "邮费是多少", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/商品FAQ.md", "chunk_index": 1}], "answer_points": ["满99元包邮", "8元"]}
+{"id": "p13", "split": "test", "query": "想换货的话步骤是什么", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/售后手册.md", "chunk_index": 1}], "answer_points": ["申请售后", "换货"]}
+{"id": "p14", "split": "test", "query": "发往拉萨的快递费是多少", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/售后手册.md", "chunk_index": 3}], "answer_points": ["20元", "8元/公斤"]}
+{"id": "p15", "split": "test", "query": "软件已经激活了还能退不", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/退货政策.md", "chunk_index": 2}], "answer_points": ["不予退货"]}
+{"id": "p16", "split": "test", "query": "售后申请一般多久能审核完", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/售后手册.md", "chunk_index": 1}], "answer_points": ["48小时"]}
+{"id": "p17", "split": "test", "query": "积分能拿来干什么用", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/商品FAQ.md", "chunk_index": 4}], "answer_points": ["抵扣", "100积分抵1元"]}
+{"id": "p18", "split": "test", "query": "用银行卡付的钱退款几天能回来", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/退货政策.md", "chunk_index": 3}], "answer_points": ["银行卡", "到账时间"]}
+{"id": "p19", "split": "test", "query": "不经确认直接发到付件会怎样", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/售后手册.md", "chunk_index": 5}], "answer_points": ["不予签收"]}
+{"id": "p20", "split": "test", "query": "发西藏的运费在哪里查", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/商品FAQ.md", "chunk_index": 1}], "answer_points": ["偏远地区", "结算页"]}
+{"id": "p21", "split": "test", "query": "退货退款的入口在哪里点", "answerable": true, "relevant_chunks": [{"source_doc": "knowledge_docs/退货政策.md", "chunk_index": 4}], "answer_points": ["申请售后", "退货退款"]}
+{"id": "n11", "split": "test", "query": "你们和哪家快递公司合作", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n12", "split": "test", "query": "网页打不开怎么办", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n13", "split": "test", "query": "怎么做你们的代理商", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n14", "split": "test", "query": "可以去门店自提货物吗", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n15", "split": "test", "query": "客服热线是400多少", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n16", "split": "test", "query": "我的账号被锁了怎么解锁", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n17", "split": "test", "query": "你们公司总部在什么地方", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n18", "split": "test", "query": "怎么删除订单记录", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n19", "split": "test", "query": "买东西能用苹果支付吗", "answerable": false, "relevant_chunks": [], "answer_points": []}
+{"id": "n20", "split": "test", "query": "快递可以让人代收吗", "answerable": false, "relevant_chunks": [], "answer_points": []}
