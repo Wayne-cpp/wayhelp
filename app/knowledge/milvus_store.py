@@ -44,9 +44,10 @@ class MilvusKnowledgeStore:
 
     def ensure_collection(self) -> None:
         """不存在则按契约创建;已存在则校验主键/维度,不符报错(spec §6 不得自动重建)。"""
+        # Milvus Lite 打开本地文件时不会自建父目录,必须先于 client 创建
+        Path(self._uri).parent.mkdir(parents=True, exist_ok=True)
         cli = self._cli()
         if not cli.has_collection(COLLECTION):
-            Path(self._uri).parent.mkdir(parents=True, exist_ok=True)
             cli.create_collection(collection_name=COLLECTION, dimension=self._dim,
                                   metric_type="COSINE", auto_id=False,
                                   enable_dynamic_field=False)

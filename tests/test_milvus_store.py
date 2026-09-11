@@ -61,3 +61,13 @@ def test_close_and_reopen(tmp_path):
     s2 = MilvusKnowledgeStore(uri, dim=4)
     assert s2.all_ids() == {7}
     s2.close()
+
+
+def test_ensure_collection_creates_missing_parent_dir(tmp_path):
+    """全新环境 ./data 不存在时也能建库(review Critical #1)。"""
+    s = MilvusKnowledgeStore(str(tmp_path / "missing" / "sub" / "milvus.db"), dim=4)
+    try:
+        s.ensure_collection()
+        assert s.has_collection() is True
+    finally:
+        s.close()
