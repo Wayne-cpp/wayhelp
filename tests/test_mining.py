@@ -181,3 +181,18 @@ def test_recover_kept_after_crash_before_load(db_session_factory, store, setting
 def test_normalize_question():
     assert normalize_question("邮费多少?") == normalize_question(" 邮费 多少？")
     assert normalize_question("ABC") == "abc"
+
+
+def test_mining_rerun_after_staging_cleared(db_session_factory, store, settings):
+    """清空 staging 后重跑:凭进度表跳过,不调 LLM 也不重放入库(spec §11)。"""
+    cid = _mk_conversation(db_session_factory)
+    model = StubStructuredModel(_parsed_for(cid, [("退货政策是什么", "七天无理由")]))
+    assert run_mining(settings, db_session_factory, model, FakeEmbeddings(), store) == 0
+    assert model.calls == 1
+    with db_session_factory() as s:  # 去重证据消失,只剩进度表
+        s.query(QaExtractionStaging).delete()
+        s.commit()
+    assert run_mining(settings, db_session_factory, model, FakeEmbeddings(), store) == 0
+    assert model.calls == 1
+    with db_session_factory() as s:
+        assert s.query(KnowledgeChunk).count() == 1

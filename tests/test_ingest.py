@@ -1,4 +1,5 @@
 import pytest
+import sqlalchemy.orm
 
 from app.knowledge.ingest import IngestError, resolve_source_doc, run_ingest, vectorize_pending
 from app.knowledge.milvus_store import MilvusKnowledgeStore
@@ -154,3 +155,63 @@ def test_resolve_source_doc(tmp_path):
     assert resolve_source_doc(inside) == "knowledge_docs/商品FAQ.md"
     outside = tmp_path / "x.md"
     assert resolve_source_doc(outside) == outside.resolve().as_posix()
+
+
+def test_phase1_failure_rolls_back_document(db_session_factory, store, settings, tmp_path, monkeypatch):
+    """Phase 1 文档事务中途失败:整体回滚不留半截,重跑干净入库(spec §11)。"""
+    docs = _write_docs(tmp_path)
+    real_commit = sqlalchemy.orm.Session.commit
+    state = {"calls": 0}
+
+    def boom_once(self):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("simulated crash")
+        return real_commit(self)
+
+    monkeypatch.setattr(sqlalchemy.orm.Session, "commit", boom_once)
+    assert run_ingest(settings, db_session_factory, FakeEmbeddings(), store, docs) == 1
+    with db_session_factory() as s:
+        assert s.query(KnowledgeChunk).count() == 0  # 整体回滚
+    monkeypatch.setattr(sqlalchemy.orm.Session, "commit", real_commit)
+    assert run_ingest(settings, db_session_factory, FakeEmbeddings(), store, docs) == 0
+    with db_session_factory() as s:
+        rows = s.query(KnowledgeChunk).all()
+        assert len(rows) == 3
+        assert all(r.vectorize_status == "done" for r in rows)
+
+
+def test_milvus_written_mysql_uncommitted_window_resumes(db_session_factory, store, settings, tmp_path, monkeypatch):
+    """「Milvus upsert 已成功、MySQL 回填提交前崩溃」窗口:重跑 upsert 幂等补齐(spec §11)。"""
+    docs = _write_docs(tmp_path)
+    real_upsert = store.upsert
+    real_commit = sqlalchemy.orm.Session.commit
+    state = {"armed": False}
+
+    def upsert_then_arm(rows):
+        result = real_upsert(rows)
+        state["armed"] = True  # 下一次 MySQL 提交崩溃,复现该窗口
+        return result
+
+    def commit_maybe_boom(self):
+        if state["armed"]:
+            state["armed"] = False
+            raise RuntimeError("simulated crash after upsert")
+        return real_commit(self)
+
+    monkeypatch.setattr(store, "upsert", upsert_then_arm)
+    monkeypatch.setattr(sqlalchemy.orm.Session, "commit", commit_maybe_boom)
+    assert run_ingest(settings, db_session_factory, FakeEmbeddings(), store, docs) == 1
+    with db_session_factory() as s:  # 窗口状态:MySQL 仍 pending,Milvus 已有向量
+        rows = s.query(KnowledgeChunk).all()
+        assert {r.vectorize_status for r in rows} == {"pending"}
+        ids = {r.id for r in rows}
+    assert store.all_ids() == ids
+
+    monkeypatch.setattr(store, "upsert", real_upsert)
+    monkeypatch.setattr(sqlalchemy.orm.Session, "commit", real_commit)
+    assert run_ingest(settings, db_session_factory, FakeEmbeddings(), store, docs) == 0
+    with db_session_factory() as s:
+        assert s.query(KnowledgeChunk).filter_by(vectorize_status="pending").count() == 0
+        ids = {r.id for r in s.query(KnowledgeChunk).all()}
+    assert store.all_ids() == ids and len(ids) == 3  # upsert 幂等,无重复向量
