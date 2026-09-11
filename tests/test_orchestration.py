@@ -1,7 +1,7 @@
 import pytest
 
 from app.main import create_app  # T6 才改 main;本任务直接用 ChatService 装配
-from app.services.chat_service import ChatService
+from app.services.chat_service import ChatService, DeltaEvent
 from app.sessions import InMemorySessionStore, StoredMessage
 from app.tool_envelope import wrap
 from app.tools.business import MOCK_TOOLS
@@ -12,6 +12,9 @@ TOOL_CHUNKS = [
     {"name": "query_order", "args": "{\"order_id\": \"10", "id": "call_1", "index": 0},
     {"name": None, "args": "01\"}", "id": None, "index": 0},
 ]
+
+# 第二次调用只产出 tool_calls 时的兜底话术(须与 chat_service.FALLBACK_ANSWER 一致)
+FALLBACK = "抱歉,暂时没有查到相关信息。您可以换个说法问我,或回复「转人工」,让人工客服帮您处理。"
 
 
 def make_service(script, tools=None):
@@ -58,9 +61,10 @@ async def test_tool_call_full_sequence():
     assert start.args == {"order_id": "1001"}
     end = events[2]
     assert end.ok is True and end.summary
-    # 第二次调用未绑工具
+    # 第二次调用绑定工具承接结构化通道,但不再执行任何 tool_calls
+    # (types 已断言无第二次 ToolStart/ToolEnd 帧)
     assert model.received_tools[0] == ["query_order", "query_product", "query_logistics"]
-    assert model.received_tools[1] is None
+    assert model.received_tools[1] == ["query_order", "query_product", "query_logistics"]
     # 落库 4 条:user / assistant(tool_calls) / tool / assistant
     snap = await store.snapshot(turn.session_id)
     assert [m.role for m in snap] == ["user", "assistant", "tool", "assistant"]
@@ -149,6 +153,47 @@ async def test_second_call_context_contains_tool_results():
     ai_with_calls = [m for m in second_messages
                      if type(m).__name__ == "AIMessage" and getattr(m, "tool_calls", None)]
     assert ai_with_calls and ai_with_calls[0].tool_calls[0]["id"] == "call_1"
+
+
+async def test_second_call_tool_calls_dropped_with_fallback():
+    """第二次调用(已绑工具)模型仍想换关键词重试:tool_calls 一律不执行,
+    无第二次工具帧,以兜底话术作答并原样落库。"""
+    retry_chunks = [{"name": "query_faq",
+                     "args": "{\"keyword\": \"运费\"}", "id": "call_2", "index": 0}]
+    script = [
+        ("tool", TOOL_CHUNKS),
+        ("then", [("tool", retry_chunks), ("finish", "tool_calls")]),
+    ]
+    service, model, store, _ = make_service(script)
+    turn = await service.prepare(TEST_USER_ID, None, "邮费是多少")
+    events = await collect(service, turn)
+    types = [type(e).__name__ for e in events]
+    # 只有第一次调用的 tool 帧;第二次的 tool_calls 被丢弃,不执行不推帧
+    assert types == ["SessionEvent", "ToolStartEvent", "ToolEndEvent",
+                     "DeltaEvent", "DoneEvent"]
+    deltas = [e.content for e in events if isinstance(e, DeltaEvent)]
+    assert deltas == [FALLBACK]
+    # 第二次调用绑定了工具(承接结构化通道),但未执行其中任何调用
+    assert model.received_tools[1] == ["query_order", "query_product", "query_logistics"]
+    # 落库 4 条;最终 assistant 行剥离 tool_calls,内容为兜底话术
+    snap = await store.snapshot(turn.session_id)
+    assert [m.role for m in snap] == ["user", "assistant", "tool", "assistant"]
+    assert snap[1].tool_calls[0]["name"] == "query_order"
+    assert not snap[3].tool_calls
+    assert snap[3].content == FALLBACK
+
+
+async def test_second_call_text_answer_not_replaced_by_fallback():
+    """第二次调用正常文本作答:文本照常流出,不受兜底话术影响。"""
+    script = [("tool", TOOL_CHUNKS), ("then", ["运费以订单页结算为准"])]
+    service, model, store, _ = make_service(script)
+    turn = await service.prepare(TEST_USER_ID, None, "邮费是多少")
+    events = await collect(service, turn)
+    deltas = [e.content for e in events if isinstance(e, DeltaEvent)]
+    assert deltas == ["运费以订单页结算为准"]
+    assert type(events[-1]).__name__ == "DoneEvent"
+    snap = await store.snapshot(turn.session_id)
+    assert snap[3].content == "运费以订单页结算为准"
 
 
 async def test_lock_recreated_lazily_for_existing_session():

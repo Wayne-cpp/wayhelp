@@ -20,6 +20,9 @@ from app.tools.executor import ToolExecutor, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
+# 第二次调用若模型只产出 tool_calls(本轮一律不执行)而无任何文本,以该话术兜底作答
+FALLBACK_ANSWER = "抱歉,暂时没有查到相关信息。您可以换个说法问我,或回复「转人工」,让人工客服帮您处理。"
+
 
 @dataclass(frozen=True)
 class SessionEvent:
@@ -213,7 +216,10 @@ class ChatService:
                     return
                 final_parts: list[str] = []
                 finish2: str | None = None
-                agen2 = self._model.astream(second_messages)  # 不绑工具,单轮收敛
+                # 第二次同样绑定工具:给工具意图结构化通道,避免其以标记语法裸文本泄漏;
+                # 但本轮不再执行任何 tool_calls(不聚合不推帧,徽章只代表真实执行)
+                second_model = self._model.bind_tools(registry.tools) if tools else self._model
+                agen2 = second_model.astream(second_messages)
                 try:
                     async for chunk in agen2:
                         meta = getattr(chunk, "response_metadata", None) or {}
@@ -239,6 +245,10 @@ class ChatService:
                     yield ErrorEvent("output_too_long", "回复超出长度限制")
                     return
                 final_text = "".join(final_parts)
+                if not final_text.strip():
+                    # 模型只给了未执行的 tool_calls:落库须剥离它们,以兜底话术作答
+                    yield DeltaEvent(FALLBACK_ANSWER)
+                    final_text = FALLBACK_ANSWER
             else:
                 final_text = "".join(text_parts)
 

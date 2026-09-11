@@ -55,7 +55,7 @@ class FakeChunk:
 
 class FakeStreamModel:
     """script 元素:str(delta 文本)| Exception | ("finish", reason) | ("tool", [tool_call_chunks...])
-    多段脚本用 ("then", next_script) 分隔第二次调用(bind_tools 后第一次、plain 第二次)。"""
+    多段脚本用 ("then", next_script) 分隔第二次调用(两次均可绑定工具,由调用方决定)。"""
 
     def __init__(self, script):
         self._scripts = [list(script)]
