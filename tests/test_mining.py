@@ -196,3 +196,15 @@ def test_mining_rerun_after_staging_cleared(db_session_factory, store, settings)
     assert model.calls == 1
     with db_session_factory() as s:
         assert s.query(KnowledgeChunk).count() == 1
+
+
+def test_mining_prompt_mentions_json():
+    """json_mode(DeepSeek)要求提示词含 json 字样,且 schema 键名必须写进提示词
+    (schema 不进 API 参数,模型会自造顶层键)——真实补验暴露,钉住。"""
+    from app.knowledge.mining import MINING_SYSTEM
+    assert "json" in MINING_SYSTEM.lower()
+    assert '"conversations"' in MINING_SYSTEM
+    assert '"conversation_id"' in MINING_SYSTEM
+    assert '"items"' in MINING_SYSTEM
+    # 历史对话里含旧 bot 的失败应答,不得抽成知识(在线实测:消极知识排到 FAQ 前带歪作答)
+    assert "无法" in MINING_SYSTEM and "不抽取" in MINING_SYSTEM
