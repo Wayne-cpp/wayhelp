@@ -98,3 +98,39 @@ def test_dotenv_milvus_uri_does_not_break_lite(tmp_path):
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-500:]
     assert "OK" in r.stdout
+
+
+def test_reopen_after_unclean_exit_recovers(tmp_path):
+    """崩溃(未 close)后重开:Lite 集合处于 released,store 读写前必须自动 load。"""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    db = tmp_path / "crash.db"
+    env = {**os.environ, "PYTHONPATH": str(repo)}
+    p1 = (
+        "from app.knowledge.milvus_store import MilvusKnowledgeStore\n"
+        f"s = MilvusKnowledgeStore({str(db)!r}, dim=4)\n"
+        "s.ensure_collection()\n"
+        "s.upsert([(7, [1.0, 0.0, 0.0, 0.0])])\n"
+        "import os; os._exit(0)\n"  # 模拟崩溃:不 close
+    )
+    r1 = subprocess.run([sys.executable, "-c", p1], env=env, cwd=tmp_path,
+                        capture_output=True, text=True, timeout=120)
+    assert r1.returncode == 0, r1.stderr[-300:]
+    p2 = (
+        "from app.knowledge.milvus_store import MilvusKnowledgeStore\n"
+        f"s = MilvusKnowledgeStore({str(db)!r}, dim=4)\n"
+        "assert s.has_collection()\n"
+        "assert s.all_ids() == {7}  # released 状态下 query 会炸,须自动 load\n"
+        "assert s.search([1.0, 0.0, 0.0, 0.0], top_k=1)[0][0] == 7\n"
+        "s.upsert([(8, [0.0, 1.0, 0.0, 0.0])])\n"
+        "assert s.all_ids() == {7, 8}\n"
+        "s.close()\n"
+        "print('OK')\n"
+    )
+    r2 = subprocess.run([sys.executable, "-c", p2], env=env, cwd=tmp_path,
+                        capture_output=True, text=True, timeout=120)
+    assert r2.returncode == 0, r2.stderr[-500:]
+    assert "OK" in r2.stdout

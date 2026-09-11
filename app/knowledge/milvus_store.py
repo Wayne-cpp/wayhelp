@@ -45,11 +45,19 @@ class MilvusKnowledgeStore:
         self._uri = uri
         self._dim = dim
         self._client: "MilvusClient | None" = None
+        self._loaded = False
 
     def _cli(self) -> "MilvusClient":
         if self._client is None:
             self._client = _load_milvus_client()(uri=self._uri)
         return self._client
+
+    def _ensure_loaded(self) -> None:
+        """Lite 崩溃/未 close 退出后重开,集合处于 released;读写前必须显式 load。"""
+        if not self._loaded:
+            if self._cli().has_collection(COLLECTION):
+                self._cli().load_collection(COLLECTION)
+            self._loaded = True
 
     def file_exists(self) -> bool:
         return Path(self._uri).exists()
@@ -70,30 +78,35 @@ class MilvusKnowledgeStore:
             cli.create_collection(collection_name=COLLECTION, dimension=self._dim,
                                   metric_type="COSINE", auto_id=False,
                                   enable_dynamic_field=False)
-            return
-        info = cli.describe_collection(COLLECTION)
-        fields = {f["name"]: f for f in info["fields"]}
-        pk = fields.get("id") or {}
-        if not pk.get("is_primary"):
-            raise ValueError("knowledge 集合契约不符: id 不是主键")
-        vec = fields.get("vector") or {}
-        actual_dim = (vec.get("params") or {}).get("dim", vec.get("dimension"))
-        if actual_dim != self._dim:
-            raise ValueError(f"knowledge 集合维度不符: 期望 {self._dim},实际 {actual_dim}")
+        else:
+            info = cli.describe_collection(COLLECTION)
+            fields = {f["name"]: f for f in info["fields"]}
+            pk = fields.get("id") or {}
+            if not pk.get("is_primary"):
+                raise ValueError("knowledge 集合契约不符: id 不是主键")
+            vec = fields.get("vector") or {}
+            actual_dim = (vec.get("params") or {}).get("dim", vec.get("dimension"))
+            if actual_dim != self._dim:
+                raise ValueError(f"knowledge 集合维度不符: 期望 {self._dim},实际 {actual_dim}")
+        cli.load_collection(COLLECTION)
+        self._loaded = True
 
     def upsert(self, rows: list[tuple[int, list[float]]]) -> None:
         if not rows:
             return
+        self._ensure_loaded()
         self._cli().upsert(COLLECTION, [{"id": i, "vector": v} for i, v in rows])
 
     def search(self, vector: list[float], top_k: int) -> list[tuple[int, float]]:
         """返回 [(chunk_id, cosine_similarity)],按相似度降序。"""
+        self._ensure_loaded()
         res = self._cli().search(COLLECTION, data=[vector], limit=top_k)
         return [(h["id"], h["distance"]) for h in res[0]]
 
     def all_ids(self) -> set[int]:
         if not self.has_collection():
             return set()
+        self._ensure_loaded()
         rows = self._cli().query(COLLECTION, filter="id >= 0", output_fields=["id"])
         return {r["id"] for r in rows}
 
@@ -101,3 +114,4 @@ class MilvusKnowledgeStore:
         if self._client is not None:
             self._client.close()
             self._client = None
+        self._loaded = False
