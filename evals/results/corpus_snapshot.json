@@ -1,0 +1,72 @@
+[
+  {
+    "chunk_id": 1,
+    "source_doc": "knowledge_docs/售后手册.md",
+    "chunk_index": 1
+  },
+  {
+    "chunk_id": 2,
+    "source_doc": "knowledge_docs/售后手册.md",
+    "chunk_index": 2
+  },
+  {
+    "chunk_id": 3,
+    "source_doc": "knowledge_docs/售后手册.md",
+    "chunk_index": 3
+  },
+  {
+    "chunk_id": 4,
+    "source_doc": "knowledge_docs/售后手册.md",
+    "chunk_index": 4
+  },
+  {
+    "chunk_id": 5,
+    "source_doc": "knowledge_docs/售后手册.md",
+    "chunk_index": 5
+  },
+  {
+    "chunk_id": 6,
+    "source_doc": "knowledge_docs/商品FAQ.md",
+    "chunk_index": 1
+  },
+  {
+    "chunk_id": 7,
+    "source_doc": "knowledge_docs/商品FAQ.md",
+    "chunk_index": 2
+  },
+  {
+    "chunk_id": 8,
+    "source_doc": "knowledge_docs/商品FAQ.md",
+    "chunk_index": 3
+  },
+  {
+    "chunk_id": 9,
+    "source_doc": "knowledge_docs/商品FAQ.md",
+    "chunk_index": 4
+  },
+  {
+    "chunk_id": 10,
+    "source_doc": "knowledge_docs/商品FAQ.md",
+    "chunk_index": 5
+  },
+  {
+    "chunk_id": 11,
+    "source_doc": "knowledge_docs/退货政策.md",
+    "chunk_index": 1
+  },
+  {
+    "chunk_id": 12,
+    "source_doc": "knowledge_docs/退货政策.md",
+    "chunk_index": 2
+  },
+  {
+    "chunk_id": 13,
+    "source_doc": "knowledge_docs/退货政策.md",
+    "chunk_index": 3
+  },
+  {
+    "chunk_id": 14,
+    "source_doc": "knowledge_docs/退货政策.md",
+    "chunk_index": 4
+  }
+]
