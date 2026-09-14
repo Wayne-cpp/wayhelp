@@ -1,6 +1,7 @@
 """建库两阶段流水线(spec §6):Phase 1 文档事务落 MySQL(pending),
 Phase 2 向量化 upsert Milvus 并回填 done。中断重跑幂等。"""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy.orm import sessionmaker
@@ -115,24 +116,63 @@ def _load_document(session_factory: sessionmaker, path: Path, settings: Settings
             raise IngestError(f"文档入库失败 {source_doc}: {type(exc).__name__}") from exc
 
 
+def _pointer_error(session_factory: sessionmaker) -> str | None:
+    """prev/next 指针完整性;None = 完整。"""
+    with session_factory() as s:
+        rows = s.query(KnowledgeChunk).order_by(KnowledgeChunk.id).all()
+    by_doc: dict[str, list[KnowledgeChunk]] = {}
+    for r in rows:
+        if r.source_doc is not None:
+            by_doc.setdefault(r.source_doc, []).append(r)
+    for doc, doc_rows in by_doc.items():
+        doc_rows.sort(key=lambda r: r.chunk_index)
+        for i, r in enumerate(doc_rows):
+            expect_prev = doc_rows[i - 1].id if i > 0 else None
+            expect_next = doc_rows[i + 1].id if i + 1 < len(doc_rows) else None
+            if r.prev_chunk_id != expect_prev or r.next_chunk_id != expect_next:
+                return f"指针不完整: {doc} chunk_index={r.chunk_index}"
+    return None
+
+
+@dataclass(frozen=True)
+class ConsistencyReport:
+    """双写一致性只读报告(check_consistency 返回,不抛异常)。"""
+    consistent: bool
+    mysql_count: int
+    milvus_count: int
+    pending_count: int
+    no_pending: bool
+    pointers_ok: bool
+    ids_match: bool
+
+
+def check_consistency(session_factory: sessionmaker,
+                      store: MilvusKnowledgeStore) -> ConsistencyReport:
+    """与 _verify 同口径的三项检查:pending 归零、指针完整、两库主键集合相等。"""
+    with session_factory() as s:
+        rows = s.query(KnowledgeChunk).order_by(KnowledgeChunk.id).all()
+        pending = sum(1 for r in rows if r.vectorize_status == "pending")
+        mysql_ids = {r.id for r in rows}
+    milvus_ids = store.all_ids()
+    no_pending = pending == 0
+    pointers_ok = _pointer_error(session_factory) is None
+    ids_match = mysql_ids == milvus_ids
+    return ConsistencyReport(
+        consistent=no_pending and pointers_ok and ids_match,
+        mysql_count=len(mysql_ids), milvus_count=len(milvus_ids),
+        pending_count=pending, no_pending=no_pending,
+        pointers_ok=pointers_ok, ids_match=ids_match)
+
+
 def _verify(session_factory: sessionmaker, store: MilvusKnowledgeStore) -> None:
     with session_factory() as s:
         pending = s.query(KnowledgeChunk).filter_by(vectorize_status="pending").count()
         if pending:
             raise IngestError(f"仍有 {pending} 个 pending 块未向量化")
-        rows = s.query(KnowledgeChunk).order_by(KnowledgeChunk.id).all()
-        by_doc: dict[str, list[KnowledgeChunk]] = {}
-        for r in rows:
-            if r.source_doc is not None:
-                by_doc.setdefault(r.source_doc, []).append(r)
-        for doc, doc_rows in by_doc.items():
-            doc_rows.sort(key=lambda r: r.chunk_index)
-            for i, r in enumerate(doc_rows):
-                expect_prev = doc_rows[i - 1].id if i > 0 else None
-                expect_next = doc_rows[i + 1].id if i + 1 < len(doc_rows) else None
-                if r.prev_chunk_id != expect_prev or r.next_chunk_id != expect_next:
-                    raise IngestError(f"指针不完整: {doc} chunk_index={r.chunk_index}")
-        mysql_ids = {r.id for r in rows}
+        mysql_ids = {r[0] for r in s.query(KnowledgeChunk.id).all()}
+    err = _pointer_error(session_factory)
+    if err is not None:
+        raise IngestError(err)
     milvus_ids = store.all_ids()
     if milvus_ids != mysql_ids:
         raise IngestError(
@@ -141,13 +181,27 @@ def _verify(session_factory: sessionmaker, store: MilvusKnowledgeStore) -> None:
 
 
 def run_ingest(settings: Settings, session_factory: sessionmaker, embed,
-               store: MilvusKnowledgeStore, docs_dir: Path) -> int:
+               store: MilvusKnowledgeStore, docs_dir: Path,
+               *, skip_vectorize: bool = False) -> int:
+    """skip_vectorize=True 时只跑 Phase 1 切块落库(embed 可为 None),
+    校验只做指针完整性(pending 归零与两库主键比对留给向量化后)。"""
     try:
-        store.ensure_collection()
-        vectorize_pending(settings, session_factory, embed, store)  # resume 历史 pending
         paths = sorted(docs_dir.glob("*.md"), key=lambda p: resolve_source_doc(p))
         if not paths:
             raise IngestError(f"目录无 Markdown 文档: {docs_dir}")
+        if skip_vectorize:
+            for path in paths:
+                _load_document(session_factory, path, settings)
+            err = _pointer_error(session_factory)
+            if err is not None:
+                raise IngestError(err)
+            with session_factory() as s:
+                pending = (s.query(KnowledgeChunk)
+                           .filter_by(vectorize_status="pending").count())
+            print(f"[ingest] 完成(仅切块入库): {pending} 个块待向量化")
+            return 0
+        store.ensure_collection()
+        vectorize_pending(settings, session_factory, embed, store)  # resume 历史 pending
         for path in paths:
             _load_document(session_factory, path, settings)
         vectorize_pending(settings, session_factory, embed, store)

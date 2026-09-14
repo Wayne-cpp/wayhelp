@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.messages import SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
@@ -13,6 +14,7 @@ from langchain_openai import ChatOpenAI
 from app.config import Settings
 from app.db import make_engine, make_session_factory, ping
 from app.knowledge.embedding import build_embeddings
+from app.knowledge.milvus_store import MilvusKnowledgeStore
 from app.knowledge.retriever import KnowledgeRetriever
 from app.errors import (
     AppError,
@@ -24,7 +26,9 @@ from app.errors import (
 from app.prompts.service import SERVICE_SYSTEM_PROMPT
 from app.routers.chat import router as chat_router
 from app.routers.extract import router as extract_router
+from app.routers.kb import router as kb_router
 from app.services.chat_service import ChatService
+from app.services.kb_admin import DEFAULT_DOCS_DIR, KbAdminError
 from app.store_db import DbSessionStore
 from app.tools.business import build_tools
 
@@ -38,6 +42,9 @@ class AppRuntime:
     store: Any  # SessionStore 协议
     toolset_factory: Callable[[str], list[BaseTool]]
     retriever: Any = None
+    session_factory: Any = None   # /kb 管理动作复用
+    embed: Any = None             # None = 未配置 EMBEDDING_API_KEY
+    kb_store: Any = None          # MilvusKnowledgeStore,与 retriever 同一实例
 
 
 def _build_production_runtime(settings: Settings) -> AppRuntime:
@@ -49,13 +56,16 @@ def _build_production_runtime(settings: Settings) -> AppRuntime:
     session_factory = make_session_factory(engine)
     # 缺 Key 时构造禁用检索的实例,不构造需要 Key 的 embedding 客户端(spec §8)
     embed = build_embeddings(settings) if settings.has_embedding_key() else None
-    retriever = KnowledgeRetriever(settings, embed=embed, session_factory=session_factory)
+    kb_store = MilvusKnowledgeStore(settings.milvus_uri, settings.embedding_dim)
+    retriever = KnowledgeRetriever(settings, embed=embed, store=kb_store,
+                                   session_factory=session_factory)
 
     def toolset_factory(session_id: str) -> list[BaseTool]:
         return build_tools(session_factory, int(session_id), retriever)
 
     return AppRuntime(store=DbSessionStore(session_factory, settings.max_message_chars),
-                      toolset_factory=toolset_factory, retriever=retriever)
+                      toolset_factory=toolset_factory, retriever=retriever,
+                      session_factory=session_factory, embed=embed, kb_store=kb_store)
 
 
 def create_app(settings: Settings | None = None, model: Any | None = None,
@@ -96,14 +106,23 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.state.model = model
     app.state.store = runtime.store
     app.state.chat_service = service
+    app.state.session_factory = runtime.session_factory
+    app.state.embed = runtime.embed
+    app.state.kb_store = runtime.kb_store
+    app.state.kb_docs_dir = DEFAULT_DOCS_DIR
     app.include_router(chat_router)
     app.include_router(extract_router)
+    app.include_router(kb_router)
 
     static_dir = Path(__file__).parent / "static"
 
     @app.get("/", include_in_schema=False)
     async def chat_ui() -> FileResponse:
         return FileResponse(static_dir / "chat.html")
+
+    @app.get("/kb", include_in_schema=False)
+    async def kb_ui() -> FileResponse:
+        return FileResponse(static_dir / "kb.html")
 
     @app.get("/1784959384051.jpg", include_in_schema=False)
     async def brand_mark() -> FileResponse:
@@ -128,6 +147,16 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     @app.exception_handler(AppError)
     async def _(request: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(status_code=500, content=_error_body(exc.code, "服务内部错误"))
+
+    @app.exception_handler(KbAdminError)
+    async def _(request: Request, exc: KbAdminError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status,
+                            content=_error_body(exc.code, exc.message))
+
+    @app.exception_handler(RequestValidationError)
+    async def _(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return JSONResponse(status_code=422,
+                            content=_error_body("invalid_request", "请求参数不合法"))
 
     @app.exception_handler(Exception)
     async def _(request: Request, exc: Exception) -> JSONResponse:

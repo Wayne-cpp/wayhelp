@@ -215,3 +215,56 @@ def test_milvus_written_mysql_uncommitted_window_resumes(db_session_factory, sto
         assert s.query(KnowledgeChunk).filter_by(vectorize_status="pending").count() == 0
         ids = {r.id for r in s.query(KnowledgeChunk).all()}
     assert store.all_ids() == ids and len(ids) == 3  # upsert 幂等,无重复向量
+
+
+def test_skip_vectorize_phase1_only(db_session_factory, store, settings, tmp_path):
+    """skip_vectorize 模式:只做 Phase 1,embed 传 None,块留 pending,不建 Milvus 集合。"""
+    from app.knowledge.ingest import check_consistency
+    docs = _write_docs(tmp_path)
+    assert run_ingest(settings, db_session_factory, None, store, docs,
+                      skip_vectorize=True) == 0
+    with db_session_factory() as s:
+        rows = s.query(KnowledgeChunk).order_by(KnowledgeChunk.id).all()
+        assert len(rows) == 3
+        assert all(r.vectorize_status == "pending" for r in rows)
+        faq_rows = [r for r in rows if r.source_doc.endswith("a.md")]
+        by_idx = {r.chunk_index: r for r in faq_rows}
+        assert by_idx[1].next_chunk_id == by_idx[2].id  # 指针照常重建
+        assert by_idx[2].prev_chunk_id == by_idx[1].id
+    assert store.has_collection() is False  # 未触碰 Milvus
+    report = check_consistency(db_session_factory, store)
+    assert report.consistent is False
+    assert report.pending_count == 3 and report.no_pending is False
+    assert report.mysql_count == 3 and report.milvus_count == 0
+    assert report.pointers_ok is True and report.ids_match is False
+
+
+def test_skip_vectorize_then_full_ingest_completes(db_session_factory, store, settings, tmp_path):
+    """先 skip 模式落 pending,再正常 run_ingest 补齐向量化,复用同一批 ID。"""
+    from app.knowledge.ingest import check_consistency
+    docs = _write_docs(tmp_path)
+    run_ingest(settings, db_session_factory, None, store, docs, skip_vectorize=True)
+    with db_session_factory() as s:
+        first_ids = [r.id for r in s.query(KnowledgeChunk).order_by(KnowledgeChunk.id)]
+    assert run_ingest(settings, db_session_factory, FakeEmbeddings(), store, docs) == 0
+    with db_session_factory() as s:
+        rows = s.query(KnowledgeChunk).order_by(KnowledgeChunk.id).all()
+        assert [r.id for r in rows] == first_ids  # pending resume,不新增行
+        assert all(r.vectorize_status == "done" for r in rows)
+    report = check_consistency(db_session_factory, store)
+    assert report.consistent is True
+    assert report.pending_count == 0 and report.ids_match is True
+
+
+def test_check_consistency_detects_pointer_break(db_session_factory, store, settings, tmp_path):
+    from app.knowledge.ingest import check_consistency
+    docs = _write_docs(tmp_path)
+    run_ingest(settings, db_session_factory, FakeEmbeddings(), store, docs)
+    with db_session_factory() as s:
+        row = (s.query(KnowledgeChunk)
+               .filter(KnowledgeChunk.source_doc.endswith("a.md"))
+               .filter_by(chunk_index=1).one())
+        row.next_chunk_id = None  # 人为掰断指针
+        s.commit()
+    report = check_consistency(db_session_factory, store)
+    assert report.pointers_ok is False and report.consistent is False

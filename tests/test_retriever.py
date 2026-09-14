@@ -134,6 +134,35 @@ def test_disabled_without_key(db_session_factory, store):
     assert hits == [] and note == "知识检索未配置"
 
 
+def test_probe_returns_all_topk_with_passed_flags(db_session_factory, store):
+    """自测旁路:不按阈值过滤,压线命中带 passed=False;search 行为不变。"""
+    settings = make_settings(knowledge_min_score=0.5)
+    ids = _seed_knowledge(db_session_factory, store)
+    r = _retriever(settings, store, db_session_factory)
+    hits, note = r.probe("邮费是多少", top_k=2, min_score=0.99)
+    assert note is None
+    assert [h.chunk_id for h in hits] == [ids[0], ids[1]]  # Top-2 全回,含被阈值滤掉的
+    assert hits[0].passed is True and hits[0].score >= 0.99
+    assert hits[0].score >= hits[1].score
+    assert hits[1].passed is False and hits[1].score < 0.99
+    assert hits[1].source_doc == "knowledge_docs/商品FAQ.md"
+    # 低阈值下同一查询两条都过线
+    hits2, _ = r.probe("邮费是多少", top_k=2, min_score=0.0)
+    assert all(h.passed for h in hits2)
+
+
+def test_probe_note_semantics(db_session_factory, store):
+    settings = make_settings(embedding_api_key="")
+    r = KnowledgeRetriever(settings, embed=None, store=store,
+                           session_factory=db_session_factory)
+    hits, note = r.probe("邮费", top_k=5, min_score=0.6)
+    assert hits == [] and note == "知识检索未配置"
+    r2 = _retriever(make_settings(), store, db_session_factory)
+    hits2, note2 = r2.probe("邮费", top_k=5, min_score=0.6)
+    assert hits2 == [] and note2 == "知识库尚未建立"
+    assert store.file_exists() is False  # 与 search 一样不创建文件
+
+
 def test_retryable_mapping():
     req = httpx2.Request("POST", "http://x/v1/embeddings")
     assert _as_retryable(APIConnectionError(request=req)) is not None

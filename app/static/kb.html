@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wayhelp 知识库管理</title>
+<style>
+  /* ─── 与 chat.html 同源的设计 tokens ─── */
+  :root {
+    --bg: #f5f4ed;
+    --surface: #faf9f5;
+    --surface-warm: #e8e6dc;
+    --bg-deep: color-mix(in oklab, var(--bg), var(--surface-warm) 65%);
+
+    --fg: #141413;
+    --fg-2: #3d3d3a;
+    --muted: #5e5d59;
+    --meta: #87867f;
+
+    --border: #f0eee6;
+    --border-soft: #e8e6dc;
+
+    --accent: #c96442;
+    --accent-on: #faf9f5;
+    --accent-hover: color-mix(in oklab, var(--accent), black 8%);
+    --accent-active: color-mix(in oklab, var(--accent), black 14%);
+
+    --success: #17a34a;
+    --warn: #eab308;
+    --danger: #b53333;
+
+    --font-display: "Anthropic Serif", Georgia, "Times New Roman", serif;
+    --font-body: "Anthropic Sans", "Arial", system-ui, -apple-system, sans-serif;
+    --font-mono: "Anthropic Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+
+    --text-xs: 10px;
+    --text-sm: 14px;
+    --text-base: 16px;
+
+    --leading-body: 1.6;
+    --leading-tight: 1.1;
+
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-pill: 9999px;
+
+    --elev-ring: 0 0 0 1px var(--border);
+    --elev-raised: rgba(0, 0, 0, 0.05) 0px 4px 24px;
+    --focus-ring: 0 0 0 3px rgba(56, 152, 236, 0.3);
+    --motion-fast: 150ms;
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg-deep);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    line-height: var(--leading-body);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; cursor: pointer; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .app {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: var(--space-5) var(--space-4) var(--space-8);
+  }
+
+  /* ─── header ─── */
+  .kb-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--elev-raised);
+  }
+  .brand-mark {
+    width: 36px; height: 36px; flex: none; display: block; object-fit: cover;
+    background: var(--surface-warm);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--elev-ring);
+  }
+  .brand-name {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 19px; font-weight: 500; line-height: var(--leading-tight);
+  }
+  .brand-sub { font-size: 12px; color: var(--muted); line-height: 1.3; }
+  .back-link { margin-left: auto; font-size: var(--text-sm); color: var(--muted); }
+
+  /* ─── notice ─── */
+  #notice {
+    display: none;
+    margin-top: var(--space-3);
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+  }
+  #notice.show { display: block; }
+  #notice.ok {
+    background: color-mix(in oklch, var(--success) 8%, var(--surface));
+    border: 1px solid color-mix(in oklch, var(--success) 30%, var(--surface));
+    color: var(--success);
+  }
+  #notice.err {
+    background: color-mix(in oklch, var(--danger) 6%, var(--surface));
+    border: 1px solid color-mix(in oklch, var(--danger) 28%, var(--surface));
+    color: var(--danger);
+  }
+
+  /* ─── gauge ─── */
+  #gauge {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+  }
+  .gauge-card {
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4);
+  }
+  .gauge-num {
+    font-family: var(--font-mono);
+    font-size: 24px; font-weight: 600; line-height: 1.2;
+  }
+  .gauge-label { font-size: var(--text-xs); color: var(--muted); letter-spacing: 0.04em; }
+  .gauge-card.consistent-true .gauge-num { color: var(--success); }
+  .gauge-card.consistent-false .gauge-num { color: var(--danger); }
+
+  /* ─── cards ─── */
+  .card {
+    margin-top: var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5);
+  }
+  .card h2 {
+    margin: 0 0 var(--space-3);
+    font-family: var(--font-display);
+    font-size: 18px; font-weight: 500;
+  }
+  .card .desc { margin: 0 0 var(--space-3); font-size: var(--text-sm); color: var(--muted); }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: var(--space-2);
+    height: 34px; padding: 0 var(--space-4);
+    border: none; border-radius: var(--radius-sm);
+    background: var(--accent); color: var(--accent-on);
+    font-size: var(--text-sm); font-weight: 500;
+    transition: background var(--motion-fast) var(--ease-standard);
+  }
+  .btn:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn:active:not(:disabled) { background: var(--accent-active); }
+  .btn:disabled { background: var(--surface-warm); color: var(--meta); cursor: not-allowed; }
+  .btn.secondary {
+    background: var(--surface-warm); color: var(--fg-2);
+    box-shadow: 0 0 0 1px var(--border-soft);
+  }
+  .btn.secondary:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--surface-warm), black 5%);
+    box-shadow: 0 0 0 1px var(--meta);
+  }
+  .btn.danger { background: var(--danger); }
+  .btn.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger), black 8%); }
+  .btn-row { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-3); }
+
+  label.field { display: block; margin-bottom: var(--space-3); font-size: var(--text-sm); color: var(--fg-2); }
+  label.field span { display: block; margin-bottom: var(--space-1); color: var(--muted); font-size: var(--text-xs); }
+  select, input[type="text"], input[type="number"], textarea {
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--text-sm);
+  }
+  textarea { resize: vertical; font-family: var(--font-mono); line-height: 1.5; }
+  select:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: none; border-color: var(--meta); box-shadow: var(--focus-ring);
+  }
+  .check-row { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); }
+  .hint { font-size: var(--text-xs); color: var(--muted); }
+
+  /* ─── pills / tags ─── */
+  .pill {
+    display: inline-flex; align-items: center;
+    padding: 2px 10px;
+    border-radius: var(--radius-pill);
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.03em;
+    background: var(--surface-warm); color: var(--fg-2);
+    border: 1px solid var(--border-soft);
+  }
+  .pill.ok { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, var(--surface)); }
+  .pill.bad { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 35%, var(--surface)); }
+  .pill.warn { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 35%, var(--surface)); }
+  .pill.muted { color: var(--meta); }
+
+  /* ─── chunk preview ─── */
+  .chunk-list { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); }
+  .chunk-item {
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    background: var(--bg);
+    font-size: var(--text-sm);
+  }
+  .chunk-item .meta-line {
+    display: flex; flex-wrap: wrap; gap: var(--space-2);
+    margin-bottom: var(--space-2); align-items: center;
+  }
+  .chunk-item pre {
+    margin: 0;
+    white-space: pre-wrap; word-break: break-word;
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+    color: var(--fg-2);
+  }
+  .chunk-item .q { font-weight: 600; font-size: var(--text-sm); margin-bottom: var(--space-1); }
+
+  /* ─── tables ─── */
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+  table.data th, table.data td {
+    text-align: left;
+    padding: var(--space-2);
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: top;
+  }
+  table.data th {
+    font-size: var(--text-xs); color: var(--muted);
+    font-weight: 500; letter-spacing: 0.04em;
+  }
+  table.data td.mono { font-family: var(--font-mono); font-size: 12px; }
+
+  /* ─── materials ─── */
+  .material-row {
+    display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .material-row:last-child { border-bottom: none; }
+  .material-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+  .material-stats { font-size: var(--text-xs); color: var(--muted); }
+  .material-detail { margin-top: var(--space-3); }
+
+  /* ─── mining ─── */
+  details.items { margin-top: var(--space-2); }
+  details.items summary {
+    cursor: pointer; font-size: var(--text-sm); color: var(--fg-2);
+    padding: var(--space-1) 0;
+  }
+  .qa-item {
+    border-left: 3px solid var(--border-soft);
+    padding: var(--space-2) var(--space-3);
+    margin: var(--space-2) 0;
+    font-size: var(--text-sm);
+  }
+  .qa-item .q { font-weight: 600; }
+  .qa-item .a { color: var(--fg-2); white-space: pre-wrap; word-break: break-word; }
+  .qa-item .m { font-size: var(--text-xs); color: var(--meta); font-family: var(--font-mono); }
+
+  /* ─── search hits ─── */
+  .hit {
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    background: var(--bg);
+    margin-top: var(--space-2);
+  }
+  .hit.failed { opacity: 0.5; }
+  .hit .score { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+  .hit .q { font-weight: 600; font-size: var(--text-sm); }
+  .hit .a { font-size: var(--text-sm); color: var(--fg-2); white-space: pre-wrap; word-break: break-word; }
+  .hit .m { font-size: var(--text-xs); color: var(--meta); font-family: var(--font-mono); }
+
+  .search-controls {
+    display: grid;
+    grid-template-columns: 1fr 110px 130px;
+    gap: var(--space-2);
+    align-items: end;
+  }
+  @media (max-width: 640px) {
+    .app { padding: var(--space-3) var(--space-2) var(--space-6); }
+    .card { padding: var(--space-4); }
+    .search-controls { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="kb-header">
+    <img class="brand-mark" src="1784959384051.jpg" alt="" aria-hidden="true">
+    <div>
+      <h1 class="brand-name">知识库管理</h1>
+      <span class="brand-sub">建库 · 向量化 · 挖掘 · 检索自测</span>
+    </div>
+    <a class="back-link" href="/">← 返回对话</a>
+  </header>
+
+  <div id="notice" role="status"></div>
+
+  <!-- 库存闸条 -->
+  <section id="gauge" aria-label="库存闸条"></section>
+
+  <!-- ① 手工录入 -->
+  <section class="card" id="sec-manual">
+    <h2>① 手工录入</h2>
+    <p class="desc">直接粘贴一条知识,服务端拼 frontmatter 后走同一套切块逻辑;入库为手工块(source_doc 为空)。</p>
+    <label class="field"><span>文档类型</span>
+      <select id="manual-type">
+        <option value="faq">faq(常见问题,## 为问题)</option>
+        <option value="policy">policy(政策条款)</option>
+        <option value="manual">manual(操作手册)</option>
+      </select>
+    </label>
+    <label class="field"><span>标题(H1)</span>
+      <input type="text" id="manual-title" placeholder="例如:发票规则补充">
+    </label>
+    <label class="field"><span>Markdown 正文</span>
+      <textarea id="manual-markdown" rows="7" placeholder="## 问题或章节标题&#10;&#10;正文内容……"></textarea>
+    </label>
+    <label class="check-row">
+      <input type="checkbox" id="manual-vectorize" checked>
+      顺手向量化(录入后立即 embed 并写入 Milvus)
+    </label>
+    <p class="hint" id="manual-vectorize-hint" hidden>未配置 EMBEDDING_API_KEY,顺手向量化不可用;可取消勾选仅入库留 pending。</p>
+    <div class="btn-row">
+      <button class="btn secondary" id="manual-preview-btn" type="button">切块预览</button>
+      <button class="btn" id="manual-ingest-btn" type="button">录入入库</button>
+    </div>
+    <div id="manual-preview"></div>
+  </section>
+
+  <!-- ② 建库材料 -->
+  <section class="card" id="sec-materials">
+    <h2>② 建库材料(knowledge_docs/)</h2>
+    <p class="desc">逐份实时切块统计;「差异预览」对比库内同 source_doc 行,干跑不写库;「一键建库」跑完整两阶段流水线。</p>
+    <div id="material-list"></div>
+    <div class="btn-row">
+      <button class="btn secondary" id="preview-btn" type="button">差异预览</button>
+      <button class="btn" id="build-btn" type="button">一键建库</button>
+    </div>
+    <div id="diff-result"></div>
+    <div id="material-detail" class="material-detail"></div>
+  </section>
+
+  <!-- ③ 对话挖知识 -->
+  <section class="card" id="sec-mining">
+    <h2>③ 对话挖知识</h2>
+    <p class="desc">从历史客服对话抽取可复用问答,去重后入库;staging 三态逐条可查。</p>
+    <div id="mining-summary"></div>
+    <div id="mining-items"></div>
+    <div class="btn-row">
+      <button class="btn" id="mine-btn" type="button">开始挖掘</button>
+    </div>
+  </section>
+
+  <!-- ④ 向量化与双写 -->
+  <section class="card" id="sec-vectorize">
+    <h2>④ 向量化与双写</h2>
+    <p class="desc">pending 批次 embed 后 upsert Milvus 并回填 done;重建只清文档块,手工块与挖掘块保留。</p>
+    <div id="vectorize-summary"></div>
+    <div id="pending-samples"></div>
+    <div class="btn-row">
+      <button class="btn" id="vectorize-btn" type="button">向量化 pending</button>
+      <button class="btn danger" id="reset-btn" type="button">选择性重建</button>
+    </div>
+  </section>
+
+  <!-- ⑤ 检索自测 -->
+  <section class="card" id="sec-search">
+    <h2>⑤ 检索自测</h2>
+    <p class="desc">Top-K 全部命中列出,低于 min_score 的压线块灰显;不影响在线检索行为。</p>
+    <div class="search-controls">
+      <label class="field"><span>查询</span>
+        <input type="text" id="search-query" placeholder="例如:运费怎么算">
+      </label>
+      <label class="field"><span>Top-K</span>
+        <input type="number" id="search-topk" value="5" min="1" max="50">
+      </label>
+      <label class="field"><span>min_score</span>
+        <input type="number" id="search-min-score" value="0.623" min="-1" max="1" step="0.001">
+      </label>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="search-btn" type="button">跑一下</button>
+    </div>
+    <div id="search-result"></div>
+  </section>
+
+  <!-- ⑥ 最近入库 -->
+  <section class="card" id="sec-recent">
+    <h2>⑥ 最近入库(20 条)</h2>
+    <div id="recent-table"></div>
+  </section>
+</div>
+
+<script>
+(function () {
+  var state = null;
+  var busy = false;
+
+  var noticeEl = document.getElementById("notice");
+
+  function notice(text, isErr) {
+    noticeEl.textContent = text;
+    noticeEl.className = "show " + (isErr ? "err" : "ok");
+  }
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+
+  function api(path, body) {
+    var opt = { method: body === undefined ? "GET" : "POST" };
+    if (body !== undefined) {
+      opt.headers = { "Content-Type": "application/json" };
+      opt.body = JSON.stringify(body);
+    }
+    return fetch(path, opt).then(function (resp) {
+      return resp.json().catch(function () { return null; }).then(function (data) {
+        if (!resp.ok) {
+          var msg = (data && data.error && data.error.message) || ("请求失败(" + resp.status + ")");
+          var err = new Error(msg);
+          err.code = data && data.error && data.error.code;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function post(path, body) { return api(path, body === undefined ? {} : body); }
+
+  function setBusy(on) {
+    busy = on;
+    var btns = document.querySelectorAll(".btn");
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = on;
+  }
+
+  // 动作统一入口:跑完提示并整体刷新 state
+  function runAction(path, body, okText) {
+    if (busy) return;
+    setBusy(true);
+    post(path, body).then(function (data) {
+      notice((data && data.message) || okText || "完成", false);
+      return refresh();
+    }).catch(function (err) {
+      notice(err.message, true);
+    }).finally(function () {
+      setBusy(false);
+    });
+  }
+
+  /* ─── 渲染 ─── */
+
+  function renderGauge(g) {
+    var wrap = document.getElementById("gauge");
+    wrap.innerHTML = "";
+    var cards = [
+      ["知识块", g.mysql_count], ["待向量化", g.pending_count],
+      ["Milvus 条数", g.milvus_count], ["关键条款", g.key_clause_count]
+    ];
+    cards.forEach(function (c) {
+      var card = el("div", "gauge-card");
+      card.appendChild(el("div", "gauge-num", String(c[1])));
+      card.appendChild(el("div", "gauge-label", c[0]));
+      wrap.appendChild(card);
+    });
+    var cc = el("div", "gauge-card consistent-" + (g.consistent ? "true" : "false"));
+    cc.appendChild(el("div", "gauge-num", g.consistent ? "一致" : "不一致"));
+    var detail = "pending" + (g.no_pending ? "✓" : "✗") +
+      " · 指针" + (g.pointers_ok ? "✓" : "✗") +
+      " · 主键" + (g.ids_match ? "✓" : "✗");
+    cc.appendChild(el("div", "gauge-label", "双写一致性 " + detail));
+    wrap.appendChild(cc);
+  }
+
+  function featurePills(features) {
+    var out = [];
+    if (features.table) out.push("表格");
+    if (features.overlap) out.push("重叠");
+    if (features.hard_cut) out.push("硬切");
+    return out;
+  }
+
+  function chunkCard(c) {
+    var item = el("div", "chunk-item");
+    var meta = el("div", "meta-line");
+    meta.appendChild(el("span", "pill muted", c.content_type || ""));
+    if (c.is_key_clause) meta.appendChild(el("span", "pill warn", "关键条款"));
+    if (c.is_table) meta.appendChild(el("span", "pill", "表格"));
+    if (c.has_overlap) meta.appendChild(el("span", "pill", "重叠"));
+    if (c.is_hard_cut) meta.appendChild(el("span", "pill", "硬切"));
+    item.appendChild(meta);
+    item.appendChild(el("div", "q", c.category + " / " + c.questions));
+    item.appendChild(el("pre", null, c.answer));
+    return item;
+  }
+
+  function renderChunksInto(container, chunks) {
+    container.innerHTML = "";
+    if (!chunks.length) {
+      container.appendChild(el("p", "hint", "(无切块)"));
+      return;
+    }
+    var list = el("div", "chunk-list");
+    chunks.forEach(function (c) { list.appendChild(chunkCard(c)); });
+    container.appendChild(list);
+  }
+
+  function renderMaterials(materials) {
+    var wrap = document.getElementById("material-list");
+    wrap.innerHTML = "";
+    if (!materials.length) {
+      wrap.appendChild(el("p", "hint", "knowledge_docs/ 下没有 Markdown 文档"));
+      return;
+    }
+    materials.forEach(function (m, idx) {
+      var row = el("div", "material-row");
+      row.appendChild(el("span", "material-name", m.name));
+      if (m.error) {
+        row.appendChild(el("span", "pill bad", "切块失败"));
+        row.appendChild(el("span", "material-stats", m.error));
+      } else {
+        row.appendChild(el("span", "pill muted", m.content_type || ""));
+        row.appendChild(el("span", "material-stats",
+          m.chunk_count + " 块 · 关键条款 " + m.key_clause_count));
+        featurePills(m.features).forEach(function (t) {
+          row.appendChild(el("span", "pill", t));
+        });
+        var btn = el("button", "btn secondary", "细看切块");
+        btn.type = "button";
+        btn.addEventListener("click", function () { showMaterialDetail(idx); });
+        row.appendChild(btn);
+      }
+      wrap.appendChild(row);
+    });
+  }
+
+  function showMaterialDetail(idx) {
+    var m = state.materials[idx];
+    var box = document.getElementById("material-detail");
+    box.innerHTML = "";
+    box.appendChild(el("p", "desc", "「" + m.name + "」共 " + m.chunk_count + " 块:"));
+    renderChunksInto(box, m.chunks);
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function renderDiff(docs) {
+    var box = document.getElementById("diff-result");
+    box.innerHTML = "";
+    var label = { new: ["新增", "ok"], unchanged: ["未变", "muted"], changed: ["已变更", "bad"] };
+    docs.forEach(function (d) {
+      var row = el("div", "material-row");
+      row.appendChild(el("span", "material-name", d.name));
+      var t = label[d.status] || [d.status, "muted"];
+      row.appendChild(el("span", "pill " + t[1], t[0]));
+      if (d.chunk_count !== undefined) {
+        row.appendChild(el("span", "material-stats", "切块 " + d.chunk_count));
+      }
+      if (d.note) row.appendChild(el("span", "material-stats", d.note));
+      box.appendChild(row);
+    });
+  }
+
+  function renderMining(mining) {
+    var sum = document.getElementById("mining-summary");
+    sum.innerHTML = "";
+    var row = el("div", "material-row");
+    row.appendChild(el("span", "pill", "已抽取 " + mining.extracted));
+    row.appendChild(el("span", "pill ok", "已入库(kept) " + mining.kept));
+    row.appendChild(el("span", "pill muted", "已去重丢弃 " + mining.discarded));
+    row.appendChild(el("span", "material-stats", "挖掘批次 " + mining.batches));
+    sum.appendChild(row);
+
+    var wrap = document.getElementById("mining-items");
+    wrap.innerHTML = "";
+    var titles = { extracted: "已抽取", kept: "已入库(kept)", discarded: "已丢弃" };
+    ["extracted", "kept", "discarded"].forEach(function (status) {
+      var items = mining.items[status] || [];
+      if (!items.length) return;
+      var det = el("details", "items");
+      det.appendChild(el("summary", null, titles[status] + " " + items.length + " 条(最新)"));
+      items.forEach(function (it) {
+        var node = el("div", "qa-item");
+        node.appendChild(el("div", "q", it.question));
+        node.appendChild(el("div", "a", it.answer));
+        node.appendChild(el("div", "m",
+          "#" + it.id + " · " + it.batch_no + " · " + (it.source_ref || "") + " · " + it.created_at));
+        det.appendChild(node);
+      });
+      wrap.appendChild(det);
+    });
+  }
+
+  function renderVectorize(v) {
+    var sum = document.getElementById("vectorize-summary");
+    sum.innerHTML = "";
+    var row = el("div", "material-row");
+    row.appendChild(el("span", "pill warn", "pending " + v.pending));
+    row.appendChild(el("span", "pill ok", "done " + v.done));
+    row.appendChild(el("span", "pill", "Milvus " + v.milvus));
+    sum.appendChild(row);
+
+    var box = document.getElementById("pending-samples");
+    box.innerHTML = "";
+    if (!v.pending_samples.length) return;
+    box.appendChild(el("p", "hint", "pending 样例(前 " + v.pending_samples.length + " 条):"));
+    var table = el("table", "data");
+    table.innerHTML = "<thead><tr><th>id</th><th>类型</th><th>分类</th><th>问题</th><th>来源</th></tr></thead>";
+    var tbody = el("tbody");
+    v.pending_samples.forEach(function (p) {
+      var tr = el("tr");
+      tr.appendChild(el("td", "mono", "#" + p.id));
+      tr.appendChild(el("td", null, p.content_type || ""));
+      tr.appendChild(el("td", null, p.category || ""));
+      tr.appendChild(el("td", null, p.questions));
+      tr.appendChild(el("td", "mono", p.source_doc || "(手工/挖掘)"));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    box.appendChild(table);
+  }
+
+  function renderRecent(recent) {
+    var box = document.getElementById("recent-table");
+    box.innerHTML = "";
+    if (!recent.length) {
+      box.appendChild(el("p", "hint", "(库内暂无知识块)"));
+      return;
+    }
+    var table = el("table", "data");
+    table.innerHTML = "<thead><tr><th>id</th><th>类型</th><th>分类</th><th>问题</th><th>关键</th><th>向量化</th><th>来源</th><th>时间</th></tr></thead>";
+    var tbody = el("tbody");
+    recent.forEach(function (r) {
+      var tr = el("tr");
+      tr.appendChild(el("td", "mono", "#" + r.id));
+      tr.appendChild(el("td", null, r.content_type || ""));
+      tr.appendChild(el("td", null, r.category || ""));
+      tr.appendChild(el("td", null, r.questions));
+      tr.appendChild(el("td", null, r.is_key_clause ? "是" : ""));
+      tr.appendChild(el("td", null, r.vectorize_status));
+      tr.appendChild(el("td", "mono", r.source_doc || "(手工/挖掘)"));
+      tr.appendChild(el("td", "mono", r.created_at));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    box.appendChild(table);
+  }
+
+  function renderAll(s) {
+    renderGauge(s.gauge);
+    renderMaterials(s.materials);
+    renderMining(s.mining);
+    renderVectorize(s.vectorize);
+    renderRecent(s.recent);
+    document.getElementById("diff-result").innerHTML = "";
+    document.getElementById("material-detail").innerHTML = "";
+    var checkbox = document.getElementById("manual-vectorize");
+    var hint = document.getElementById("manual-vectorize-hint");
+    checkbox.disabled = !s.embedding_configured;
+    if (!s.embedding_configured) checkbox.checked = false;
+    hint.hidden = s.embedding_configured;
+  }
+
+  function refresh() {
+    return api("/kb/api/state").then(function (s) {
+      state = s;
+      renderAll(s);
+    }).catch(function (err) {
+      notice("状态加载失败:" + err.message, true);
+    });
+  }
+
+  /* ─── 事件 ─── */
+
+  function manualPayload() {
+    return {
+      doc_type: document.getElementById("manual-type").value,
+      title: document.getElementById("manual-title").value,
+      markdown: document.getElementById("manual-markdown").value
+    };
+  }
+
+  document.getElementById("manual-preview-btn").addEventListener("click", function () {
+    if (busy) return;
+    setBusy(true);
+    post("/kb/api/manual/preview", manualPayload()).then(function (data) {
+      var box = document.getElementById("manual-preview");
+      box.innerHTML = "";
+      box.appendChild(el("p", "desc", "切出 " + data.chunk_count + " 块:"));
+      renderChunksInto(box, data.chunks);
+    }).catch(function (err) {
+      notice(err.message, true);
+    }).finally(function () { setBusy(false); });
+  });
+
+  document.getElementById("manual-ingest-btn").addEventListener("click", function () {
+    var body = manualPayload();
+    body.vectorize = document.getElementById("manual-vectorize").checked;
+    runAction("/kb/api/manual/ingest", body);
+  });
+
+  document.getElementById("preview-btn").addEventListener("click", function () {
+    if (busy) return;
+    setBusy(true);
+    post("/kb/api/preview").then(function (data) {
+      renderDiff(data.docs);
+      notice("差异预览完成", false);
+    }).catch(function (err) {
+      notice(err.message, true);
+    }).finally(function () { setBusy(false); });
+  });
+
+  document.getElementById("build-btn").addEventListener("click", function () {
+    if (!confirm("确认对 knowledge_docs/ 全量建库?文档变更会硬报错(需先选择性重建)。")) return;
+    runAction("/kb/api/build");
+  });
+
+  document.getElementById("mine-btn").addEventListener("click", function () {
+    runAction("/kb/api/mine");
+  });
+
+  document.getElementById("vectorize-btn").addEventListener("click", function () {
+    runAction("/kb/api/vectorize");
+  });
+
+  document.getElementById("reset-btn").addEventListener("click", function () {
+    if (!confirm("选择性重建将删除全部文档块(knowledge_docs 来源)的向量与行并重新建库;手工块与挖掘块保留。确认继续?")) return;
+    runAction("/kb/api/reset");
+  });
+
+  document.getElementById("search-btn").addEventListener("click", function () {
+    if (busy) return;
+    var body = {
+      query: document.getElementById("search-query").value,
+      top_k: parseInt(document.getElementById("search-topk").value, 10) || 5,
+      min_score: parseFloat(document.getElementById("search-min-score").value)
+    };
+    setBusy(true);
+    post("/kb/api/search", body).then(function (data) {
+      var box = document.getElementById("search-result");
+      box.innerHTML = "";
+      if (data.note) {
+        box.appendChild(el("p", "hint", data.note));
+        return;
+      }
+      if (!data.hits.length) {
+        box.appendChild(el("p", "hint", "(无命中)"));
+        return;
+      }
+      data.hits.forEach(function (h) {
+        var node = el("div", "hit" + (h.passed ? "" : " failed"));
+        var meta = el("div", "meta-line");
+        meta.appendChild(el("span", "score", "score " + h.score.toFixed(3)));
+        meta.appendChild(el("span", "pill " + (h.passed ? "ok" : "bad"),
+          h.passed ? "过线" : "压线未过"));
+        node.appendChild(meta);
+        node.appendChild(el("div", "q", h.category + " / " + h.questions));
+        node.appendChild(el("div", "a", h.answer));
+        node.appendChild(el("div", "m",
+          (h.source_doc || "(手工/挖掘)") + " · chunk #" + h.chunk_id));
+        box.appendChild(node);
+      });
+    }).catch(function (err) {
+      notice(err.message, true);
+    }).finally(function () { setBusy(false); });
+  });
+
+  refresh();
+})();
+</script>
+</body>
+</html>

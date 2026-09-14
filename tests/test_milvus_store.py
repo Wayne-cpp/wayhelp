@@ -44,6 +44,33 @@ def test_all_ids_empty_collection(store):
     assert store.all_ids() == set()
 
 
+def test_num_entities(store):
+    assert store.num_entities() == 0  # 集合不存在 → 0,不建文件外的东西
+    store.ensure_collection()
+    assert store.num_entities() == 0
+    store.upsert([(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])])
+    assert store.num_entities() == 2
+    store.upsert([(1, [0.0, 1.0, 0.0, 0.0])])  # 覆盖不增量
+    assert store.num_entities() == 2
+
+
+def test_delete_by_ids(store):
+    store.ensure_collection()
+    store.upsert([(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0]),
+                  (3, [0.0, 0.0, 1.0, 0.0])])
+    store.delete_by_ids([1, 3])
+    assert store.all_ids() == {2}
+    assert store.num_entities() == 1
+    store.delete_by_ids([])     # 空列表不炸
+    store.delete_by_ids([999])  # 不存在的 id 不炸
+    assert store.all_ids() == {2}
+
+
+def test_delete_by_ids_without_collection(store):
+    store.delete_by_ids([1, 2])  # 集合不存在:静默不炸(对空库 reset 场景)
+    assert store.all_ids() == set()
+
+
 def test_contract_mismatch_dim_rejected(store):
     store.ensure_collection()  # dim=4
     wrong = MilvusKnowledgeStore(store._uri, dim=8)

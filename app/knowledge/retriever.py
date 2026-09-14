@@ -34,6 +34,18 @@ class KnowledgeHit:
     chunk_index: int | None
 
 
+@dataclass(frozen=True)
+class ProbeHit:
+    """检索自测命中:不按阈值过滤,passed 标记是否过线(/kb 页面灰显压线块)。"""
+    chunk_id: int
+    score: float
+    passed: bool
+    category: str
+    questions: str
+    answer: str
+    source_doc: str | None
+
+
 def _as_retryable(exc: Exception) -> RetryableKnowledgeError | None:
     if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError,
                         TimeoutError, ConnectionError)):
@@ -65,6 +77,27 @@ class KnowledgeRetriever:
         """→ (hits, note)。note 非空 = 降级/未建库;hits 空且 note 空 = 正常无命中。
         min_score 仅供评估覆盖阈值;在线调用不传。"""
         threshold = self._settings.knowledge_min_score if min_score is None else min_score
+        raw, note = self._raw_search(query, self._settings.knowledge_top_k)
+        if note is not None:
+            return [], note
+        hits = [(i, d) for i, d in raw if d >= threshold]
+        if not hits:
+            return [], None
+        return self._hydrate(hits), None
+
+    def probe(self, query: str, top_k: int,
+              min_score: float) -> tuple[list[ProbeHit], str | None]:
+        """检索自测旁路:Top-K 全部命中(不过滤),每条带 passed;note 语义同 search。"""
+        raw, note = self._raw_search(query, top_k)
+        if note is not None:
+            return [], note
+        return [ProbeHit(h.chunk_id, h.score, h.score >= min_score, h.category,
+                         h.questions, h.answer, h.source_doc)
+                for h in self._hydrate(raw)], None
+
+    def _raw_search(self, query: str,
+                    top_k: int) -> tuple[list[tuple[int, float]], str | None]:
+        """embed + Milvus Top-K;返回 (原始 [(chunk_id, score)], note)。"""
         if not self.enabled:
             return [], NOTE_UNCONFIGURED
         if not self._store.file_exists():
@@ -87,24 +120,24 @@ class KnowledgeRetriever:
         if len(vector) != self._store.dim:
             raise ValueError(f"查询向量维度 {len(vector)} ≠ 集合维度 {self._store.dim}")
         try:
-            raw = self._store.search(vector, self._settings.knowledge_top_k)
+            return self._store.search(vector, top_k), None
         except Exception as exc:
             retryable = _as_retryable(exc)
             if retryable is not None:
                 raise retryable from exc
             raise
-        hits = [(i, d) for i, d in raw if d >= threshold]
-        if not hits:
-            return [], None
+
+    def _hydrate(self, hits: list[tuple[int, float]]) -> list[KnowledgeHit]:
+        """按 id 从 MySQL 取原文,保持 Milvus 相似度顺序;原文被删的跳过不炸。"""
         ids = [i for i, _ in hits]
         with self._sf() as s:
             rows = {r.id: r for r in s.query(KnowledgeChunk)
                     .filter(KnowledgeChunk.id.in_(ids)).all()}
         out: list[KnowledgeHit] = []
-        for chunk_id, score in hits:  # 保持 Milvus 相似度顺序
+        for chunk_id, score in hits:
             row = rows.get(chunk_id)
             if row is None:
-                continue  # 向量在而原文被删:跳过不炸
+                continue
             out.append(KnowledgeHit(chunk_id, score, row.category, row.questions,
                                     row.answer, row.source_doc, row.chunk_index))
-        return out, None
+        return out

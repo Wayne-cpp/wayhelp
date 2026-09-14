@@ -110,6 +110,20 @@ class MilvusKnowledgeStore:
         rows = self._cli().query(COLLECTION, filter="id >= 0", output_fields=["id"])
         return {r["id"] for r in rows}
 
+    def num_entities(self) -> int:
+        if not self.has_collection():
+            return 0
+        self._ensure_loaded()
+        stats = self._cli().get_collection_stats(COLLECTION)
+        return int(stats["row_count"])
+
+    def delete_by_ids(self, ids: list[int]) -> None:
+        """选择性重建用;集合不存在或 ids 空时不做事。"""
+        if not ids or not self.has_collection():
+            return
+        self._ensure_loaded()
+        self._cli().delete(COLLECTION, ids=list(ids))
+
     def close(self) -> None:
         if self._client is not None:
             self._client.close()

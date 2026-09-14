@@ -15,6 +15,7 @@ async def test_root_serves_chat_page():
     assert 'id="messages"' in resp.text
     assert "/v1/chat/stream" in resp.text
     assert "1784959384051.jpg" in resp.text
+    assert 'href="/kb"' in resp.text  # 页脚小字知识库管理入口
 
 
 async def test_brand_mark_asset_served():

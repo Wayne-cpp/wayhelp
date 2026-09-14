@@ -1,6 +1,7 @@
 import re
 import uuid
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -69,6 +70,30 @@ class ExtractRequest(BaseModel):
     @field_validator("text")
     @classmethod
     def _text_not_blank(cls, v: str) -> str:
+        return _require_non_blank(v)
+
+
+class KbManualRequest(BaseModel):
+    """/kb 手工录入:服务端拼 frontmatter 后走 chunk_document;vectorize 仅 ingest 用。"""
+    doc_type: Literal["faq", "policy", "manual"]
+    title: str
+    markdown: str
+    vectorize: bool = True
+
+    @field_validator("title", "markdown")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        return _require_non_blank(v)
+
+
+class KbSearchRequest(BaseModel):
+    query: str
+    top_k: int = Field(default=5, gt=0, le=50)
+    min_score: float = Field(default=0.623, ge=-1, le=1)
+
+    @field_validator("query")
+    @classmethod
+    def _query_not_blank(cls, v: str) -> str:
         return _require_non_blank(v)
 
 

@@ -415,6 +415,8 @@
     text-align: center;
     color: var(--muted);
   }
+  .composer-hint a { color: var(--muted); text-decoration: none; }
+  .composer-hint a:hover { color: var(--fg-2); text-decoration: underline; }
 
   @media (max-width: 640px) {
     .app { border-inline: none; box-shadow: none; }
@@ -457,7 +459,7 @@
       </button>
     </div>
   </div>
-  <div class="composer-hint">小蜜是 AI 助手，涉及具体订单将为你转接人工核实 · Enter 发送，Shift+Enter 换行</div>
+  <div class="composer-hint">小蜜是 AI 助手，涉及具体订单将为你转接人工核实 · Enter 发送，Shift+Enter 换行 · <a href="/kb">知识库管理</a></div>
 </div>
 
 <script>

@@ -13,4 +13,7 @@ __pycache__/
 # 日志与临时产物
 *.log
 *.tmp
+nohup.out
+
+# 本地运行时数据(Milvus Lite 库文件、uvicorn 日志等,重新建库可再生,不入库)
 data/

@@ -21,6 +21,9 @@ class Chunk:
     section_path: str | None
     content_type: str
     is_key_clause: bool
+    is_table: bool = False      # 表格块(表头复制成块)
+    has_overlap: bool = False   # 块首拼了上一块的完整句重叠
+    is_hard_cut: bool = False   # 含硬切单元(无句末标点按字断)
 
 
 _KEY_CLAUSE_WORDS = ("不支持", "不予", "必须", "扣除", "逾期", "无效")
@@ -133,19 +136,19 @@ def _hard_cut(text: str, max_chars: int) -> list[str]:
     return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
 
-def _para_units(text: str, max_chars: int) -> list[str]:
-    """段落 → 可装入单元:整段 ≤ max 则整段;否则按句;单句超限硬切。"""
+def _para_units(text: str, max_chars: int) -> list[tuple[str, bool]]:
+    """段落 → (单元, 是否硬切):整段 ≤ max 则整段;否则按句;单句超限硬切。"""
     if len(text) <= max_chars:
-        return [text]
-    units: list[str] = []
+        return [(text, False)]
+    units: list[tuple[str, bool]] = []
     for sent in _split_sentences(text):
         if len(sent) <= max_chars:
-            units.append(sent)
+            units.append((sent, False))
         else:
-            units.extend(_hard_cut(sent, max_chars))
+            units.extend((piece, True) for piece in _hard_cut(sent, max_chars))
     if not units:  # 无任何句末标点:整段视为一句
-        units = _hard_cut(text, max_chars)
-    return [u for u in units if u]
+        units = [(piece, True) for piece in _hard_cut(text, max_chars)]
+    return [u for u in units if u[0]]
 
 
 def _table_chunks(text: str, max_chars: int, source: str, base_line_no: int) -> list[str]:
@@ -184,44 +187,50 @@ def _sentence_suffix(text: str, budget: int) -> str:
 
 
 def _emit_answers(blocks: list[_Block], max_chars: int, overlap: int,
-                  source: str) -> list[str]:
-    """blocks → 有序 answer 列表;文本块打包+完整句重叠,表格块独立成块。"""
-    answers: list[tuple[str, str]] = []  # (kind, text)
+                  source: str) -> list[tuple[str, bool, bool, bool]]:
+    """blocks → 有序 (answer, is_table, has_overlap, is_hard_cut) 列表;
+    文本块打包+完整句重叠,表格块独立成块。"""
+    answers: list[tuple[str, str, bool]] = []  # (kind, text, hard_cut)
     cur_text = ""
+    cur_hard = False
     cur_capacity = max_chars  # section 首块不预留重叠预算
 
     def close_text():
-        nonlocal cur_text, cur_capacity
+        nonlocal cur_text, cur_hard, cur_capacity
         if cur_text:
-            answers.append(("text", cur_text))
+            answers.append(("text", cur_text, cur_hard))
             cur_text = ""
+            cur_hard = False
             cur_capacity = max_chars - (overlap + 1 if overlap > 0 else 0)
 
     for blk in blocks:
         if blk.kind == "table":
             close_text()
             for piece in _table_chunks(blk.text, max_chars, source, blk.line_no):
-                answers.append(("table", piece))
+                answers.append(("table", piece, False))
             cur_capacity = max_chars - (overlap + 1 if overlap > 0 else 0)
             continue
-        for j, unit in enumerate(_para_units(blk.text, max_chars)):
+        for j, (unit, hard) in enumerate(_para_units(blk.text, max_chars)):
             # 段落之间用换行分隔;同段拆出的句单元直接拼接
             joiner = "\n" if cur_text and j == 0 else ""
             if cur_text and len(cur_text) + len(joiner) + len(unit) > cur_capacity:
                 close_text()
                 joiner = ""
             cur_text = cur_text + joiner + unit if cur_text else unit
+            cur_hard = cur_hard or hard
     close_text()
 
-    out: list[str] = []
-    for i, (kind, text) in enumerate(answers):
+    out: list[tuple[str, bool, bool, bool]] = []
+    for i, (kind, text, hard) in enumerate(answers):
+        has_overlap = False
         if kind == "text" and i > 0 and answers[i - 1][0] == "text":
-            suffix = _sentence_suffix(out[-1], overlap)
+            suffix = _sentence_suffix(out[-1][0], overlap)
             # 与下一完整句冲突(如硬切块满载)时取消重叠,保持 answer 不超限
             if suffix and len(suffix) + 1 + len(text) <= max_chars:
                 text = suffix + "\n" + text
-        out.append(text)
-    return [t for t in out if t.strip()]
+                has_overlap = True
+        out.append((text, kind == "table", has_overlap, hard))
+    return [t for t in out if t[0].strip()]
 
 
 def chunk_document(text: str, *, source: str, max_chars: int,
@@ -248,11 +257,13 @@ def chunk_document(text: str, *, source: str, max_chars: int,
             category = title
         else:
             category = " > ".join(sec.stack[:-1])
-        for answer in _emit_answers(blocks, max_chars, overlap_chars, source):
+        for answer, is_table, has_overlap, is_hard_cut in _emit_answers(
+                blocks, max_chars, overlap_chars, source):
             chunks.append(Chunk(
                 category=category, questions=questions, answer=answer,
                 section_path=" > ".join(sec.stack), content_type=ctype,
                 is_key_clause=any(w in answer for w in _KEY_CLAUSE_WORDS),
+                is_table=is_table, has_overlap=has_overlap, is_hard_cut=is_hard_cut,
             ))
     if not chunks:
         raise ChunkingError("整个文档无可入库正文", source)

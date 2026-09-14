@@ -60,5 +60,6 @@ curl -X POST http://127.0.0.1:8000/v1/extract \
 
 ### 运行约束
 
-- Milvus Lite 本地库独占打开:跑建库/挖矿/评估前先停在线服务(uvicorn),完成后再起;服务单 worker
-- 不并行运行两个知识任务;缺 EMBEDDING_API_KEY 时在线检索降级为「知识检索未配置」,服务正常启动
+- 知识库管理页:浏览器打开 `http://127.0.0.1:8000/kb`(聊天页页脚有入口),日常建库/差异预览/向量化/挖掘/选择性重建/检索自测都在页面上完成,作业在 uvicorn 进程内复用同一 Milvus 连接,全局互斥
+- Milvus Lite 本地库独占打开(文件锁互斥):服务运行(uvicorn)时请勿另跑知识库 CLI(ingest_docs / mine_qa / 召回评估),要用 CLI 先停服务;CLI 保留用于离线/脚本场景,服务单 worker
+- 不并行运行两个知识任务(页面侧已互斥);缺 EMBEDDING_API_KEY 时在线检索降级为「知识检索未配置」,服务正常启动;/kb 的建库在该情况下只做切块入库留 pending,向量化/挖掘报 embedding_not_configured

@@ -137,3 +137,40 @@ def test_subheading_stays_in_faq_answer():
     chunks = chunk_document(doc, source="f.md", max_chars=500, overlap_chars=80)
     assert len(chunks) == 1
     assert "### 第一步" in chunks[0].answer and "### 第二步" in chunks[0].answer
+
+
+def test_normal_chunks_flags_default_false():
+    chunks = chunk_document(POLICY_DOC, source="d.md", max_chars=500, overlap_chars=80)
+    assert all(not c.is_table and not c.has_overlap and not c.is_hard_cut
+               for c in chunks)
+
+
+def test_table_chunks_flagged_is_table():
+    table = ("| 项目 | 标准 |\n|---|---|\n| 退货时效 | 签收后7天 |\n"
+             "| 换货时效 | 签收后15天 |")
+    doc = f"---\ntype: manual\n---\n# 手册\n\n## 时效\n\n说明一句。\n\n{table}"
+    chunks = chunk_document(doc, source="m.md", max_chars=500, overlap_chars=80)
+    by_answer = {c.answer[:4]: c for c in chunks}
+    text_chunk = next(c for c in chunks if not c.answer.startswith("|"))
+    table_chunk = next(c for c in chunks if c.answer.startswith("|"))
+    assert table_chunk.is_table is True
+    assert table_chunk.has_overlap is False and table_chunk.is_hard_cut is False
+    assert text_chunk.is_table is False
+
+
+def test_overlap_chunk_flagged_has_overlap():
+    body = "第一句很长啊。第二句也不短呢。第三句更长了。"
+    doc = f"---\ntype: policy\n---\n# T\n\n## S\n\n{body}"
+    chunks = chunk_document(doc, source="x.md", max_chars=20, overlap_chars=10)
+    assert chunks[0].has_overlap is False  # section 首块无重叠
+    assert chunks[1].has_overlap is True   # 块首拼了上一块的完整句后缀
+    assert all(not c.is_table and not c.is_hard_cut for c in chunks)
+
+
+def test_hard_cut_chunks_flagged():
+    body = "无标点" * 30  # 90 字无句末标点,硬切
+    doc = f"---\ntype: policy\n---\n# T\n\n## S\n\n{body}"
+    chunks = chunk_document(doc, source="x.md", max_chars=40, overlap_chars=10)
+    assert len(chunks) == 3
+    assert all(c.is_hard_cut for c in chunks)
+    assert all(not c.is_table and not c.has_overlap for c in chunks)  # 硬切尾无重叠
