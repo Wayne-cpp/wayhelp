@@ -1,6 +1,6 @@
-# wayhelp — 电商智能客服(ch02 Function Calling 工具链)
+# wayhelp — 电商智能客服(ch02 Function Calling 工具链 + ch03 知识库语义检索)
 
-SSE 流式客服聊天 + 模型自选工具:用户问一句,后端走「模型定工具 → 执行 → 结果回灌 → 收敛作答」,回答逐 token 吐出,聊天气泡带工具轨迹徽章。单轮最多调一次工具。
+SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,后端走「模型定工具 → 执行 → 结果回灌 → 收敛作答」,回答逐 token 吐出,聊天气泡带工具轨迹徽章;ch03 起叠加 Milvus 向量语义检索,FAQ/政策类问题先查知识库。单轮工具调用上限 MAX_TOOL_CALLS_PER_TURN(默认 5,create_ticket 单轮限一次)。
 
 ## 环境
 - `uv sync`(自动建 Python 3.12 虚拟环境)
@@ -9,7 +9,7 @@ SSE 流式客服聊天 + 模型自选工具:用户问一句,后端走「模型�
 ## 运行
 ```bash
 docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversations/messages/tickets + 灌 faq seed)
-uv run pytest                 # 测试 136 条(DB 用例需 Docker 在线)
+uv run pytest                 # 测试 244 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
@@ -50,7 +50,7 @@ curl -X POST http://127.0.0.1:8000/v1/extract \
 
 - 知识文档建库:`uv run python -m app.jobs.ingest_docs [knowledge_docs/]`
 - 对话挖知识:`uv run python -m app.jobs.mine_qa`
-- 召回评估:`uv run python evals/run_knowledge_eval.py`
+- 召回评估:`uv run python evals/run_knowledge_eval.py`(加 `--dump-corpus` 建评估语料并打印可标注块)
 - 新增环境变量:EMBEDDING_BASE_URL / EMBEDDING_API_KEY(硅基流动;上面三个命令都要先填它,在线服务缺它降级为「知识检索未配置」但不拒启动)/ EMBEDDING_MODEL(BAAI/bge-m3)/ MILVUS_URI(./data/milvus_lite.db)等,见 .env.example
 
 ### 数据库初始化与升级
