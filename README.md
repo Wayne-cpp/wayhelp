@@ -1,4 +1,4 @@
-# wayhelp — 电商智能客服(ch02 Function Calling 工具链 + ch03 知识库语义检索)
+# wayhelp — 电商智能客服
 
 SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,后端走「模型定工具 → 执行 → 结果回灌 → 收敛作答」,回答逐 token 吐出,聊天气泡带工具轨迹徽章;ch03 起叠加 Milvus 向量语义检索,FAQ/政策类问题先查知识库。单轮工具调用上限 MAX_TOOL_CALLS_PER_TURN(默认 5,create_ticket 单轮限一次)。
 
