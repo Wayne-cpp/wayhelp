@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.config import Settings
 from app.knowledge.chunking import ChunkingError, chunk_document
 from app.knowledge.milvus_store import MilvusKnowledgeStore
+from app.knowledge.scope import derive_scope
 from app.models import KnowledgeChunk
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -46,18 +47,20 @@ def vectorize_pending(settings: Settings, session_factory: sessionmaker,
                     .limit(VECTORIZE_BATCH).all())
             if not rows:
                 return
-            payloads = [(r.id, vector_text(r.category, r.questions, r.answer)) for r in rows]
+            payloads = [(r.id, vector_text(r.category, r.questions, r.answer),
+                         derive_scope(r.content_type, r.source_doc)) for r in rows]
         try:
-            vectors = embed.embed_documents([t for _, t in payloads])
+            vectors = embed.embed_documents([t for _, t, _ in payloads])
             if len(vectors) != len(payloads):
                 raise IngestError(
                     f"返回向量数 {len(vectors)} ≠ 输入 {len(payloads)}")
             for v in vectors:
                 if len(v) != store.dim:
                     raise IngestError(f"向量维度 {len(v)} ≠ 集合维度 {store.dim}")
-            store.upsert(list(zip([i for i, _ in payloads], vectors)))
+            store.upsert([(i, v, t, sc)
+                          for (i, t, sc), v in zip(payloads, vectors)])
             with session_factory() as s:
-                for chunk_id, _ in payloads:
+                for chunk_id, _, _ in payloads:
                     s.query(KnowledgeChunk).filter_by(id=chunk_id).update(
                         {"vector_id": str(chunk_id), "vectorize_status": "done"})
                 s.commit()

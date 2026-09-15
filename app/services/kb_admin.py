@@ -7,7 +7,6 @@ vectorize/mine/reset)拿全局作业互斥锁;读(state/search)不拿锁,可与�
 
 import threading
 from contextlib import contextmanager
-from dataclasses import asdict
 from pathlib import Path
 
 from sqlalchemy import func
@@ -396,7 +395,8 @@ def reset_kb(settings: Settings, session_factory: sessionmaker, embed,
 def search_probe(settings: Settings, session_factory: sessionmaker, embed,
                  store: MilvusKnowledgeStore, query: str, top_k: int,
                  min_score: float) -> dict:
+    # T6 过渡:自测旁路固定 dense 腿(与旧 probe 行为一致);此处未装配 reranker,
+    # 若放行默认 hybrid_rerank 会恒降级。T11 接入 strategy/scope 透传与 reranker。
     retriever = KnowledgeRetriever(settings, embed=embed, store=store,
                                    session_factory=session_factory)
-    hits, note = retriever.probe(query, top_k, min_score)
-    return {"note": note, "hits": [asdict(h) for h in hits]}
+    return retriever.probe(query, top_k, min_score, strategy="dense")

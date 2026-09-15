@@ -21,11 +21,13 @@ from tests.dbfixtures import db_engine, db_session_factory  # noqa: F401
 
 
 class FakeKbStore:
-    """内存版 Milvus store 协议:cosine 相似度确定性可算。"""
+    """内存版 Milvus store 协议:cosine 相似度确定性可算。
+    upsert 兼容旧二元组(测试侧种子)与 T3 起的四元组 (id, vector, text, scope)。"""
 
     def __init__(self, dim: int = 1024):
         self.dim = dim
         self.vectors: dict[int, list[float]] = {}
+        self.texts: dict[int, str] = {}
         self.deleted: list[int] = []
 
     def file_exists(self):
@@ -38,7 +40,10 @@ class FakeKbStore:
         pass
 
     def upsert(self, rows):
-        self.vectors.update(dict(rows))
+        for row in rows:
+            self.vectors[row[0]] = row[1]
+            if len(row) > 2:
+                self.texts[row[0]] = row[2]
 
     def all_ids(self):
         return set(self.vectors)
@@ -49,17 +54,36 @@ class FakeKbStore:
     def delete_by_ids(self, ids):
         for i in ids:
             self.vectors.pop(i, None)
+            self.texts.pop(i, None)
             self.deleted.append(i)
 
-    def search(self, vector, top_k):
-        def cos(a, b):
-            dot = sum(x * y for x, y in zip(a, b))
-            na = math.sqrt(sum(x * x for x in a)) or 1.0
-            nb = math.sqrt(sum(x * x for x in b)) or 1.0
-            return dot / (na * nb)
-        scored = sorted(((i, cos(v, vector)) for i, v in self.vectors.items()),
+    @staticmethod
+    def _cos(a, b):
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a)) or 1.0
+        nb = math.sqrt(sum(x * x for x in b)) or 1.0
+        return dot / (na * nb)
+
+    def search_dense(self, vector, top_k, scope=None):
+        scored = sorted(((i, self._cos(v, vector)) for i, v in self.vectors.items()),
                         key=lambda t: -t[1])
         return scored[:top_k]
+
+    def search_bm25(self, text, top_k, scope=None):
+        terms = [t for t in text.split() if t]
+        scored = ((i, sum(1.0 for t in terms if t in self.texts.get(i, "")))
+                  for i in self.vectors)
+        hits = [(i, s) for i, s in scored if s > 0]
+        return sorted(hits, key=lambda t: -t[1])[:top_k]
+
+    def hybrid(self, vector, text, top_k, scope=None):
+        # 朴素 RRF(k=60),与真实 store 的融合行为同构
+        legs = [self.search_dense(vector, top_k), self.search_bm25(text, top_k)]
+        fused: dict[int, float] = {}
+        for leg in legs:
+            for rank, (i, _) in enumerate(leg, start=1):
+                fused[i] = fused.get(i, 0.0) + 1.0 / (60 + rank)
+        return sorted(fused.items(), key=lambda t: -t[1])[:top_k]
 
     def close(self):
         pass
