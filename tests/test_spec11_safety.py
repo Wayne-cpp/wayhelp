@@ -133,10 +133,10 @@ async def test_cancel_during_commit_lock_released_only_after_transaction(
     state = {"commit_done": False}
     real_commit = store._commit_sync
 
-    def slow_commit(session_id, messages):
+    def slow_commit(session_id, messages, low_confidence=None):
         entered.set()
         time.sleep(0.3)  # 拉宽"事务进行中"窗口
-        real_commit(session_id, messages)
+        real_commit(session_id, messages, low_confidence)
         state["commit_done"] = True
 
     monkeypatch.setattr(store, "_commit_sync", slow_commit)

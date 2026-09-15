@@ -129,3 +129,21 @@ async def test_decimal_beyond_bigint_treated_as_missing(db_session_factory):
     sid = "9223372036854775808"  # 2^63;[1-9]\d{0,18} 仍放行但越界
     assert await store.exists(sid, USER) is False
     assert await store.snapshot(sid) == []
+
+
+def test_commit_turn_with_low_confidence(db_session_factory):
+    from app.sessions import LowConfidenceRecord, StoredMessage
+    from app.store_db import DbSessionStore
+    from app.models import LowConfidenceQuestion
+    store = DbSessionStore(db_session_factory, 8000)
+    sid = asyncio.run(store.create("u1"))
+    asyncio.run(store.commit_turn(sid, [
+        StoredMessage("user", "能寄到日本吗"),
+        StoredMessage("assistant", "抱歉,这个问题超出了我目前掌握的资料范围,已为您记录,稍后可转人工客服进一步核实。"),
+    ], low_confidence=LowConfidenceRecord(
+        raw_question="能寄到日本吗", source="retrieval_low_conf",
+        reason='{"top1": 0.01}', conversation_id=int(sid))))
+    with db_session_factory() as s:
+        rows = s.query(LowConfidenceQuestion).all()
+        assert len(rows) == 1 and rows[0].source == "retrieval_low_conf"
+        assert rows[0].conversation_id == int(sid)

@@ -87,3 +87,27 @@ def test_mined_qa_allows_multiple_null_source(db_session_factory):
                                  content_type="qa_mined", source_doc=None, chunk_index=None))
         s.commit()
         assert s.query(KnowledgeChunk).count() == 2
+
+
+def test_low_confidence_question_crud(db_session_factory):
+    from app.models import Conversation, LowConfidenceQuestion
+    with db_session_factory() as s:
+        conv = Conversation(user_id="u1")
+        s.add(conv); s.commit()
+        s.add(LowConfidenceQuestion(conversation_id=conv.id, raw_question="能寄到日本吗",
+                                    source="retrieval_low_conf", reason='{"top1": 0.01}'))
+        s.commit()
+        row = s.query(LowConfidenceQuestion).one()
+        assert row.source == "retrieval_low_conf" and row.conversation_id == conv.id
+        assert row.created_at is not None
+
+
+def test_faith_case_crud_defaults(db_session_factory):
+    from app.models import FaithCase
+    with db_session_factory() as s:
+        s.add(FaithCase(eval_id="A43", bucket="A_policy", query="q", strategy="hybrid_rerank",
+                        answer="a", reason="r",
+                        citations=[{"n": 1, "chunk_id": 5}], judge_model="m"))
+        s.commit()
+        row = s.query(FaithCase).one()
+        assert row.status == "未解决" and row.seen_count == 1

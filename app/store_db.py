@@ -3,8 +3,8 @@ from datetime import datetime
 
 from sqlalchemy import select, update
 
-from app.models import Conversation, Message
-from app.sessions import StoredMessage, validate_turn
+from app.models import Conversation, LowConfidenceQuestion, Message
+from app.sessions import LowConfidenceRecord, StoredMessage, validate_turn
 
 _BIGINT_MAX = (1 << 63) - 1  # conversations.id 为 BIGINT 自增
 
@@ -70,11 +70,13 @@ class DbSessionStore:
                 for r in rows
             ]
 
-    async def commit_turn(self, session_id: str, messages: list[StoredMessage]) -> None:
+    async def commit_turn(self, session_id: str, messages: list[StoredMessage],
+                          low_confidence: LowConfidenceRecord | None = None) -> None:
         validate_turn(messages, max_tool_calls=64)  # DB 侧结构校验;数量上限由编排层把关
-        await asyncio.to_thread(self._commit_sync, session_id, messages)
+        await asyncio.to_thread(self._commit_sync, session_id, messages, low_confidence)
 
-    def _commit_sync(self, session_id: str, messages: list[StoredMessage]) -> None:
+    def _commit_sync(self, session_id: str, messages: list[StoredMessage],
+                     low_confidence: LowConfidenceRecord | None = None) -> None:
         cid = int(session_id)
         with self._sf() as s:
             for m in messages:
@@ -90,4 +92,11 @@ class DbSessionStore:
                 .where(Conversation.id == cid)
                 .values(updated_at=datetime.now())
             )
-            s.commit()  # 任一失败整体回滚(Session 上下文管理器)
+            if low_confidence is not None:
+                s.add(LowConfidenceQuestion(
+                    conversation_id=low_confidence.conversation_id,
+                    raw_question=low_confidence.raw_question,
+                    source=low_confidence.source,
+                    reason=low_confidence.reason,
+                ))
+            s.commit()  # 任一失败整体回滚(Session 上下文管理器);低置信度入池与消息同事务

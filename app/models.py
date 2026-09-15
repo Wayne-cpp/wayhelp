@@ -115,3 +115,37 @@ class QaMiningProgress(Base):
     batch_no: Mapped[str] = mapped_column(String(64))
     qa_count: Mapped[int] = mapped_column(INTEGER(unsigned=True))
     extracted_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class LowConfidenceQuestion(Base):
+    __tablename__ = "low_confidence_questions"
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("conversations.id"), nullable=True)
+    raw_question: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(
+        Enum("retrieval_low_conf", "self_check", "user_feedback", name="lcq_source"))
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class FaithCase(Base):
+    __tablename__ = "faith_cases"
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    eval_id: Mapped[str] = mapped_column(String(16), unique=True)
+    bucket: Mapped[str] = mapped_column(String(24))
+    query: Mapped[str] = mapped_column(String(512))
+    strategy: Mapped[str] = mapped_column(String(24), default="hybrid_rerank")
+    answer: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    citations: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    judge_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        Enum("未解决", "已解决", "无需解决", name="faith_status"), default="未解决")
+    seen_count: Mapped[int] = mapped_column(INTEGER(unsigned=True), default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    resolution: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

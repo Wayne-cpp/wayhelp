@@ -13,11 +13,20 @@ class StoredMessage:
     tool_call_id: str | None = None       # 仅 tool 行
 
 
+@dataclass(frozen=True)
+class LowConfidenceRecord:
+    raw_question: str
+    source: str            # "retrieval_low_conf" | "self_check"(user_feedback 本章不写)
+    reason: str | None
+    conversation_id: int | None
+
+
 class SessionStore(Protocol):
     async def create(self, user_id: str) -> str: ...
     async def exists(self, session_id: str, user_id: str) -> bool: ...
     async def snapshot(self, session_id: str) -> list[StoredMessage]: ...
-    async def commit_turn(self, session_id: str, messages: list[StoredMessage]) -> None: ...
+    async def commit_turn(self, session_id: str, messages: list[StoredMessage],
+                          low_confidence: LowConfidenceRecord | None = None) -> None: ...
 
 
 def validate_turn(messages: list[StoredMessage], max_tool_calls: int) -> None:
@@ -82,6 +91,7 @@ class InMemorySessionStore:
         self._max_chars = max_message_chars
         self._max_tool_calls = max_tool_calls_per_turn
         self._sessions: dict[str, list[StoredMessage]] = {}
+        self.low_confidence: list[LowConfidenceRecord] = []
 
     async def create(self, user_id: str) -> str:
         if len(self._sessions) >= self._max_sessions:
@@ -96,11 +106,14 @@ class InMemorySessionStore:
     async def snapshot(self, session_id: str) -> list[StoredMessage]:
         return list(self._sessions[session_id])
 
-    async def commit_turn(self, session_id: str, messages: list[StoredMessage]) -> None:
+    async def commit_turn(self, session_id: str, messages: list[StoredMessage],
+                          low_confidence: LowConfidenceRecord | None = None) -> None:
         validate_turn(messages, self._max_tool_calls)
         for m in messages:
             if m.content is not None and len(m.content) > self._max_chars and m.role != "tool":
                 raise ValueError("message text exceeds MAX_MESSAGE_CHARS")
+        if low_confidence is not None:  # 校验全过后才入池,与 DB 侧同成同败语义一致
+            self.low_confidence.append(low_confidence)
         msgs = self._sessions[session_id]
         msgs.extend(messages)
         limit = max(self._max_messages, self._max_tool_calls + 3)

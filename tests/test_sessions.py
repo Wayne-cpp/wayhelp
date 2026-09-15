@@ -1,7 +1,7 @@
 import pytest
 
 from app.errors import SessionCapacityReachedError
-from app.sessions import InMemorySessionStore, StoredMessage
+from app.sessions import InMemorySessionStore, LowConfidenceRecord, StoredMessage
 from tests.conftest import TEST_USER_ID
 
 
@@ -72,3 +72,27 @@ async def test_commit_rejects_overlong_text():
     sid = await s.create(TEST_USER_ID)
     with pytest.raises(ValueError):
         await s.commit_turn(sid, _pair("123456", "ok"))
+
+
+async def test_commit_turn_records_low_confidence():
+    s = make_store()
+    sid = await s.create(TEST_USER_ID)
+    rec = LowConfidenceRecord(raw_question="能寄到日本吗", source="retrieval_low_conf",
+                              reason='{"top1": 0.01}', conversation_id=None)
+    await s.commit_turn(sid, _pair("能寄到日本吗", "抱歉,超出了资料范围,已记录。"),
+                        low_confidence=rec)
+    assert s.low_confidence == [rec]
+    # 不传(默认 None)不入池
+    await s.commit_turn(sid, _pair("q", "a"))
+    assert len(s.low_confidence) == 1
+
+
+async def test_low_confidence_not_recorded_when_turn_invalid():
+    """同成同败:turn 校验不过时低置信度记录不落,与 DB 侧事务语义对齐。"""
+    s = make_store()
+    sid = await s.create(TEST_USER_ID)
+    rec = LowConfidenceRecord(raw_question="x", source="self_check",
+                              reason=None, conversation_id=None)
+    with pytest.raises(ValueError):
+        await s.commit_turn(sid, [StoredMessage("assistant", "答")], low_confidence=rec)
+    assert s.low_confidence == []
