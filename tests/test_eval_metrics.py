@@ -1,6 +1,10 @@
 from evals.run_knowledge_eval import (
     case_recall, choose_threshold, false_recall_rate, macro_average,
 )
+from evals.run_retrieval_compare import (
+    choose_strategy_threshold, complete_hit_at_k, mrr_at_10, parse_judge_output,
+    section_recall_at_k,
+)
 
 
 def test_case_recall():
@@ -89,3 +93,53 @@ def test_choose_threshold_tie_prefers_lower():
     t, cal_recall = choose_threshold(cases, max_fpr=0.10)
     assert t == 0.5  # 0.5 与 0.9 在召回/FPR 上并列,取低
     assert cal_recall == 1.0
+
+
+# ---- ch04 T12:四策略对比脚本纯函数(spec §8)----
+
+G = (("MH-LP100",), ("保修说明", "质量问题与保修"))
+
+
+def test_section_recall():
+    assert section_recall_at_k(["规格 > MH-LP100 款"], G, 1) == 0.5
+    assert section_recall_at_k(["无关"], G, 10) == 0.0
+    assert complete_hit_at_k(["规格 > MH-LP100 款", "售后 > 保修说明"], G, 2) == 1.0
+    assert complete_hit_at_k(["规格 > MH-LP100 款"], G, 5) == 0.0
+
+
+def test_mrr():
+    assert mrr_at_10(["无关", "规格 > MH-LP100 款"], G) == 0.5
+    assert mrr_at_10(["无关"], G) == 0.0
+
+
+def test_choose_threshold_pareto():
+    samples = [
+        {"bucket": "D_absent", "should_refuse": True, "top1": 0.9, "recall10": 0.0},
+        {"bucket": "D_absent", "should_refuse": True, "top1": 0.1, "recall10": 0.0},
+        {"bucket": "A_policy", "should_refuse": False, "top1": 0.8, "recall10": 1.0},
+        {"bucket": "A_policy", "should_refuse": False, "top1": 0.2, "recall10": 0.5},
+        {"bucket": "A_policy", "should_refuse": False, "top1": None, "recall10": 0.0},
+    ]
+    # max_d_pass=0.5:阈值 >0.1 才挡住一条 D;候选 t=0.2 时 D 通过 1/2、正例 0.8 过
+    out = choose_strategy_threshold(samples, max_d_pass=0.5)
+    assert out["threshold"] == 0.2
+    assert out["d_pass_rate"] == 0.5
+    # 并列取「误拒率低 → 阈值小」:t=0.2 与 t=0.8 的 pass-adjusted recall 同为 0.5 时取 0.2
+    assert out["pass_adjusted_recall"] == 0.5
+
+
+def test_choose_threshold_no_feasible():
+    samples = [{"bucket": "D_absent", "should_refuse": True, "top1": 0.9, "recall10": 0.0}]
+    with __import__("pytest").raises(SystemExit):
+        choose_strategy_threshold(samples, max_d_pass=0.0)
+
+
+def test_parse_judge_output():
+    out = parse_judge_output('{"verdict": "fabricated", "unsupported_claims": '
+                             '[{"claim": "c", "reason": "r"}], "cited_refs": [1, 3]}')
+    assert out["verdict"] == "fabricated" and out["cited_refs"] == [1, 3]
+    import pytest
+    with pytest.raises(ValueError):
+        parse_judge_output("not json")
+    with pytest.raises(ValueError):
+        parse_judge_output('{"verdict": "maybe", "unsupported_claims": [], "cited_refs": []}')

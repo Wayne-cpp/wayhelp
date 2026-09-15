@@ -1,5 +1,8 @@
 """知识检索评估(spec §11):真实硅基流动 embedding + 真实 Milvus Lite + 独立 MySQL 评估库。
 
+ch04 起语料换血,本脚本语料标注(knowledge_recall.jsonl)已失效,仅供指标函数单测复用;
+完整评估用 run_retrieval_compare.py(四策略 + 生成段 Faithfulness)。
+
 用法:
   uv run python evals/run_knowledge_eval.py --dump-corpus   # 建评估语料并打印可标注块
   uv run python evals/run_knowledge_eval.py                 # 完整评估:校准冻结阈值 → test 验收
@@ -20,6 +23,7 @@ from app.db import make_engine, make_session_factory
 from app.knowledge.embedding import build_embeddings
 from app.knowledge.ingest import run_ingest
 from app.knowledge.milvus_store import MilvusKnowledgeStore
+from app.knowledge.query_understanding import passthrough_plan
 from app.knowledge.retriever import KnowledgeRetriever
 from app.models import KnowledgeChunk
 from tests.dbfixtures import _split_statements
@@ -160,10 +164,11 @@ def main(argv: list[str]) -> int:
             return 0
         cases = _load_cases(set(id_to_key.values()))
         retriever = KnowledgeRetriever(settings, embed=embed, store=store,
-                                       session_factory=sf)
-        for c in cases:  # 同一次检索链路,min_score=-1 拿原始分,阈值离线施加
-            hits, _ = retriever.search(c["query"], min_score=-1.0)
-            c["hits"] = [(id_to_key[h.chunk_id], h.score) for h in hits]
+                                       session_factory=sf)  # model 缺省 None,query_plan 已传入不触发改写
+        for c in cases:  # 同一次检索链路(dense),min_score=-1 拿原始分,阈值离线施加
+            res = retriever.search(c["query"], strategy="dense", min_score=-1.0,
+                                   query_plan=passthrough_plan(c["query"]))
+            c["hits"] = [(id_to_key[h.chunk_id], h.score) for h in res.hits]
         calibration = [c for c in cases if c["split"] == "calibration"]
         threshold, cal_recall = choose_threshold(calibration, MAX_FPR)
         if cal_recall < MIN_RECALL:
