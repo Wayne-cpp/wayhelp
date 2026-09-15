@@ -87,9 +87,13 @@ class KbManualRequest(BaseModel):
 
 
 class KbSearchRequest(BaseModel):
+    """strategy/scope 缺省 None:由服务端装配的 retriever 按配置自选。"""
     query: str
     top_k: int = Field(default=5, gt=0, le=50)
     min_score: float = Field(default=0.623, ge=-1, le=1)
+    strategy: Literal["dense", "bm25", "hybrid", "hybrid_rerank"] | None = None
+    scope: Literal["faq", "policy", "product_spec", "after_sales_manual",
+                   "qa_mined", "manual"] | None = None
 
     @field_validator("query")
     @classmethod

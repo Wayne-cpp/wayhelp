@@ -8,6 +8,7 @@ import math
 
 import httpx
 
+from app.knowledge.chunking import ChunkingError
 from app.main import AppRuntime, create_app
 from app.models import (
     Conversation,
@@ -16,6 +17,7 @@ from app.models import (
     QaExtractionStaging,
     QaMiningProgress,
 )
+from app.services import kb_admin
 from tests.conftest import FakeStreamModel, make_runtime, make_settings
 from tests.dbfixtures import db_engine, db_session_factory  # noqa: F401
 
@@ -29,6 +31,7 @@ class FakeKbStore:
         self.vectors: dict[int, list[float]] = {}
         self.texts: dict[int, str] = {}
         self.deleted: list[int] = []
+        self.dropped = False
 
     def file_exists(self):
         return True
@@ -38,6 +41,18 @@ class FakeKbStore:
 
     def ensure_collection(self):
         pass
+
+    def drop_collection(self):
+        self.dropped = True
+        self.vectors.clear()
+        self.texts.clear()
+
+    def recreate(self):
+        self.drop_collection()
+        self.ensure_collection()
+
+    def contract_error(self):
+        return None
 
     def upsert(self, rows):
         for row in rows:
@@ -113,7 +128,8 @@ def make_kb_app(settings=None, model=None, sf=None, store=None, embed=None,
                 docs_dir=None):
     rt = make_runtime(tools=[])
     runtime = AppRuntime(store=rt.store, toolset_factory=rt.toolset_factory,
-                         session_factory=sf, embed=embed, kb_store=store)
+                         session_factory=sf, embed=embed, kb_store=store,
+                         knowledge_state=rt.knowledge_state)
     app = create_app(settings=settings or make_settings(),
                      model=model or FakeStreamModel([]), runtime=runtime)
     if docs_dir is not None:
@@ -143,6 +159,17 @@ type: policy
 ## 退货
 
 七天无理由退货。
+"""
+
+# rebuild 终验的 BM25 型号 smoke 依赖语料含 MH-LP100(与真实规格手册同款约定)
+DOC_R_SPEC = """---
+type: manual
+---
+# 规格手册
+
+## 猫窝(型号 MH-LP100)
+
+MH-LP100 猫窝支持机洗。
 """
 
 
@@ -579,3 +606,109 @@ async def test_search_probe_degraded_note(db_session_factory, tmp_path):
     assert resp.status_code == 200
     data = resp.json()
     assert data["note"] == "知识检索未配置" and data["hits"] == []
+
+
+# ─── rebuild 全量重置重建 ─────────────────────────────────────────────────────
+
+
+async def test_rebuild_endpoint_ok(db_session_factory, tmp_path, monkeypatch):
+    """预检过 → drop+清表 → 重灌 → 终验:message 含块数,state 回 ready。"""
+    monkeypatch.setattr(kb_admin, "REPO_ROOT", tmp_path)  # 评估集不在场:跳过 GT 覆盖预检
+    sf = db_session_factory
+    store = FakeKbStore()
+    old = _seed_chunk(sf, category="旧", questions="旧问题", answer="旧答案。",
+                      vectorize_status="done",
+                      source_doc="knowledge_docs/old.md", chunk_index=1)
+    store.upsert([(old, [1.0] + [0.0] * 1023)])
+    docs = _write_docs(tmp_path, a=DOC_R_SPEC, b=DOC_B)
+    app = make_kb_app(settings=make_settings(embedding_api_key="fake"),
+                      sf=sf, store=store, embed=FakeEmbed(), docs_dir=docs)
+    async with _client(app) as client:
+        resp = await client.post("/kb/api/rebuild")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        state = (await client.get("/kb/api/state")).json()
+    assert body["message"].startswith("重建完成")
+    assert "BM25 smoke" in body["message"]
+    assert state["knowledge_state"] == "ready"
+    with sf() as s:
+        rows = s.query(KnowledgeChunk).all()
+        ids = {r.id for r in rows}
+        assert old not in ids and len(rows) == 2  # 全量重置:旧文档块与挖掘块一律清
+        assert all(r.vectorize_status == "done" for r in rows)
+    assert store.dropped is True
+    assert store.all_ids() == ids
+
+
+async def test_rebuild_preflight_failure_keeps_state(db_session_factory, tmp_path,
+                                                     monkeypatch):
+    """预检失败(文档切块炸):409,不进破坏性步骤 —— 旧库未 drop、MySQL 行不动、state 不变。"""
+    monkeypatch.setattr(kb_admin, "REPO_ROOT", tmp_path)
+
+    def boom(text, **kw):
+        raise ChunkingError("预检炸", "a.md")
+
+    monkeypatch.setattr(kb_admin, "chunk_document", boom)
+    sf = db_session_factory
+    store = FakeKbStore()
+    old = _seed_chunk(sf, vectorize_status="done",
+                      source_doc="knowledge_docs/old.md", chunk_index=1)
+    store.upsert([(old, [1.0] + [0.0] * 1023)])
+    docs = _write_docs(tmp_path, a=DOC_R_SPEC, b=DOC_B)
+    app = make_kb_app(settings=make_settings(embedding_api_key="fake"),
+                      sf=sf, store=store, embed=FakeEmbed(), docs_dir=docs)
+    async with _client(app) as client:
+        resp = await client.post("/kb/api/rebuild")
+        state = (await client.get("/kb/api/state")).json()
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "rebuild_preflight"
+    assert store.dropped is False
+    with sf() as s:
+        assert s.query(KnowledgeChunk).count() == 1  # 旧库原样
+    assert state["knowledge_state"] == "ready"
+
+
+async def test_rebuild_failure_marks_rebuild_required(db_session_factory, tmp_path,
+                                                      monkeypatch):
+    """破坏性步骤后失败 → 500 rebuild_failed + state=rebuild_required;重跑仍先预检可恢复。"""
+    monkeypatch.setattr(kb_admin, "REPO_ROOT", tmp_path)
+    sf = db_session_factory
+    store = FakeKbStore()
+    docs = _write_docs(tmp_path, a=DOC_R_SPEC, b=DOC_B)
+    app = make_kb_app(settings=make_settings(embedding_api_key="fake"),
+                      sf=sf, store=store, embed=FakeEmbed(), docs_dir=docs)
+    async with _client(app) as client:
+        orig_bm25 = store.search_bm25
+        store.search_bm25 = lambda text, top_k, scope=None: []  # 终验 smoke 恒空
+        resp = await client.post("/kb/api/rebuild")
+        assert resp.status_code == 500
+        assert resp.json()["error"]["code"] == "rebuild_failed"
+        assert store.dropped is True  # 已过破坏性步骤
+        assert (await client.get("/kb/api/state")).json()[
+            "knowledge_state"] == "rebuild_required"
+        store.search_bm25 = orig_bm25  # 恢复后重跑:仍先预检,再走全流程
+        resp2 = await client.post("/kb/api/rebuild")
+        state2 = (await client.get("/kb/api/state")).json()
+    assert resp2.status_code == 200, resp2.text
+    assert state2["knowledge_state"] == "ready"
+
+
+async def test_search_probe_with_strategy_scope(db_session_factory, tmp_path):
+    """T11:search 自测透传 strategy/scope,不再钉死 dense 腿。"""
+    sf = db_session_factory
+    store = FakeKbStore()
+    id1 = _seed_chunk(sf, category="商品FAQ", questions="运费与包邮", answer="满 99 包邮。",
+                      vectorize_status="done",
+                      source_doc="knowledge_docs/商品FAQ.md", chunk_index=1)
+    store.upsert([(id1, [1.0] + [0.0] * 1023, "商品FAQ 运费与包邮 满 99 包邮。", "faq")])
+    app = make_kb_app(sf=sf, store=store, embed=FakeEmbed(), docs_dir=tmp_path)
+    async with _client(app) as client:
+        resp = await client.post("/kb/api/search", json={
+            "query": "运费", "top_k": 2, "min_score": 0.5,
+            "strategy": "bm25", "scope": "faq"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["requested_strategy"] == "bm25"
+    assert data["effective_strategy"] == "bm25"
+    assert data["leg_counts"]["bm25"] == 1
+    assert [h["chunk_id"] for h in data["hits"]] == [id1]

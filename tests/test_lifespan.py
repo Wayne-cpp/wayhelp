@@ -22,7 +22,7 @@ def test_owned_runtime_retriever_closed_on_shutdown(monkeypatch):
     """自建 runtime:应用关闭时必须释放 retriever(spec §8)。"""
     retriever = _RecordingRetriever()
     monkeypatch.setattr("app.main._build_production_runtime",
-                        lambda settings: _runtime_with_retriever(retriever))
+                        lambda settings, model: _runtime_with_retriever(retriever))
     app = create_app(settings=make_settings(), model=FakeStreamModel([]))
     with TestClient(app):
         pass

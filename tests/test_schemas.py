@@ -9,6 +9,7 @@ from app.schemas import (
     Expectation,
     ExtractRequest,
     Intent,
+    KbSearchRequest,
 )
 from tests.conftest import TEST_USER_ID
 
@@ -66,3 +67,22 @@ def test_extraction_forbids_extra():
             summary="x",
             bogus=1,
         )
+
+
+def test_kb_search_request_strategy_scope_defaults():
+    r = KbSearchRequest(query="运费")
+    assert r.strategy is None and r.scope is None  # 缺省:服务端自选
+
+
+def test_kb_search_request_accepts_strategy_scope():
+    r = KbSearchRequest(query="运费", strategy="bm25", scope="faq")
+    assert r.strategy == "bm25" and r.scope == "faq"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("strategy", "dense2"), ("strategy", "rrf"), ("scope", "unknown"),
+    ("scope", "FAQ"),  # 枚举区分大小写
+])
+def test_kb_search_request_rejects_unknown_enum(field, value):
+    with pytest.raises(ValidationError):
+        KbSearchRequest(query="运费", **{field: value})

@@ -132,6 +132,17 @@ class MilvusKnowledgeStore:
         if "bm25_fn" not in fnames:
             raise ValueError("knowledge 集合契约不符: 缺 BM25 函数,需重建索引")
 
+    def contract_error(self) -> str | None:
+        """只读契约探针:集合不存在返回 None(未建库走 NOTE_NOT_BUILT 语义);
+        存在但契约不符返回错误文案;集合不存在时不创建集合。"""
+        if not self._cli().has_collection(COLLECTION):
+            return None
+        try:
+            self._verify_contract(self._cli())
+        except ValueError as exc:
+            return str(exc)
+        return None
+
     def upsert(self, rows: list[tuple[int, list[float], str, str]]) -> None:
         if not rows:
             return

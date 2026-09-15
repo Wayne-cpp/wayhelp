@@ -12,10 +12,12 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
 from app.config import Settings
-from app.db import make_engine, make_session_factory, ping
+from app.db import check_ch04_tables, make_engine, make_session_factory, ping
 from app.knowledge.embedding import build_embeddings
 from app.knowledge.milvus_store import MilvusKnowledgeStore
+from app.knowledge.reranker import SiliconFlowReranker
 from app.knowledge.retriever import KnowledgeRetriever
+from app.knowledge.state import KnowledgeState, KnowledgeStateHolder
 from app.errors import (
     AppError,
     MessageTooLongError,
@@ -45,27 +47,41 @@ class AppRuntime:
     session_factory: Any = None   # /kb 管理动作复用
     embed: Any = None             # None = 未配置 EMBEDDING_API_KEY
     kb_store: Any = None          # MilvusKnowledgeStore,与 retriever 同一实例
+    knowledge_state: Any = None   # KnowledgeStateHolder(T11)
 
 
-def _build_production_runtime(settings: Settings) -> AppRuntime:
+def _build_production_runtime(settings: Settings, model) -> AppRuntime:
     try:
         engine = make_engine(settings.database_url)
         ping(engine)
+        check_ch04_tables(engine)  # 缺表启动失败,提示升级命令
+    except RuntimeError:
+        raise
     except Exception as exc:
         raise RuntimeError(f"database ping failed: {type(exc).__name__}") from exc
     session_factory = make_session_factory(engine)
     # 缺 Key 时构造禁用检索的实例,不构造需要 Key 的 embedding 客户端(spec §8)
     embed = build_embeddings(settings) if settings.has_embedding_key() else None
     kb_store = MilvusKnowledgeStore(settings.milvus_uri, settings.embedding_dim)
+    knowledge_state = KnowledgeStateHolder()  # 初值 ready;旧 schema 探针后置 rebuild_required
+    if kb_store.file_exists():
+        try:
+            if kb_store.contract_error() is not None:
+                knowledge_state.set(KnowledgeState.REBUILD_REQUIRED)
+        except Exception:
+            knowledge_state.set(KnowledgeState.REBUILD_REQUIRED)
+    reranker = SiliconFlowReranker(settings) if settings.has_rerank_key() else None
     retriever = KnowledgeRetriever(settings, embed=embed, store=kb_store,
-                                   session_factory=session_factory)
+                                   session_factory=session_factory, model=model,
+                                   reranker=reranker, state=knowledge_state)
 
     def toolset_factory(session_id: str) -> list[BaseTool]:
-        return build_tools(session_factory, int(session_id), retriever)
+        return build_tools(session_factory, int(session_id), retriever, settings)
 
     return AppRuntime(store=DbSessionStore(session_factory, settings.max_message_chars),
                       toolset_factory=toolset_factory, retriever=retriever,
-                      session_factory=session_factory, embed=embed, kb_store=kb_store)
+                      session_factory=session_factory, embed=embed, kb_store=kb_store,
+                      knowledge_state=knowledge_state)
 
 
 def create_app(settings: Settings | None = None, model: Any | None = None,
@@ -80,7 +96,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
         )
     owns_runtime = runtime is None
     if runtime is None:
-        runtime = _build_production_runtime(settings)
+        runtime = _build_production_runtime(settings, model)
     if count_tokens_approximately([SystemMessage(content=SERVICE_SYSTEM_PROMPT)]) >= settings.max_input_tokens:
         raise RuntimeError("system prompt alone exhausts the input token budget")
 
@@ -101,7 +117,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
         if owns_runtime and runtime.retriever is not None:
             runtime.retriever.close()
 
-    app = FastAPI(title="wayhelp-ch03", lifespan=lifespan)
+    app = FastAPI(title="wayhelp-ch04", lifespan=lifespan)
     app.state.settings = settings
     app.state.model = model
     app.state.store = runtime.store
@@ -109,6 +125,11 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.state.session_factory = runtime.session_factory
     app.state.embed = runtime.embed
     app.state.kb_store = runtime.kb_store
+    # 直接构造的 AppRuntime 可不带 holder(测试/嵌入):装配补默认,KB 端点不炸
+    app.state.knowledge_state = (runtime.knowledge_state
+                                 if runtime.knowledge_state is not None
+                                 else KnowledgeStateHolder())
+    app.state.retriever = runtime.retriever
     app.state.kb_docs_dir = DEFAULT_DOCS_DIR
     app.include_router(chat_router)
     app.include_router(extract_router)

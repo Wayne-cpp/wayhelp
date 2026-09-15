@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from app.config import Settings
+from app.knowledge.state import KnowledgeStateHolder
 from app.main import AppRuntime
 from app.sessions import InMemorySessionStore
 from app.tools.business import MOCK_TOOLS, RetrievalTrace, TurnToolset
@@ -32,6 +33,7 @@ def make_runtime(tools=None, store=None):
         store=store or UserBoundMemoryStore(1000, 100, 8000),
         toolset_factory=lambda sid: TurnToolset(
             list(MOCK_TOOLS if tools is None else tools), RetrievalTrace()),
+        knowledge_state=KnowledgeStateHolder(),  # T11:/kb/api/state 的 knowledge_state 字段
     )
 
 

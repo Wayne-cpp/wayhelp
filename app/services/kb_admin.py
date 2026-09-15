@@ -5,6 +5,8 @@ MySQL id 与 Milvus pk 1:1 对齐的不变量不由本模块另起路径。写�
 vectorize/mine/reset)拿全局作业互斥锁;读(state/search)不拿锁,可与作业并发。
 """
 
+import shutil
+import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,6 +28,7 @@ from app.knowledge.ingest import (
 from app.knowledge.milvus_store import MilvusKnowledgeStore
 from app.knowledge.mining import run_mining
 from app.knowledge.retriever import KnowledgeRetriever
+from app.knowledge.state import KnowledgeState, KnowledgeStateHolder
 from app.models import KnowledgeChunk, QaExtractionStaging, QaMiningProgress
 
 DEFAULT_DOCS_DIR = REPO_ROOT / "knowledge_docs"
@@ -73,6 +76,16 @@ class VectorizeFailedError(KbAdminError):
 class MiningFailedError(KbAdminError):
     code = "mining_failed"
     status = 500
+
+
+class RebuildFailedError(KbAdminError):
+    code = "rebuild_failed"
+    status = 500
+
+
+class RebuildPreflightError(KbAdminError):
+    code = "rebuild_preflight"
+    status = 409
 
 
 _JOB_LOCK = threading.Lock()
@@ -148,7 +161,7 @@ def _mining_state(s) -> dict:
 
 
 def get_state(settings: Settings, session_factory: sessionmaker,
-              store: MilvusKnowledgeStore,
+              store: MilvusKnowledgeStore, state: KnowledgeStateHolder | None = None,
               docs_dir: Path = DEFAULT_DOCS_DIR) -> dict:
     """一次聚合 /kb 页面六区块全部数据。"""
     report = check_consistency(session_factory, store)
@@ -171,6 +184,7 @@ def get_state(settings: Settings, session_factory: sessionmaker,
                       .order_by(KnowledgeChunk.id.desc()).limit(20).all())]
         mining = _mining_state(s)
     return {
+        "knowledge_state": state.get() if state is not None else None,
         "embedding_configured": settings.has_embedding_key(),
         "gauge": {"mysql_count": report.mysql_count,
                   "pending_count": report.pending_count,
@@ -389,14 +403,105 @@ def reset_kb(settings: Settings, session_factory: sessionmaker, embed,
                 "message": f"已重建 {len(ids)} 个文档块,双写一致"}
 
 
+# ─── 全量重置重建 ────────────────────────────────────────────────────────────
+
+
+def _preflight(settings: Settings, docs_dir: Path) -> None:
+    """只读预检:文档可切 → 评估集 GT 覆盖 → 新 schema 干跑 + BM25 smoke;
+    任一失败抛 RebuildPreflightError,不得进入破坏性步骤。"""
+    paths = sorted(docs_dir.glob("*.md"), key=lambda p: resolve_source_doc(p))
+    if not paths:
+        raise RebuildPreflightError(f"目录无 Markdown 文档: {docs_dir}")
+    section_paths: list[str] = []
+    for p in paths:
+        try:
+            chunks = chunk_document(p.read_text(encoding="utf-8"),
+                                    source=resolve_source_doc(p),
+                                    max_chars=settings.max_chunk_chars,
+                                    overlap_chars=settings.chunk_overlap_chars)
+        except ChunkingError as exc:
+            raise RebuildPreflightError(f"文档切块失败 {p.name}: {exc}") from exc
+        section_paths += [c.section_path or "" for c in chunks]
+    eval_file = REPO_ROOT / "evals" / "retrieval_compare.txt"
+    if eval_file.exists():  # 评估集在场时校验 GT 覆盖(语料对齐)
+        from app.knowledge.evalset import covered_groups, load_compare_cases
+        bad = [c.id for c in load_compare_cases(eval_file)
+               if not c.should_refuse
+               and covered_groups(section_paths, c.gt_groups) < len(c.gt_groups)]
+        if bad:
+            raise RebuildPreflightError(
+                f"评估集 GT 未全覆盖,先补语料: {bad[:5]} 等 {len(bad)} 条")
+    tmp = Path(tempfile.mkdtemp()) / "preflight.db"  # 新 schema 可创建干跑
+    probe = MilvusKnowledgeStore(str(tmp), settings.embedding_dim)
+    try:
+        probe.ensure_collection()
+        probe.upsert([(1, [0.0] * settings.embedding_dim, "预检文本 MH-LP100", "faq")])
+        if not probe.search_bm25("MH-LP100", 1):
+            raise RebuildPreflightError("BM25 smoke 无命中(分词/函数未生效)")
+    except RebuildPreflightError:
+        raise
+    except Exception as exc:
+        raise RebuildPreflightError(
+            f"新 schema 预检失败: {type(exc).__name__}: {exc}") from exc
+    finally:
+        probe.close()
+        shutil.rmtree(tmp.parent, ignore_errors=True)
+
+
+def _clear_knowledge_tables(session_factory: sessionmaker) -> None:
+    """清空知识三表;MySQL 是唯一权威源,先解 prev/next 自引用链再多行删除。"""
+    with session_factory() as s:
+        try:
+            s.query(KnowledgeChunk).update({"prev_chunk_id": None, "next_chunk_id": None},
+                                           synchronize_session=False)
+            s.query(KnowledgeChunk).delete(synchronize_session=False)
+            s.query(QaExtractionStaging).delete(synchronize_session=False)
+            s.query(QaMiningProgress).delete(synchronize_session=False)
+            s.commit()
+        except Exception as exc:
+            s.rollback()
+            raise KbAdminError(f"清空知识表失败: {type(exc).__name__}") from exc
+
+
+def rebuild_index(settings: Settings, session_factory: sessionmaker, embed,
+                  store: MilvusKnowledgeStore, state: KnowledgeStateHolder,
+                  docs_dir: Path = DEFAULT_DOCS_DIR) -> dict:
+    """全量重置重建(spec §6):预检 → rebuilding → drop+清表 → 新 schema → 重灌 → 终验。
+    预检失败不动旧库(state 不变);破坏性步骤后失败置 rebuild_required 并抛。"""
+    if embed is None:
+        raise EmbeddingNotConfiguredError("未配置 EMBEDDING_API_KEY,无法重建")
+    with _job_lock():
+        _preflight(settings, docs_dir)
+        state.set(KnowledgeState.REBUILDING)
+        try:
+            store.drop_collection()
+            _clear_knowledge_tables(session_factory)
+            store.ensure_collection()
+            rc = run_ingest(settings, session_factory, embed, store, docs_dir)
+            if rc != 0:
+                raise RebuildFailedError("重建:重新建库失败,详见服务日志")
+            if not store.search_bm25("MH-LP100", 3):
+                raise RebuildFailedError("重建终验:BM25 型号 smoke 无命中")
+        except Exception:
+            state.set(KnowledgeState.REBUILD_REQUIRED)
+            raise
+        state.set(KnowledgeState.READY)
+        report = check_consistency(session_factory, store)
+        return {"message": f"重建完成:{report.mysql_count} 块,双写一致,BM25 smoke 命中"}
+
+
 # ─── 检索自测 ────────────────────────────────────────────────────────────────
 
 
 def search_probe(settings: Settings, session_factory: sessionmaker, embed,
                  store: MilvusKnowledgeStore, query: str, top_k: int,
-                 min_score: float) -> dict:
-    # T6 过渡:自测旁路固定 dense 腿(与旧 probe 行为一致);此处未装配 reranker,
-    # 若放行默认 hybrid_rerank 会恒降级。T11 接入 strategy/scope 透传与 reranker。
-    retriever = KnowledgeRetriever(settings, embed=embed, store=store,
-                                   session_factory=session_factory)
-    return retriever.probe(query, top_k, min_score, strategy="dense")
+                 min_score: float, strategy: str | None = None,
+                 scope: str | None = None, retriever=None) -> dict:
+    """自测旁路:透传 strategy/scope。有装配 retriever(含 reranker/model/state)直接
+    复用;旁路回退自建 retriever,缺省策略钉 dense —— 无 reranker 时放行默认
+    hybrid_rerank 会恒降级,自测失去意义。"""
+    if retriever is None:
+        retriever = KnowledgeRetriever(settings, embed=embed, store=store,
+                                       session_factory=session_factory)
+        strategy = strategy or "dense"
+    return retriever.probe(query, top_k, min_score, strategy=strategy, scope=scope)

@@ -23,6 +23,7 @@ def _deps(request: Request):
 async def kb_state(request: Request):
     settings, sf, store = _deps(request)
     return await asyncio.to_thread(kb_admin.get_state, settings, sf, store,
+                                   request.app.state.knowledge_state,
                                    request.app.state.kb_docs_dir)
 
 
@@ -80,9 +81,20 @@ async def kb_reset(request: Request):
                                    request.app.state.kb_docs_dir)
 
 
+@router.post("/rebuild")
+async def kb_rebuild(request: Request):
+    settings, sf, store = _deps(request)
+    return await asyncio.to_thread(kb_admin.rebuild_index, settings, sf,
+                                   request.app.state.embed, store,
+                                   request.app.state.knowledge_state,
+                                   request.app.state.kb_docs_dir)
+
+
 @router.post("/search")
 async def kb_search(body: KbSearchRequest, request: Request):
     settings, sf, store = _deps(request)
     return await asyncio.to_thread(kb_admin.search_probe, settings, sf,
                                    request.app.state.embed, store,
-                                   body.query, body.top_k, body.min_score)
+                                   body.query, body.top_k, body.min_score,
+                                   body.strategy, body.scope,
+                                   request.app.state.retriever)
