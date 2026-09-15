@@ -15,8 +15,10 @@ from app.db import make_engine, make_session_factory
 DDL_PATHS = [
     Path(__file__).resolve().parent.parent / "db" / "init" / "01-ddl.sql",
     Path(__file__).resolve().parent.parent / "db" / "init" / "03-ddl.sql",
+    Path(__file__).resolve().parent.parent / "db" / "init" / "04-ddl.sql",
 ]
-TABLES = ("knowledge_chunks", "qa_extraction_staging", "qa_mining_progress",
+TABLES = ("faith_cases", "low_confidence_questions", "knowledge_chunks",
+          "qa_extraction_staging", "qa_mining_progress",
           "messages", "tickets", "faq", "conversations")  # 先子后父
 
 

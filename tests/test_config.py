@@ -132,3 +132,19 @@ def test_embedding_dim_env_string_coerced(monkeypatch):
     with pytest.raises(ValidationError):  # 非 1024 仍拒绝
         Settings(_env_file=None, openai_base_url="http://t/v1", openai_api_key="k",
                  model_name="m", database_url="mysql+pymysql://u:p@127.0.0.1:9/wayhelp")
+
+
+def test_ch04_defaults():
+    s = make_settings()
+    assert s.knowledge_strategy == "hybrid_rerank"
+    assert s.retrieval_candidate_k == 50 and s.rerank_top_n == 10
+    assert s.rerank_max_retries == 2 and s.rerank_timeout_seconds == 5
+    assert s.knowledge_tool_timeout_seconds == 20
+    assert s.query_rewrite_enabled is True
+    assert s.rerank_min_score == 0.0 and s.bm25_min_score == 0.0 and s.hybrid_min_score == 0.0
+    assert s.has_rerank_key() is False  # 两 key 均空
+
+
+def test_has_rerank_key_fallback():
+    assert make_settings(embedding_api_key="emb-key").has_rerank_key() is True   # 回退
+    assert make_settings(rerank_api_key="rr-key").has_rerank_key() is True       # 专属优先

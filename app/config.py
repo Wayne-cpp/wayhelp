@@ -37,6 +37,25 @@ class Settings(BaseSettings):
     mining_batch_size: int = Field(default=10, gt=0)
     max_chunk_chars: int = Field(default=500, gt=0)
     chunk_overlap_chars: int = Field(default=80, ge=0)
+    rerank_base_url: str = "https://api.siliconflow.cn/v1"
+    rerank_api_key: str = ""
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_timeout_seconds: float = Field(default=5, gt=0)
+    rerank_max_retries: int = Field(default=2, ge=0)   # 内部追加重试;2 = 最多共 3 次请求
+    retrieval_candidate_k: int = Field(default=50, gt=0)
+    rerank_top_n: int = Field(default=10, gt=0)
+    rerank_min_score: float = Field(default=0.0)   # 占位,评估校准后冻结
+    bm25_min_score: float = Field(default=0.0)     # 占位,同上
+    hybrid_min_score: float = Field(default=0.0)   # 占位,同上;含 rerank 降级路径
+    knowledge_strategy: Literal["dense", "bm25", "hybrid", "hybrid_rerank"] = "hybrid_rerank"
+    query_rewrite_enabled: bool = True
+    knowledge_tool_timeout_seconds: float = Field(default=20, gt=0)
+
+    def has_rerank_key(self) -> bool:
+        return bool(self.rerank_api_key.strip() or self.embedding_api_key.strip())
+
+    def rerank_key(self) -> str:
+        return (self.rerank_api_key.strip() or self.embedding_api_key.strip())
 
     @field_validator("embedding_dim", mode="before")
     @classmethod
