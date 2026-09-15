@@ -145,6 +145,9 @@
   .gauge-label { font-size: var(--text-xs); color: var(--muted); letter-spacing: 0.04em; }
   .gauge-card.consistent-true .gauge-num { color: var(--success); }
   .gauge-card.consistent-false .gauge-num { color: var(--danger); }
+  .gauge-card.state-ready .gauge-num { color: var(--success); }
+  .gauge-card.state-rebuilding .gauge-num { color: var(--warn); }
+  .gauge-card.state-rebuild_required .gauge-num { color: var(--danger); }
 
   /* ─── cards ─── */
   .card {
@@ -299,7 +302,7 @@
 
   .search-controls {
     display: grid;
-    grid-template-columns: 1fr 110px 130px;
+    grid-template-columns: 2fr 80px 100px 1fr 1fr;
     gap: var(--space-2);
     align-items: end;
   }
@@ -350,7 +353,7 @@
     <p class="hint" id="manual-vectorize-hint" hidden>未配置 EMBEDDING_API_KEY,顺手向量化不可用;可取消勾选仅入库留 pending。</p>
     <div class="btn-row">
       <button class="btn secondary" id="manual-preview-btn" type="button">切块预览</button>
-      <button class="btn" id="manual-ingest-btn" type="button">录入入库</button>
+      <button class="btn" id="manual-ingest-btn" type="button" data-write>录入入库</button>
     </div>
     <div id="manual-preview"></div>
   </section>
@@ -362,7 +365,9 @@
     <div id="material-list"></div>
     <div class="btn-row">
       <button class="btn secondary" id="preview-btn" type="button">差异预览</button>
-      <button class="btn" id="build-btn" type="button">一键建库</button>
+      <button class="btn" id="build-btn" type="button" data-write>一键建库</button>
+      <button class="btn danger" id="rebuild-btn" type="button" data-write
+              title="清空全部知识块后按 knowledge_docs/ 全量重建">重建索引(全量重置)</button>
     </div>
     <div id="diff-result"></div>
     <div id="material-detail" class="material-detail"></div>
@@ -375,19 +380,19 @@
     <div id="mining-summary"></div>
     <div id="mining-items"></div>
     <div class="btn-row">
-      <button class="btn" id="mine-btn" type="button">开始挖掘</button>
+      <button class="btn" id="mine-btn" type="button" data-write>开始挖掘</button>
     </div>
   </section>
 
   <!-- ④ 向量化与双写 -->
   <section class="card" id="sec-vectorize">
     <h2>④ 向量化与双写</h2>
-    <p class="desc">pending 批次 embed 后 upsert Milvus 并回填 done;重建只清文档块,手工块与挖掘块保留。</p>
+    <p class="desc">pending 批次 embed 后 upsert Milvus 并回填 done;选择性重建只清文档块,手工块与挖掘块保留(全量清空请用上方「重建索引(全量重置)」)。</p>
     <div id="vectorize-summary"></div>
     <div id="pending-samples"></div>
     <div class="btn-row">
-      <button class="btn" id="vectorize-btn" type="button">向量化 pending</button>
-      <button class="btn danger" id="reset-btn" type="button">选择性重建</button>
+      <button class="btn" id="vectorize-btn" type="button" data-write>向量化 pending</button>
+      <button class="btn danger" id="reset-btn" type="button" data-write>选择性重建</button>
     </div>
   </section>
 
@@ -404,6 +409,25 @@
       </label>
       <label class="field"><span>min_score</span>
         <input type="number" id="search-min-score" value="0.623" min="-1" max="1" step="0.001">
+      </label>
+      <label class="field"><span>检索策略</span>
+        <select id="search-strategy">
+          <option value="dense">dense(纯向量)</option>
+          <option value="bm25">bm25(关键词)</option>
+          <option value="hybrid">hybrid(混合)</option>
+          <option value="hybrid_rerank" selected>hybrid_rerank(混合+重排)</option>
+        </select>
+      </label>
+      <label class="field"><span>scope 过滤</span>
+        <select id="search-scope">
+          <option value="">(不限)</option>
+          <option value="faq">faq</option>
+          <option value="policy">policy</option>
+          <option value="product_spec">product_spec</option>
+          <option value="after_sales_manual">after_sales_manual</option>
+          <option value="qa_mined">qa_mined</option>
+          <option value="manual">manual</option>
+        </select>
       </label>
     </div>
     <div class="btn-row">
@@ -423,6 +447,7 @@
 (function () {
   var state = null;
   var busy = false;
+  var writeLocked = false; // knowledge_state === "rebuilding" 期间禁写
 
   var noticeEl = document.getElementById("notice");
 
@@ -462,7 +487,9 @@
   function setBusy(on) {
     busy = on;
     var btns = document.querySelectorAll(".btn");
-    for (var i = 0; i < btns.length; i++) btns[i].disabled = on;
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].disabled = on || (writeLocked && btns[i].hasAttribute("data-write"));
+    }
   }
 
   // 动作统一入口:跑完提示并整体刷新 state
@@ -481,9 +508,15 @@
 
   /* ─── 渲染 ─── */
 
-  function renderGauge(g) {
+  function renderGauge(g, kstate) {
     var wrap = document.getElementById("gauge");
     wrap.innerHTML = "";
+    var kLabels = { ready: "ready", rebuilding: "rebuilding",
+                    rebuild_required: "rebuild_required" };
+    var kcard = el("div", "gauge-card state-" + (kstate || "unknown"));
+    kcard.appendChild(el("div", "gauge-num", kLabels[kstate] || String(kstate)));
+    kcard.appendChild(el("div", "gauge-label", "knowledge_state"));
+    wrap.appendChild(kcard);
     var cards = [
       ["知识块", g.mysql_count], ["待向量化", g.pending_count],
       ["Milvus 条数", g.milvus_count], ["关键条款", g.key_clause_count]
@@ -677,7 +710,7 @@
   }
 
   function renderAll(s) {
-    renderGauge(s.gauge);
+    renderGauge(s.gauge, s.knowledge_state);
     renderMaterials(s.materials);
     renderMining(s.mining);
     renderVectorize(s.vectorize);
@@ -689,6 +722,8 @@
     checkbox.disabled = !s.embedding_configured;
     if (!s.embedding_configured) checkbox.checked = false;
     hint.hidden = s.embedding_configured;
+    writeLocked = s.knowledge_state === "rebuilding";
+    setBusy(busy); // 按新锁态重放按钮禁用
   }
 
   function refresh() {
@@ -745,6 +780,12 @@
     runAction("/kb/api/build");
   });
 
+  document.getElementById("rebuild-btn").addEventListener("click", function () {
+    if (!confirm("重建索引(全量重置)将清空全部知识块(含手工块与挖掘块)及 Milvus 向量," +
+                 "再按 knowledge_docs/ 全量重建。确认继续?")) return;
+    runAction("/kb/api/rebuild", undefined, "重建完成");
+  });
+
   document.getElementById("mine-btn").addEventListener("click", function () {
     runAction("/kb/api/mine");
   });
@@ -765,6 +806,11 @@
       top_k: parseInt(document.getElementById("search-topk").value, 10) || 5,
       min_score: parseFloat(document.getElementById("search-min-score").value)
     };
+    // scope 选「(不限)」时不下发,留给服务端;strategy 四选一恒有值
+    var strategy = document.getElementById("search-strategy").value;
+    var scope = document.getElementById("search-scope").value;
+    if (strategy) body.strategy = strategy;
+    if (scope) body.scope = scope;
     setBusy(true);
     post("/kb/api/search", body).then(function (data) {
       var box = document.getElementById("search-result");

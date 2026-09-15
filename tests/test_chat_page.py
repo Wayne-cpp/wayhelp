@@ -48,3 +48,12 @@ def test_chat_page_settle_badge_safe_lookup():
     # dataset 写入侧保持不变(赋值安全);旧的属性选择器字符串拼接不得复活
     assert "badge.dataset.toolCallId = id" in html
     assert '[data-tool-call-id="' not in html
+
+
+def test_chat_page_citations_and_feedback():
+    from pathlib import Path
+    html = (Path(__file__).parent.parent / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    assert 'type === "citations"' in html or '"citations"' in html
+    assert "cite-pop" in html and "data-n" in html
+    assert "feedback" in html and "已反馈" in html and 'localStorage' in html
+    assert "👍" in html and "👎" in html

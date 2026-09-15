@@ -37,3 +37,20 @@ def test_kb_page_api_hooks():
     assert html.count("confirm(") >= 2  # build 与 reset 二次确认
     assert 'id="manual-vectorize"' in html        # 顺手向量化勾选框
     assert 'id="manual-vectorize-hint"' in html   # 无 key 禁用提示
+
+
+def test_kb_page_rebuild_and_strategy():
+    html = KB_HTML.read_text(encoding="utf-8")
+    assert "/kb/api/rebuild" in html              # 重建索引(全量重置)入口
+    assert "knowledge_state" in html              # 闸条区状态卡
+    assert 'id="rebuild-btn"' in html and "全量重置" in html
+    assert "清空全部知识块" in html                # 重建文案须含清空警示
+    for opt in ('value="dense"', 'value="bm25"', 'value="hybrid"',
+                'value="hybrid_rerank"'):
+        assert opt in html                        # strategy 下拉四策略
+    assert 'id="search-strategy"' in html and 'id="search-scope"' in html
+    for opt in ('value="faq"', 'value="policy"', 'value="product_spec"',
+                'value="after_sales_manual"', 'value="qa_mined"', 'value="manual"'):
+        assert opt in html                        # scope 下拉六枚举
+    assert "rebuilding" in html                   # rebuilding 时写按钮禁用
+    assert "data-write" in html

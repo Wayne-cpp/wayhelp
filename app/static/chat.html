@@ -311,6 +311,80 @@
   .tool-badge.ok .dot { background: var(--success); }
   .tool-badge.failed .dot { background: var(--danger); }
 
+  /* ─── citations 角标与弹层 ─────────────────────────────────────── */
+  sup.cite {
+    cursor: pointer;
+    user-select: none;
+    padding: 0 1px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    border-bottom: 1px dotted var(--accent);
+  }
+  sup.cite:hover { color: var(--accent-hover); }
+  .cite-pop {
+    position: absolute;
+    z-index: 30;
+    max-width: min(380px, calc(100vw - 32px));
+    padding: var(--space-3) var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    box-shadow: var(--elev-raised);
+    animation: rise var(--motion-base) var(--ease-standard);
+  }
+  .cite-src {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    color: var(--accent);
+    word-break: break-all;
+    margin-bottom: var(--space-2);
+  }
+  .cite-answer {
+    font-size: var(--text-sm);
+    color: var(--fg-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+
+  /* ─── 满意度反馈 ───────────────────────────────────────────────── */
+  .feedback {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding-left: 2px;
+  }
+  .fb-btn {
+    width: 28px;
+    height: 28px;
+    display: inline-grid;
+    place-items: center;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg-2);
+    font-size: 14px;
+    line-height: 1;
+    transition: background var(--motion-fast) var(--ease-standard),
+                border-color var(--motion-fast) var(--ease-standard);
+  }
+  .fb-btn:hover:not(:disabled) {
+    background: var(--surface-warm);
+    border-color: var(--meta);
+  }
+  .fb-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .fb-btn.selected {
+    border-color: color-mix(in oklab, var(--accent) 45%, var(--surface));
+    background: color-mix(in oklab, var(--accent) 10%, var(--surface));
+  }
+  .fb-btn:disabled { cursor: default; }
+  .fb-btn:disabled:not(.selected) { opacity: 0.45; }
+  .fb-text { font-size: var(--text-xs); color: var(--meta); }
+
   /* ─── suggestion chips ─────────────────────────────────────────── */
   .suggestions {
     display: flex;
@@ -562,6 +636,118 @@
       (TOOL_LABELS[name] || name) + (ok ? " 成功" : " 失败");
   }
 
+  /* ─── 引用角标:citations 帧到达后把正文 [n] 换成可点 sup ─── */
+  var citePop = null;
+
+  function closeCitePop() {
+    if (citePop && citePop.parentNode) citePop.parentNode.removeChild(citePop);
+    citePop = null;
+  }
+
+  function openCitePop(sup) {
+    closeCitePop();
+    var n = parseInt(sup.getAttribute("data-n"), 10);
+    var c = lastCitations[n - 1];
+    if (!c) return;
+    var pop = document.createElement("div");
+    pop.className = "cite-pop";
+    pop.setAttribute("role", "tooltip");
+    var src = document.createElement("div");
+    src.className = "cite-src";
+    src.textContent = "[" + n + "] " + (c.section_path || "(无章节路径)");
+    var ans = document.createElement("div");
+    ans.className = "cite-answer";
+    ans.textContent = c.answer || "";
+    pop.appendChild(src);
+    pop.appendChild(ans);
+    document.body.appendChild(pop);
+    var rect = sup.getBoundingClientRect();
+    var left = Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12);
+    pop.style.left = Math.max(12, left) + "px";
+    pop.style.top = Math.round(rect.bottom + window.scrollY + 6) + "px";
+    citePop = pop;
+  }
+
+  // 逐段重建子树而非 innerHTML 替换:正文是模型输出,不能进 HTML 解析器
+  function renderCitations(bubble, citations) {
+    var text = bubble.textContent;
+    var re = /\[(\d{1,2})\]/g;
+    var frag = null;
+    var last = 0;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      var n = parseInt(m[1], 10);
+      if (!(n >= 1 && n <= citations.length)) continue; // 越界编号保持原样
+      if (!frag) frag = document.createDocumentFragment();
+      if (m.index > last) {
+        frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      }
+      var sup = document.createElement("sup");
+      sup.className = "cite";
+      sup.setAttribute("data-n", n);
+      sup.textContent = "[" + n + "]";
+      sup.addEventListener("click", function (e) {
+        e.stopPropagation();
+        openCitePop(this);
+      });
+      frag.appendChild(sup);
+      last = m.index + m[0].length;
+    }
+    if (frag) {
+      if (last < text.length) {
+        frag.appendChild(document.createTextNode(text.slice(last)));
+      }
+      bubble.textContent = "";
+      bubble.appendChild(frag);
+    }
+  }
+
+  /* ─── 满意度反馈:一次锁定,localStorage 按 会话+回复序号 持久化 ─── */
+  var fbSessionId = null; // 当前计数归属的会话;换会话即重新从 0 计
+  var fbReplyIndex = 0;
+
+  function addFeedback(col, sessionId, replyIndex) {
+    var key = "fb:" + sessionId + ":" + replyIndex;
+    var fb = document.createElement("div");
+    fb.className = "feedback";
+    var up = document.createElement("button");
+    var down = document.createElement("button");
+    up.type = "button"; down.type = "button";
+    up.className = "fb-btn"; down.className = "fb-btn";
+    up.textContent = "👍"; down.textContent = "👎";
+    up.setAttribute("aria-label", "回答有帮助");
+    down.setAttribute("aria-label", "回答没有帮助");
+    var text = document.createElement("span");
+    text.className = "fb-text";
+    text.textContent = "这条回答有帮助吗?";
+
+    function lock(choice) {
+      up.classList.toggle("selected", choice === "up");
+      down.classList.toggle("selected", choice === "down");
+      up.disabled = true;
+      down.disabled = true;
+      text.textContent = "已反馈";
+    }
+
+    up.addEventListener("click", function () {
+      try { localStorage.setItem(key, "up"); } catch (e) { /* 隐私模式静默 */ }
+      lock("up");
+    });
+    down.addEventListener("click", function () {
+      try { localStorage.setItem(key, "down"); } catch (e) { /* 隐私模式静默 */ }
+      lock("down");
+    });
+    fb.appendChild(up);
+    fb.appendChild(down);
+    fb.appendChild(text);
+    col.appendChild(fb);
+
+    // 重进页面/重渲染历史时按 localStorage 恢复锁定态
+    var saved = null;
+    try { saved = localStorage.getItem(key); } catch (e) { /* 同上 */ }
+    if (saved === "up" || saved === "down") lock(saved);
+  }
+
   function setStreaming(on) {
     streaming = on;
     sendBtn.disabled = on || !inputEl.value.trim();
@@ -636,6 +822,7 @@
       var decoder = new TextDecoder();
       var buffer = "";
       var reply = "";
+      var lastCitations = null; // citations 帧在 Done 前到达,供角标弹层引用
 
       while (true) {
         var chunk = await reader.read();
@@ -646,6 +833,10 @@
           var evt;
           try { evt = JSON.parse(data); } catch (e) { return; }
           if (evt.type === "session") {
+            if (fbSessionId !== evt.session_id) {
+              fbSessionId = evt.session_id; // 新会话,反馈序号从 0 重新计
+              fbReplyIndex = 0;
+            }
             sessionId = evt.session_id;
           } else if (evt.type === "delta") {
             reply += evt.content;
@@ -657,6 +848,8 @@
           } else if (evt.type === "tool_end") {
             settleBadge(badgeById, evt.tool_call_id, evt.name, evt.ok);
             scrollToBottom();
+          } else if (evt.type === "citations") {
+            lastCitations = evt.citations || [];
           } else if (evt.type === "error") {
             row.classList.add("error");
             row.classList.remove("assistant");
@@ -669,6 +862,10 @@
       }
 
       if (!bubble.textContent) bubble.textContent = "(未收到回复)";
+      if (!row.classList.contains("error")) {
+        if (lastCitations && lastCitations.length) renderCitations(bubble, lastCitations);
+        if (sessionId) addFeedback(col, sessionId, fbReplyIndex++);
+      }
     } catch (err) {
       row.classList.add("error");
       row.classList.remove("assistant");
@@ -705,6 +902,14 @@
     inputEl.style.height = "auto";
     inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + "px";
     sendBtn.disabled = streaming || !inputEl.value.trim();
+  });
+
+  // 点空白关闭引用弹层;弹层内点击与角标切换不关
+  document.addEventListener("click", function (e) {
+    if (!citePop) return;
+    if (citePop.contains(e.target)) return;
+    if (e.target && e.target.closest && e.target.closest("sup.cite")) return;
+    closeCitePop();
   });
 
   // 初始问候 + 建议问题
