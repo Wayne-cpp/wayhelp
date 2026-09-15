@@ -22,8 +22,9 @@ def test_ensure_creates_and_contract_ok(store):
 
 def test_upsert_search_roundtrip(store):
     store.ensure_collection()
-    store.upsert([(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])])
-    hits = store.search([0.9, 0.1, 0.0, 0.0], top_k=2)
+    store.upsert([(1, [1.0, 0.0, 0.0, 0.0], "智能猫砂盆 Pro 猫砂容量 9L", "product_spec"),
+                  (2, [0.0, 1.0, 0.0, 0.0], "自动饮水机 水箱容量 2L", "product_spec")])
+    hits = store.search_dense([0.9, 0.1, 0.0, 0.0], top_k=2)
     assert hits[0][0] == 1  # 最相似的是 id=1
     assert 0.0 < hits[0][1] <= 1.0
     assert {h[0] for h in hits} == {1, 2}
@@ -31,10 +32,10 @@ def test_upsert_search_roundtrip(store):
 
 def test_upsert_same_id_replaces(store):
     store.ensure_collection()
-    store.upsert([(1, [1.0, 0.0, 0.0, 0.0])])
-    store.upsert([(1, [0.0, 1.0, 0.0, 0.0])])  # 同 id 覆盖,不出重复向量
+    store.upsert([(1, [1.0, 0.0, 0.0, 0.0], "文本甲", "faq")])
+    store.upsert([(1, [0.0, 1.0, 0.0, 0.0], "文本甲", "faq")])  # 同 id 覆盖,不出重复向量
     assert store.all_ids() == {1}
-    hits = store.search([0.0, 1.0, 0.0, 0.0], top_k=1)
+    hits = store.search_dense([0.0, 1.0, 0.0, 0.0], top_k=1)
     assert hits[0][0] == 1 and hits[0][1] > 0.9
 
 
@@ -48,16 +49,18 @@ def test_num_entities(store):
     assert store.num_entities() == 0  # 集合不存在 → 0,不建文件外的东西
     store.ensure_collection()
     assert store.num_entities() == 0
-    store.upsert([(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])])
+    store.upsert([(1, [1.0, 0.0, 0.0, 0.0], "文本甲", "faq"),
+                  (2, [0.0, 1.0, 0.0, 0.0], "文本乙", "faq")])
     assert store.num_entities() == 2
-    store.upsert([(1, [0.0, 1.0, 0.0, 0.0])])  # 覆盖不增量
+    store.upsert([(1, [0.0, 1.0, 0.0, 0.0], "文本甲", "faq")])  # 覆盖不增量
     assert store.num_entities() == 2
 
 
 def test_delete_by_ids(store):
     store.ensure_collection()
-    store.upsert([(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0]),
-                  (3, [0.0, 0.0, 1.0, 0.0])])
+    store.upsert([(1, [1.0, 0.0, 0.0, 0.0], "文本甲", "faq"),
+                  (2, [0.0, 1.0, 0.0, 0.0], "文本乙", "faq"),
+                  (3, [0.0, 0.0, 1.0, 0.0], "文本丙", "policy")])
     store.delete_by_ids([1, 3])
     assert store.all_ids() == {2}
     assert store.num_entities() == 1
@@ -83,7 +86,7 @@ def test_close_and_reopen(tmp_path):
     uri = str(tmp_path / "reopen.db")
     s1 = MilvusKnowledgeStore(uri, dim=4)
     s1.ensure_collection()
-    s1.upsert([(7, [1.0, 0.0, 0.0, 0.0])])
+    s1.upsert([(7, [1.0, 0.0, 0.0, 0.0], "文本甲", "faq")])
     s1.close()
     s2 = MilvusKnowledgeStore(uri, dim=4)
     assert s2.all_ids() == {7}
@@ -140,7 +143,7 @@ def test_reopen_after_unclean_exit_recovers(tmp_path):
         "from app.knowledge.milvus_store import MilvusKnowledgeStore\n"
         f"s = MilvusKnowledgeStore({str(db)!r}, dim=4)\n"
         "s.ensure_collection()\n"
-        "s.upsert([(7, [1.0, 0.0, 0.0, 0.0])])\n"
+        "s.upsert([(7, [1.0, 0.0, 0.0, 0.0], '文本甲', 'faq')])\n"
         "import os; os._exit(0)\n"  # 模拟崩溃:不 close
     )
     r1 = subprocess.run([sys.executable, "-c", p1], env=env, cwd=tmp_path,
@@ -151,8 +154,8 @@ def test_reopen_after_unclean_exit_recovers(tmp_path):
         f"s = MilvusKnowledgeStore({str(db)!r}, dim=4)\n"
         "assert s.has_collection()\n"
         "assert s.all_ids() == {7}  # released 状态下 query 会炸,须自动 load\n"
-        "assert s.search([1.0, 0.0, 0.0, 0.0], top_k=1)[0][0] == 7\n"
-        "s.upsert([(8, [0.0, 1.0, 0.0, 0.0])])\n"
+        "assert s.search_dense([1.0, 0.0, 0.0, 0.0], top_k=1)[0][0] == 7\n"
+        "s.upsert([(8, [0.0, 1.0, 0.0, 0.0], '文本乙', 'faq')])\n"
         "assert s.all_ids() == {7, 8}\n"
         "s.close()\n"
         "print('OK')\n"
@@ -161,3 +164,54 @@ def test_reopen_after_unclean_exit_recovers(tmp_path):
                         capture_output=True, text=True, timeout=120)
     assert r2.returncode == 0, r2.stderr[-500:]
     assert "OK" in r2.stdout
+
+
+def test_new_schema_bm25_and_hybrid(tmp_path):
+    s = MilvusKnowledgeStore(str(tmp_path / "hybrid.db"), dim=4)
+    try:
+        s.ensure_collection()  # 建五列 schema
+        s.upsert([
+            (1, [1, 0, 0, 0], "智能猫砂盆 Pro 型号 MH-LP100 猫砂容量 9L 活性炭除臭", "product_spec"),
+            (2, [0, 1, 0, 0], "自动饮水机 型号 MH-W20 水箱容量 2L 三重过滤棉", "product_spec"),
+            (3, [0, 0, 1, 0], "退货政策 7 天无理由 不影响二次销售", "policy"),
+        ])
+        bm = s.search_bm25("MH-LP100 猫砂容量", 3)
+        assert bm[0][0] == 1                       # BM25 命中型号
+        dense = s.search_dense([0, 0, 1, 0], 3)
+        assert dense[0][0] == 3
+        hy = s.hybrid([0, 0, 1, 0], "退货", 3)
+        assert hy[0][0] == 3 and hy[0][1] > 0      # RRF 分数为正(量级 ~0.03)
+        scoped = s.search_bm25("退货 无理由", 3, scope="policy")
+        assert [i for i, _ in scoped] == [3]       # 过滤只剩 policy
+        assert s.search_bm25("退货 无理由", 3, scope="product_spec") == []
+        with pytest.raises(ValueError, match="scope"):
+            s.search_bm25("x", 1, scope="; DROP")  # 非枚举白名单直接拒
+    finally:
+        s.close()
+
+
+def test_legacy_two_column_schema_rejected(tmp_path):
+    s = MilvusKnowledgeStore(str(tmp_path / "legacy.db"), dim=4)
+    try:
+        cli = s._cli()
+        cli.create_collection(collection_name="knowledge", dimension=4,
+                              metric_type="COSINE", auto_id=False,
+                              enable_dynamic_field=False)  # 旧两列快捷形态
+        with pytest.raises(ValueError, match="重建索引"):
+            s.ensure_collection()
+    finally:
+        s.close()
+
+
+def test_recreate_cycle(tmp_path):
+    s = MilvusKnowledgeStore(str(tmp_path / "re.db"), dim=4)
+    try:
+        s.ensure_collection()
+        s.upsert([(1, [1, 0, 0, 0], "文本甲", "faq")])
+        assert s.all_ids() == {1}
+        s.recreate()                       # drop + 新 schema + load,_loaded 复位正确
+        assert s.all_ids() == set()
+        s.upsert([(2, [0, 1, 0, 0], "文本乙", "faq")])
+        assert [i for i, _ in s.search_dense([0, 1, 0, 0], 1)] == [2]
+    finally:
+        s.close()

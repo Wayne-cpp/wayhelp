@@ -1,13 +1,26 @@
-"""Milvus Lite 集合管理(spec §4.4)。只存 id + vector 两列,原文在 MySQL。"""
+"""Milvus Lite 集合管理(spec §4.4)。五列 schema:id/vector/text/sparse/scope,
+BM25 由 Milvus 原生 Function 生成 sparse 列,原文权威源在 MySQL。"""
 
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.knowledge.scope import SCOPES
+
 if TYPE_CHECKING:
     from pymilvus import MilvusClient
 
 COLLECTION = "knowledge"
+
+
+def _scope_filter(scope: str | None) -> str | None:
+    """Lite 实测不支持 expr_params/$占位符;scope 值经 SCOPES 白名单校验后字面插值,
+    枚举外的值在这里就拒掉,等效防注入(spec §4.1 意图)。"""
+    if scope is None:
+        return None
+    if scope not in SCOPES:
+        raise ValueError(f"未知 scope: {scope!r}(合法值 {SCOPES})")
+    return f'scope == "{scope}"'
 
 
 def _load_milvus_client() -> type["MilvusClient"]:
@@ -70,38 +83,105 @@ class MilvusKnowledgeStore:
         return self._cli().has_collection(COLLECTION)
 
     def ensure_collection(self) -> None:
-        """不存在则按契约创建;已存在则校验主键/维度,不符报错(spec §6 不得自动重建)。"""
+        """不存在则按契约创建;已存在则校验契约,不符报错(spec §6 不得自动重建)。"""
         # Milvus Lite 打开本地文件时不会自建父目录,必须先于 client 创建
         Path(self._uri).parent.mkdir(parents=True, exist_ok=True)
         cli = self._cli()
         if not cli.has_collection(COLLECTION):
-            cli.create_collection(collection_name=COLLECTION, dimension=self._dim,
-                                  metric_type="COSINE", auto_id=False,
-                                  enable_dynamic_field=False)
+            self._create_with_schema(cli)
         else:
-            info = cli.describe_collection(COLLECTION)
-            fields = {f["name"]: f for f in info["fields"]}
-            pk = fields.get("id") or {}
-            if not pk.get("is_primary"):
-                raise ValueError("knowledge 集合契约不符: id 不是主键")
-            vec = fields.get("vector") or {}
-            actual_dim = (vec.get("params") or {}).get("dim", vec.get("dimension"))
-            if actual_dim != self._dim:
-                raise ValueError(f"knowledge 集合维度不符: 期望 {self._dim},实际 {actual_dim}")
+            self._verify_contract(cli)
         cli.load_collection(COLLECTION)
         self._loaded = True
 
-    def upsert(self, rows: list[tuple[int, list[float]]]) -> None:
+    def _create_with_schema(self, cli) -> None:
+        _load_milvus_client()  # 幂等;保证 import 副作用隔离发生在符号 import 前
+        from pymilvus import DataType, Function, FunctionType
+        schema = cli.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("id", DataType.INT64, is_primary=True)
+        schema.add_field("vector", DataType.FLOAT_VECTOR, dim=self._dim)
+        schema.add_field("text", DataType.VARCHAR, max_length=4096,
+                         enable_analyzer=True, analyzer_params={"tokenizer": "jieba"})
+        schema.add_field("sparse", DataType.SPARSE_FLOAT_VECTOR)
+        schema.add_field("scope", DataType.VARCHAR, max_length=32)
+        schema.add_function(Function(
+            name="bm25_fn", function_type=FunctionType.BM25,
+            input_field_names=["text"], output_field_names=["sparse"]))
+        index_params = cli.prepare_index_params()
+        index_params.add_index(field_name="vector", index_type="AUTOINDEX",
+                               metric_type="COSINE")
+        index_params.add_index(field_name="sparse", index_type="SPARSE_INVERTED_INDEX",
+                               metric_type="BM25")
+        cli.create_collection(COLLECTION, schema=schema, index_params=index_params)
+
+    def _verify_contract(self, cli) -> None:
+        info = cli.describe_collection(COLLECTION)
+        fields = {f["name"]: f for f in info["fields"]}
+        missing = {"id", "vector", "text", "sparse", "scope"} - set(fields)
+        if missing:
+            raise ValueError(
+                f"knowledge 集合契约不符(缺列 {sorted(missing)}):需重建索引")
+        if not fields["id"].get("is_primary"):
+            raise ValueError("knowledge 集合契约不符: id 不是主键")
+        vec = fields["vector"]
+        actual_dim = (vec.get("params") or {}).get("dim", vec.get("dimension"))
+        if actual_dim != self._dim:
+            raise ValueError(
+                f"knowledge 集合维度不符: 期望 {self._dim},实际 {actual_dim}")
+        fnames = {f.get("name") for f in info.get("functions", [])}
+        if "bm25_fn" not in fnames:
+            raise ValueError("knowledge 集合契约不符: 缺 BM25 函数,需重建索引")
+
+    def upsert(self, rows: list[tuple[int, list[float], str, str]]) -> None:
         if not rows:
             return
         self._ensure_loaded()
-        self._cli().upsert(COLLECTION, [{"id": i, "vector": v} for i, v in rows])
+        self._cli().upsert(COLLECTION, [
+            {"id": i, "vector": v, "text": t, "scope": sc} for i, v, t, sc in rows])
 
-    def search(self, vector: list[float], top_k: int) -> list[tuple[int, float]]:
-        """返回 [(chunk_id, cosine_similarity)],按相似度降序。"""
+    def search_dense(self, vector: list[float], top_k: int,
+                     scope: str | None = None) -> list[tuple[int, float]]:
         self._ensure_loaded()
-        res = self._cli().search(COLLECTION, data=[vector], limit=top_k)
+        kw: dict = {}
+        f = _scope_filter(scope)
+        if f:
+            kw["filter"] = f
+        res = self._cli().search(COLLECTION, data=[vector], limit=top_k, **kw)
         return [(h["id"], h["distance"]) for h in res[0]]
+
+    def search_bm25(self, text: str, top_k: int,
+                    scope: str | None = None) -> list[tuple[int, float]]:
+        self._ensure_loaded()
+        kw = {"anns_field": "sparse", "search_params": {"metric_type": "BM25"}}
+        f = _scope_filter(scope)
+        if f:
+            kw["filter"] = f
+        res = self._cli().search(COLLECTION, data=[text], limit=top_k, **kw)
+        return [(h["id"], h["distance"]) for h in res[0]]
+
+    def hybrid(self, vector: list[float], text: str, top_k: int,
+               scope: str | None = None) -> list[tuple[int, float]]:
+        """dense + BM25 双路,RRF(k=60) 融合;返回 [(chunk_id, rrf_score)]。"""
+        self._ensure_loaded()
+        _load_milvus_client()
+        from pymilvus import AnnSearchRequest, RRFRanker
+        f = _scope_filter(scope)
+        dreq = AnnSearchRequest(data=[vector], anns_field="vector",
+                                param={"metric_type": "COSINE"}, limit=top_k, expr=f)
+        breq = AnnSearchRequest(data=[text], anns_field="sparse",
+                                param={"metric_type": "BM25"}, limit=top_k, expr=f)
+        res = self._cli().hybrid_search(COLLECTION, [dreq, breq], RRFRanker(k=60),
+                                        limit=top_k)
+        return [(h["id"], h["distance"]) for h in res[0]]
+
+    def drop_collection(self) -> None:
+        if self._cli().has_collection(COLLECTION):
+            self._cli().drop_collection(COLLECTION)
+        self._loaded = False
+
+    def recreate(self) -> None:
+        self.drop_collection()
+        self.ensure_collection()
 
     def all_ids(self) -> set[int]:
         if not self.has_collection():
