@@ -13,6 +13,7 @@ dependencies = [
   "pymysql>=1.1",
   "cryptography>=43",
   "pymilvus[milvus-lite]>=3.0.1",
+  "jieba>=0.42.1",
 ]
 
 [dependency-groups]
