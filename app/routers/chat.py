@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from app.schemas import ChatStreamRequest
 from app.services.chat_service import (
     ChatService,
+    CitationsEvent,
     DeltaEvent,
     DoneEvent,
     ErrorEvent,
@@ -50,6 +51,8 @@ class _EventStream:
                     yield _sse({"type": "tool_end", "tool_call_id": event.tool_call_id,
                                 "name": event.name, "ok": event.ok,
                                 "summary": event.summary})
+                elif isinstance(event, CitationsEvent):
+                    yield _sse({"type": "citations", "citations": event.citations})
                 elif isinstance(event, DoneEvent):
                     yield "data: [DONE]\n\n"
                 elif isinstance(event, ErrorEvent):

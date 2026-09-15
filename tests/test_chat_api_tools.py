@@ -2,7 +2,13 @@ import httpx
 
 from app.main import create_app
 from app.prompts.service import SERVICE_SYSTEM_PROMPT
-from tests.conftest import TEST_USER_ID, FakeStreamModel, make_runtime, make_settings
+from tests.conftest import (
+    TEST_USER_ID,
+    FakeStreamModel,
+    UserBoundMemoryStore,
+    make_runtime,
+    make_settings,
+)
 from tests.test_chat_api import parse_frames, post_stream
 
 TOOL_CHUNKS = [
@@ -81,3 +87,81 @@ async def test_bad_session_id_form_422():
 def test_system_prompt_rule_demo_data_honesty():
     assert "演示数据" in SERVICE_SYSTEM_PROMPT
     assert "不得承诺" in SERVICE_SYSTEM_PROMPT
+
+
+# ---- T9:citations 帧 / 硬闸门拒答(SSE 层) ----
+
+FAQ_CALL = {"name": "query_faq", "args": "{\"keyword\": \"能寄到日本吗\"}",
+            "id": "c1", "index": 0}
+
+
+class _OkRetriever:
+    """一条高置信命中(chunk_id=5)。"""
+
+    def search(self, q, **kw):
+        from app.knowledge.query_understanding import passthrough_plan
+        from app.knowledge.retriever import KnowledgeHit, RetrievalResult
+        hit = KnowledgeHit(5, 0.9, "faq", "能寄到日本吗",
+                           "目前仅支持中国大陆地区配送。", None, 0, "配送/服务范围")
+        return RetrievalResult([hit], "hybrid_rerank", "hybrid_rerank",
+                               0.9, 0.5, False, None, passthrough_plan(q),
+                               {"dense": 1, "bm25": 1, "fused": 1})
+
+
+class _LowConfRetriever:
+    """零命中 → low_confidence=True。"""
+
+    def search(self, q, **kw):
+        from app.knowledge.query_understanding import passthrough_plan
+        from app.knowledge.retriever import RetrievalResult
+        return RetrievalResult([], "hybrid_rerank", "hybrid_rerank", None, 0.5,
+                               True, None, passthrough_plan(q), {"dense": 0, "bm25": 0})
+
+
+def _faq_app(retriever, script):
+    from app.main import AppRuntime, create_app
+    from app.tools.business import build_tools
+
+    settings = make_settings()
+    return create_app(settings=settings, model=FakeStreamModel(script),
+                      runtime=AppRuntime(store=UserBoundMemoryStore(1000, 100, 8000),
+                                         toolset_factory=lambda sid: build_tools(
+                                             None, 1, retriever=retriever,
+                                             settings=settings)))
+
+
+async def test_citations_frame_over_sse():
+    app = _faq_app(_OkRetriever(), [
+        ("tool", [FAQ_CALL]),
+        ("finish", "tool_calls"),
+        ("then", ["目前仅支持中国大陆地区配送 [1]"]),
+    ])
+    status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "能寄到日本吗"})
+    assert status == 200
+    frames = parse_frames(lines)
+    types = [f["type"] if isinstance(f, dict) else f for f in frames]
+    assert "citations" in types
+    cit = next(f for f in frames if isinstance(f, dict) and f.get("type") == "citations")
+    assert cit["citations"][0]["ref_no"] == 1 and cit["citations"][0]["chunk_id"] == 5
+    # 顺序:最后一个 delta 之后、[DONE] 之前
+    assert types.index("citations") > max(i for i, t in enumerate(types) if t == "delta")
+    assert frames[-1] == "[DONE]"
+
+
+async def test_hard_gate_refusal_frame_over_sse():
+    from app.prompts.service import REFUSAL_ANSWER
+
+    app = _faq_app(_LowConfRetriever(), [
+        ("tool", [FAQ_CALL]),
+        ("finish", "tool_calls"),
+        ("then", ["不应被调用"]),
+    ])
+    status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "能寄到日本吗"})
+    assert status == 200
+    frames = parse_frames(lines)
+    types = [f["type"] if isinstance(f, dict) else f for f in frames]
+    assert "citations" not in types
+    deltas = "".join(f["content"] for f in frames
+                     if isinstance(f, dict) and f.get("type") == "delta")
+    assert deltas == REFUSAL_ANSWER
+    assert frames[-1] == "[DONE]"

@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Union
@@ -14,7 +15,8 @@ from app.chains.tool_chat_chain import (
 )
 from app.config import Settings
 from app.errors import MessageTooLongError, SessionNotFoundError
-from app.sessions import SessionStore, StoredMessage
+from app.prompts.service import REFUSAL_ANSWER
+from app.sessions import LowConfidenceRecord, SessionStore, StoredMessage
 from app.tool_envelope import wrap
 from app.tools.executor import ToolExecutor, ToolRegistry
 
@@ -60,7 +62,13 @@ class ErrorEvent:
     message: str
 
 
-ChatEvent = Union[SessionEvent, DeltaEvent, ToolStartEvent, ToolEndEvent, DoneEvent, ErrorEvent]
+@dataclass(frozen=True)
+class CitationsEvent:
+    citations: list[dict]
+
+
+ChatEvent = Union[SessionEvent, DeltaEvent, ToolStartEvent, ToolEndEvent, DoneEvent,
+                  ErrorEvent, CitationsEvent]
 
 
 class SessionLockRegistry:
@@ -145,11 +153,19 @@ class ChatService:
         try:
             # 工具装配须在 finally 覆盖内:factory/registry/bind_tools/astream
             # 任一抛异常都经 finally 释放锁,不得永久持锁
-            tools = self._toolset_factory(turn.session_id) if self._toolset_factory else []
+            ts = self._toolset_factory(turn.session_id) if self._toolset_factory else None
+            if ts is None:
+                tools, trace = [], None
+            elif hasattr(ts, "retrieval_trace"):  # TurnToolset(T7)
+                tools, trace = ts.tools, ts.retrieval_trace
+            else:  # 旧装配仍直接给工具列表(test_orchestration 等)
+                tools, trace = list(ts), None
             registry = ToolRegistry(tools)
             executor = ToolExecutor(registry, self._settings.tool_timeout_seconds,
                                     self._settings.tool_max_retries,
-                                    self._settings.max_tool_result_chars)
+                                    self._settings.max_tool_result_chars,
+                                    tool_policies={"query_faq": (
+                                        self._settings.knowledge_tool_timeout_seconds, 0)})
             first_model = self._model.bind_tools(registry.tools) if tools else self._model
             agen = first_model.astream(turn.messages)
             yield SessionEvent(turn.session_id)
@@ -206,49 +222,54 @@ class ChatService:
                                 outcome.record.error_type)
                     yield ToolEndEvent(call["id"], call["name"], outcome.record.ok,
                                        outcome.message.content[:80])
-                second_messages = fit_tool_context(
-                    [*turn.messages, ai_with_calls, *tool_messages],
-                    self._settings.max_input_tokens,
-                    protected_from=len(turn.messages) - 1,  # 当前 human 的下标(turn.messages 末位)
-                )
-                if second_messages is None:
-                    yield ErrorEvent("tool_context_too_long", "工具结果超出上下文预算")
-                    return
-                final_parts: list[str] = []
-                finish2: str | None = None
-                # 第二次同样绑定工具:给工具意图结构化通道,避免其以标记语法裸文本泄漏;
-                # 但本轮不再执行任何 tool_calls(不聚合不推帧,徽章只代表真实执行)
-                second_model = self._model.bind_tools(registry.tools) if tools else self._model
-                agen2 = second_model.astream(second_messages)
-                try:
-                    async for chunk in agen2:
-                        meta = getattr(chunk, "response_metadata", None) or {}
-                        if meta.get("finish_reason"):
-                            finish2 = meta["finish_reason"]
-                        text = chunk.content if isinstance(chunk.content, str) else ""
-                        if not text:
-                            continue
-                        visible_chars += len(text)
-                        if visible_chars > self._settings.max_message_chars:
-                            yield ErrorEvent("output_too_long", "回复超出长度限制")
-                            return
-                        final_parts.append(text)
-                        yield DeltaEvent(text)
-                except Exception as exc:
-                    logger.warning("chat second call upstream error: %s", type(exc).__name__)
-                    yield ErrorEvent("upstream_error", "上游模型暂时不可用")
-                    return
-                finally:
-                    with contextlib.suppress(Exception):
-                        await agen2.aclose()
-                if finish2 == "length":
-                    yield ErrorEvent("output_too_long", "回复超出长度限制")
-                    return
-                final_text = "".join(final_parts)
-                if not final_text.strip():
-                    # 模型只给了未执行的 tool_calls:落库须剥离它们,以兜底话术作答
-                    yield DeltaEvent(FALLBACK_ANSWER)
-                    final_text = FALLBACK_ANSWER
+                if trace is not None and trace.status == "low_confidence":
+                    # 检索硬闸门:低置信命中时不发起第二次模型调用,直接固定话术拒答
+                    yield DeltaEvent(REFUSAL_ANSWER)
+                    final_text = REFUSAL_ANSWER
+                else:
+                    second_messages = fit_tool_context(
+                        [*turn.messages, ai_with_calls, *tool_messages],
+                        self._settings.max_input_tokens,
+                        protected_from=len(turn.messages) - 1,  # 当前 human 的下标(turn.messages 末位)
+                    )
+                    if second_messages is None:
+                        yield ErrorEvent("tool_context_too_long", "工具结果超出上下文预算")
+                        return
+                    final_parts: list[str] = []
+                    finish2: str | None = None
+                    # 第二次同样绑定工具:给工具意图结构化通道,避免其以标记语法裸文本泄漏;
+                    # 但本轮不再执行任何 tool_calls(不聚合不推帧,徽章只代表真实执行)
+                    second_model = self._model.bind_tools(registry.tools) if tools else self._model
+                    agen2 = second_model.astream(second_messages)
+                    try:
+                        async for chunk in agen2:
+                            meta = getattr(chunk, "response_metadata", None) or {}
+                            if meta.get("finish_reason"):
+                                finish2 = meta["finish_reason"]
+                            text = chunk.content if isinstance(chunk.content, str) else ""
+                            if not text:
+                                continue
+                            visible_chars += len(text)
+                            if visible_chars > self._settings.max_message_chars:
+                                yield ErrorEvent("output_too_long", "回复超出长度限制")
+                                return
+                            final_parts.append(text)
+                            yield DeltaEvent(text)
+                    except Exception as exc:
+                        logger.warning("chat second call upstream error: %s", type(exc).__name__)
+                        yield ErrorEvent("upstream_error", "上游模型暂时不可用")
+                        return
+                    finally:
+                        with contextlib.suppress(Exception):
+                            await agen2.aclose()
+                    if finish2 == "length":
+                        yield ErrorEvent("output_too_long", "回复超出长度限制")
+                        return
+                    final_text = "".join(final_parts)
+                    if not final_text.strip():
+                        # 模型只给了未执行的 tool_calls:落库须剥离它们,以兜底话术作答
+                        yield DeltaEvent(FALLBACK_ANSWER)
+                        final_text = FALLBACK_ANSWER
             else:
                 final_text = "".join(text_parts)
 
@@ -256,20 +277,54 @@ class ChatService:
                 yield ErrorEvent("empty_response", "上游返回了空回复")
                 return
 
+            # 拒答入池判定(与 commit 同事务):硬闸门拒答 → retrieval_low_conf;
+            # 检索 ok 但模型自评后精确输出拒答话术 → self_check;tool_error 不入池
+            low_conf: LowConfidenceRecord | None = None
+            if trace is not None:
+                cid = int(turn.session_id) if turn.session_id.isdecimal() else None
+                if trace.status == "low_confidence" and final_text.strip() == REFUSAL_ANSWER:
+                    r = trace.result
+                    low_conf = LowConfidenceRecord(
+                        raw_question=turn.user_text, source="retrieval_low_conf",
+                        reason=json.dumps({
+                            "requested_strategy": r.requested_strategy,
+                            "effective_strategy": r.effective_strategy,
+                            "top1": r.confidence_score,
+                            "threshold": r.confidence_threshold,
+                            "note": r.note}, ensure_ascii=False),
+                        conversation_id=cid)
+                elif trace.status == "ok" and final_text.strip() == REFUSAL_ANSWER:
+                    refs = [{"ref_no": e["ref_no"], "chunk_id": e["chunk_id"]}
+                            for e in (trace.evidence or [])]
+                    low_conf = LowConfidenceRecord(
+                        raw_question=turn.user_text, source="self_check",
+                        reason=json.dumps({"evidence_refs": refs}, ensure_ascii=False),
+                        conversation_id=cid)
+
             stored = [StoredMessage("user", turn.user_text)]
             if calls:
                 stored.append(StoredMessage("assistant", "".join(text_parts) or None,
                                             tool_calls=calls))
-                for tm, error_code in zip(tool_messages, tool_error_codes):
+                for tm, error_code, call in zip(tool_messages, tool_error_codes, calls):
+                    metadata = None
+                    if (call["name"] == "query_faq" and tm.status != "error"
+                            and trace is not None and trace.evidence is not None):
+                        metadata = {"citations": trace.evidence, "retrieval": {
+                            "requested_strategy": trace.result.requested_strategy,
+                            "effective_strategy": trace.result.effective_strategy,
+                            "confidence_score": trace.result.confidence_score,
+                            "confidence_threshold": trace.result.confidence_threshold,
+                            "leg_counts": trace.result.leg_counts}}
                     stored.append(StoredMessage(
                         "tool",
                         wrap(tm.content, tm.status != "error",
                              None if tm.status != "error" else error_code,
-                             self._settings.max_tool_result_chars),
+                             self._settings.max_tool_result_chars, metadata=metadata),
                         tool_call_id=tm.tool_call_id,
                     ))
             stored.append(StoredMessage("assistant", final_text))
-            commit_task = asyncio.ensure_future(self._store.commit_turn(turn.session_id, stored))
+            commit_task = asyncio.ensure_future(
+                self._store.commit_turn(turn.session_id, stored, low_confidence=low_conf))
             try:
                 await asyncio.shield(commit_task)
             except asyncio.CancelledError:
@@ -277,6 +332,9 @@ class ChatService:
                     await commit_task  # 等事务落地
                 raise
             committed = True
+            if (trace is not None and trace.status == "ok" and trace.evidence
+                    and final_text.strip() != REFUSAL_ANSWER):
+                yield CitationsEvent(trace.evidence)
             yield DoneEvent()
         finally:
             self.release_turn(turn)
@@ -291,4 +349,6 @@ class ChatService:
             return False
         if sum(1 for c in calls if c["name"] == "create_ticket") > 1:
             return False
+        if sum(1 for c in calls if c["name"] == "query_faq") > 1:
+            return False  # query_faq 每轮最多一次(完整问题一次传入)
         return True

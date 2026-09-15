@@ -15,7 +15,13 @@ from app.services.chat_service import (
     SessionLockRegistry,
 )
 from app.sessions import InMemorySessionStore
-from tests.conftest import TEST_USER_ID, FakeChunk, FakeStreamModel, make_settings
+from tests.conftest import (
+    TEST_USER_ID,
+    FakeChunk,
+    FakeStreamModel,
+    UserBoundMemoryStore,
+    make_settings,
+)
 
 SYSTEM = "你是电商售后客服小蜜。"
 
@@ -344,3 +350,156 @@ async def test_different_sessions_concurrent():
     assert sid1 != sid2
     assert [m.content for m in await store.snapshot(sid1)] == ["甲", "开始结束"]
     assert [m.content for m in await store.snapshot(sid2)] == ["乙", "开始结束"]
+
+
+# ---- T9:检索硬闸门 / 自评拒答 / citations 帧 ----
+
+FAQ_CALL = {"name": "query_faq", "args": "{\"keyword\": \"能寄到日本吗\"}",
+            "id": "c1", "index": 0}
+
+
+def _faq_hit():
+    from app.knowledge.retriever import KnowledgeHit
+    return KnowledgeHit(5, 0.9, "faq", "能寄到日本吗",
+                        "目前仅支持中国大陆地区配送。", None, 0, "配送/服务范围")
+
+
+class LowConfRetriever:
+    """零命中 → low_confidence=True(硬闸门素材)。"""
+
+    def search(self, q, **kw):
+        from app.knowledge.query_understanding import passthrough_plan
+        from app.knowledge.retriever import RetrievalResult
+        return RetrievalResult([], "hybrid_rerank", "hybrid_rerank", None, 0.5,
+                               True, None, passthrough_plan(q), {"dense": 0, "bm25": 0})
+
+
+class OkRetriever:
+    """一条高置信命中(chunk_id=5,Top-1 0.9 ≥ 阈值 0.5)。"""
+
+    def search(self, q, **kw):
+        from app.knowledge.query_understanding import passthrough_plan
+        from app.knowledge.retriever import RetrievalResult
+        return RetrievalResult([_faq_hit()], "hybrid_rerank", "hybrid_rerank",
+                               0.9, 0.5, False, None, passthrough_plan(q),
+                               {"dense": 1, "bm25": 1, "fused": 1})
+
+
+def make_faq_service(retriever, script):
+    from app.tools.business import build_tools
+
+    settings = make_settings()
+    store = UserBoundMemoryStore(1000, 100, 8000)
+
+    def factory(sid):
+        return build_tools(None, 1, retriever=retriever, settings=settings)
+
+    model = FakeStreamModel(script)
+    return ChatService(store, model, settings, SYSTEM, factory), store, model
+
+
+async def test_hard_gate_refusal_skips_second_call():
+    from app.prompts.service import REFUSAL_ANSWER
+    from app.services.chat_service import CitationsEvent
+
+    svc, store, model = make_faq_service(LowConfRetriever(), [
+        ("tool", [FAQ_CALL]),
+        ("finish", "tool_calls"),
+        ("then", ["不应被调用"]),
+    ])
+    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
+    events = [e async for e in svc.stream(turn)]
+    deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
+    assert deltas == REFUSAL_ANSWER
+    assert len(model.received) == 1                  # 第二次模型调用未发生
+    assert not any(isinstance(e, CitationsEvent) for e in events)  # 拒答不推引用帧
+    rec = store.low_confidence[0]
+    assert rec.source == "retrieval_low_conf"
+    for key in ("requested_strategy", "effective_strategy", "top1", "threshold", "note"):
+        assert key in rec.reason
+    assert rec.conversation_id is None               # 内存会话 id 非十进制 → None
+
+
+async def test_self_check_refusal_pools_self_check():
+    from app.prompts.service import REFUSAL_ANSWER
+    from app.services.chat_service import CitationsEvent
+
+    svc, store, model = make_faq_service(OkRetriever(), [
+        ("tool", [FAQ_CALL]),
+        ("finish", "tool_calls"),
+        ("then", [REFUSAL_ANSWER]),   # 检索 ok,模型第二次调用精确输出拒答话术
+    ])
+    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
+    events = [e async for e in svc.stream(turn)]
+    deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
+    assert deltas == REFUSAL_ANSWER
+    assert len(model.received) == 2                   # 自评路径仍走第二次调用
+    assert not any(isinstance(e, CitationsEvent) for e in events)
+    rec = store.low_confidence[0]
+    assert rec.source == "self_check"
+    assert '"chunk_id": 5' in rec.reason and "evidence_refs" in rec.reason
+
+
+async def test_citations_event_pushed_with_evidence():
+    from app.services.chat_service import CitationsEvent
+    from app.tool_envelope import unwrap, unwrap_metadata
+
+    svc, store, model = make_faq_service(OkRetriever(), [
+        ("tool", [FAQ_CALL]),
+        ("finish", "tool_calls"),
+        ("then", ["目前仅支持中国大陆地区配送 [1]"]),
+    ])
+    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
+    events = [e async for e in svc.stream(turn)]
+    cit = next(e for e in events if isinstance(e, CitationsEvent))
+    assert cit.citations[0]["ref_no"] == 1 and cit.citations[0]["chunk_id"] == 5
+    # 顺序:citations 在最后一个 delta 之后、Done 之前
+    types = [type(e).__name__ for e in events]
+    assert types.index("CitationsEvent") < types.index("DoneEvent")
+    assert types.index("CitationsEvent") > max(
+        i for i, t in enumerate(types) if t == "DeltaEvent")
+    assert store.low_confidence == []                 # 正常作答不入池
+    # 三处同一份列表:citations 帧 = query_faq 出参 evidence = envelope v2 metadata
+    tool_row = next(m for m in await store.snapshot(turn.session_id) if m.role == "tool")
+    body, ok = unwrap(tool_row.content)
+    assert ok and json.loads(body)["evidence"] == cit.citations
+    md = unwrap_metadata(tool_row.content)
+    assert md["citations"] == cit.citations
+    assert md["retrieval"]["confidence_score"] == 0.9
+    assert md["retrieval"]["effective_strategy"] == "hybrid_rerank"
+
+
+async def test_tool_error_not_pooled():
+    from app.knowledge.query_understanding import passthrough_plan
+    from app.knowledge.retriever import NOTE_REBUILDING, RetrievalResult
+    from app.services.chat_service import CitationsEvent
+
+    class RebuildingRetriever:
+        def search(self, q, **kw):
+            return RetrievalResult([], "hybrid_rerank", "hybrid_rerank", None, 0.5,
+                                   True, NOTE_REBUILDING, passthrough_plan(q), {})
+
+    svc, store, model = make_faq_service(RebuildingRetriever(), [
+        ("tool", [FAQ_CALL]),
+        ("finish", "tool_calls"),
+        ("then", ["知识库正在维护,请稍后再试"]),
+    ])
+    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
+    events = [e async for e in svc.stream(turn)]
+    deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
+    assert deltas == "知识库正在维护,请稍后再试"     # 系统故障走第二次模型如实说明
+    assert len(model.received) == 2
+    assert not any(isinstance(e, CitationsEvent) for e in events)
+    assert store.low_confidence == []                 # 系统故障不入池
+
+
+async def test_query_faq_twice_in_one_turn_rejected():
+    chunks = [
+        {"name": "query_faq", "args": "{\"keyword\": \"a\"}", "id": "c1", "index": 0},
+        {"name": "query_faq", "args": "{\"keyword\": \"b\"}", "id": "c2", "index": 1},
+    ]
+    svc, store, model = make_faq_service(OkRetriever(), [("tool", chunks)])
+    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
+    events = [e async for e in svc.stream(turn)]
+    assert events[-1].code == "invalid_tool_call"      # query_faq 每轮最多一次
+    assert await store.snapshot(turn.session_id) == []
