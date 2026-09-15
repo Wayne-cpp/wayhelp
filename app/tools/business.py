@@ -1,12 +1,20 @@
 import json
 import random
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import StringConstraints
 
+from app.knowledge.retriever import (
+    NOTE_REBUILDING,
+    NOTE_REBUILD_REQUIRED,
+    NOTE_UNCONFIGURED,
+    RetrievalResult,
+    assemble_evidence,
+)
 from app.models import Conversation, Ticket
 
 OrderId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
@@ -66,22 +74,74 @@ def query_logistics(order_id: OrderId) -> str:
 
 MOCK_TOOLS: list[BaseTool] = [query_order, query_product, query_logistics]
 
+SCOPE_ENUM = Literal["faq", "policy", "product_spec", "after_sales_manual",
+                     "qa_mined", "manual"]
 
-def build_tools(session_factory, conversation_id: int, retriever=None) -> list[BaseTool]:
+
+@dataclass
+class RetrievalTrace:
+    """每轮 query_faq 调用的显式 interface(spec §7.1);初始 not_called,完成后只写一次。"""
+    status: str = "not_called"   # not_called | ok | low_confidence | tool_error
+    result: RetrievalResult | None = None
+    evidence: list[dict] | None = None
+    error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class TurnToolset:
+    tools: list
+    retrieval_trace: RetrievalTrace
+
+    @property
+    def tools_by_name(self) -> dict:
+        return {t.name: t for t in self.tools}
+
+    # T7→T9 桥接:ChatService 在 T9 前仍把 factory 结果当 list 消费
+    # (ToolRegistry 迭代 / `if tools` 真值判断),补齐列表协议保持全链不红
+    def __iter__(self):
+        return iter(self.tools)
+
+    def __len__(self) -> int:
+        return len(self.tools)
+
+    def __getitem__(self, index):
+        return self.tools[index]
+
+
+def build_tools(session_factory, conversation_id: int, retriever=None,
+                settings=None) -> TurnToolset:
     """每轮请求构造绑定该会话的工具实例;conversation_id 经闭包注入,不对模型暴露。"""
+    trace = RetrievalTrace()
 
     @tool
-    def query_faq(keyword: Keyword) -> str:
-        """查询知识库。参数 keyword 为用户问题或关键词,语义检索返回最相关的前 5 条。"""
+    def query_faq(keyword: Keyword, scope: SCOPE_ENUM | None = None) -> str:
+        """查询知识库。参数 keyword 为用户问题或关键词;scope 可选,限定知识范围
+        (faq 常见问答 / policy 退货退款政策 / product_spec 商品规格 / after_sales_manual
+        售后手册 / qa_mined 历史挖掘 / manual 手工录入)。返回检索策略、低置信标记与证据列表。"""
         if retriever is None:
-            return _json({"results": [], "note": "知识检索未配置"})
-        hits, note = retriever.search(keyword)
-        if not hits:
-            return _json({"results": [], "note": note or "未找到与关键词相关的常见问题"})
-        return _json({"results": [
-            {"question": h.questions, "answer": h.answer, "category": h.category}
-            for h in hits
-        ]})
+            trace.status = "tool_error"
+            trace.error_code = "kb_unconfigured"
+            return _json({"evidence": [], "note": "知识检索未配置",
+                          "low_confidence": False, "effective_strategy": None})
+        result = retriever.search(keyword, scope=scope)
+        if result.note in (NOTE_REBUILDING, NOTE_REBUILD_REQUIRED, NOTE_UNCONFIGURED):
+            trace.status = "tool_error"
+            trace.error_code = ("kb_rebuilding" if result.note == NOTE_REBUILDING
+                                else "kb_rebuild_required" if result.note == NOTE_REBUILD_REQUIRED
+                                else "kb_unconfigured")
+            return _json({"evidence": [], "note": result.note,
+                          "low_confidence": False,
+                          "effective_strategy": result.effective_strategy})
+        evidence = [e.to_dict() for e in assemble_evidence(
+            result.hits, max_items=settings.rerank_top_n if settings else 10,
+            budget_chars=(settings.max_tool_result_chars if settings else 4000),
+            overhead_chars=200)] if result.hits else []
+        trace.status = "low_confidence" if result.low_confidence else "ok"
+        trace.result = result
+        trace.evidence = evidence
+        return _json({"effective_strategy": result.effective_strategy,
+                      "low_confidence": result.low_confidence,
+                      "note": result.note, "evidence": evidence})
 
     @tool
     def create_ticket(
@@ -100,4 +160,5 @@ def build_tools(session_factory, conversation_id: int, retriever=None) -> list[B
             s.commit()  # 工单与会话状态同事务,同成同败
         return _json({"ticket_no": ticket_no, "status": "待处理"})
 
-    return [query_order, query_product, query_logistics, query_faq, create_ticket]
+    return TurnToolset([query_order, query_product, query_logistics, query_faq,
+                        create_ticket], trace)

@@ -1,5 +1,3 @@
-import json
-
 import httpx2
 import pytest
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
@@ -11,7 +9,6 @@ from app.knowledge.retriever import (
     KnowledgeRetriever, RetryableKnowledgeError, _as_retryable,
 )
 from app.models import KnowledgeChunk
-from app.tools.business import build_tools
 from tests.conftest import make_settings
 from tests.dbfixtures import db_engine, db_session_factory  # noqa: F401
 
@@ -174,48 +171,6 @@ def test_disabled_without_key(db_session_factory, store):
     assert r.enabled is False
     res = r.search("邮费", query_plan=_plan("邮费"))
     assert res.hits == [] and res.note == "知识检索未配置"
-
-
-# ─── query_faq 契约(T7 将改造 business.py,这里经遗留适配保活契约断言)────────
-
-
-class _LegacyFaqRetriever:
-    """T6 过渡:business.py 仍是 (hits, note) 二元组 + 阈值过滤的旧契约,
-    把新 RetrievalResult 投影回旧形态;T7 工具层改造后随测试一并删除。"""
-
-    def __init__(self, retriever):
-        self._r = retriever
-
-    def search(self, query, min_score=None):
-        res = self._r.search(query, strategy="dense", min_score=min_score)
-        hits = [h for h in res.hits if h.score >= res.confidence_threshold]
-        return hits, res.note
-
-
-def test_query_faq_contract_unchanged(db_session_factory, store):
-    settings = make_settings(knowledge_min_score=0.5)
-    _seed_knowledge(db_session_factory, store)
-    retriever = _LegacyFaqRetriever(
-        _retriever(settings, store, db_session_factory))
-    tools = build_tools(db_session_factory, 1, retriever)
-    faq = next(t for t in tools if t.name == "query_faq")
-    out = json.loads(faq.invoke({"keyword": "邮费是多少"}))
-    assert set(out) == {"results"}
-    assert set(out["results"][0]) == {"question", "answer", "category"}
-    assert out["results"][0]["answer"] == "满 99 包邮,未满 8 元。"
-    out2 = json.loads(faq.invoke({"keyword": "登录"}))
-    assert out2["results"] and "忘记密码" in out2["results"][0]["question"]
-
-
-def test_query_faq_no_hit_note(db_session_factory, store):
-    settings = make_settings(knowledge_min_score=0.99)
-    _seed_knowledge(db_session_factory, store)
-    retriever = _LegacyFaqRetriever(
-        _retriever(settings, store, db_session_factory))
-    faq = next(t for t in build_tools(db_session_factory, 1, retriever)
-               if t.name == "query_faq")
-    out = json.loads(faq.invoke({"keyword": "完全不沾边的问题xyz"}))
-    assert out["results"] == [] and out["note"]
 
 
 # ─── 异常分级(_as_retryable 语义不变)─────────────────────────────────────────

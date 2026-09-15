@@ -51,12 +51,14 @@ class ToolRegistry:
 
 class ToolExecutor:
     def __init__(self, registry: ToolRegistry, timeout_seconds: float, max_retries: int,
-                 max_result_chars: int, write_tools: set[str] | None = None):
+                 max_result_chars: int, write_tools: set[str] | None = None,
+                 tool_policies: dict[str, tuple[float, int]] | None = None):
         self._registry = registry
         self._timeout = timeout_seconds
         self._max_retries = max_retries
         self._max_chars = max_result_chars
         self._write_tools = WRITE_TOOLS if write_tools is None else write_tools
+        self._policies = tool_policies or {}  # name → (timeout, max_retries),仅 readonly 路径生效
 
     async def execute(self, call: dict) -> ToolOutcome:
         name = call.get("name", "")
@@ -72,18 +74,20 @@ class ToolExecutor:
             return self._error(name, args, call_id, "invalid_args", "ValidationError", started)
         if name in self._write_tools:
             return await self._run_write(tool, call, started)
-        return await self._run_readonly(tool, call, started)
+        timeout, max_retries = self._policies.get(name, (self._timeout, self._max_retries))
+        return await self._run_readonly(tool, call, started, timeout, max_retries)
 
-    async def _run_readonly(self, tool: BaseTool, call: dict, started: float) -> ToolOutcome:
+    async def _run_readonly(self, tool: BaseTool, call: dict, started: float,
+                            timeout: float, max_retries: int) -> ToolOutcome:
         retries = 0
         while True:
             try:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(tool.invoke, call), timeout=self._timeout
+                    asyncio.to_thread(tool.invoke, call), timeout=timeout
                 )
                 return self._success(tool, call, result, retries, started)
             except RETRYABLE as exc:
-                if retries >= self._max_retries:
+                if retries >= max_retries:
                     return self._error(call.get("name", ""), call.get("args") or {},
                                        call.get("id") or "", "tool_unavailable",
                                        type(exc).__name__, started, retries)

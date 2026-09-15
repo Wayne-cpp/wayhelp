@@ -6,6 +6,7 @@ import pytest
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
+from app.knowledge.retriever import RetryableKnowledgeError
 from app.tools.executor import ToolExecutor, ToolRegistry
 
 
@@ -159,3 +160,41 @@ async def test_write_tool_no_wait_for_no_retry(monkeypatch):
     outcome = await ex.execute(_call("write_tool", {"x": "1"}))
     assert outcome.message.status == "success"
     assert called["wait_for"] == 0  # 写工具不经过 wait_for
+
+
+async def test_query_faq_policy_no_retry():
+    calls = {"n": 0}
+
+    @tool
+    def query_faq(keyword: str) -> str:
+        """查知识库。"""
+        calls["n"] += 1
+        raise RetryableKnowledgeError("boom")
+
+    reg = ToolRegistry([query_faq])
+    ex = ToolExecutor(reg, timeout_seconds=5, max_retries=2, max_result_chars=4000,
+                      tool_policies={"query_faq": (20.0, 0)})
+    # 注:补 "type": "tool_call" 信封字段(T6 既载坑:缺它 langchain 把信封当 args,工具体不执行)
+    outcome = await ex.execute({"name": "query_faq", "args": {"keyword": "x"}, "id": "1",
+                                "type": "tool_call"})
+    assert outcome.record.error_code == "tool_unavailable"
+    assert calls["n"] == 1            # 零整链重试
+    assert outcome.record.retry_count == 0
+
+
+async def test_other_tools_keep_default_policy():
+    calls = {"n": 0}
+
+    @tool
+    def query_order(order_id: str) -> str:
+        """查订单。"""
+        calls["n"] += 1
+        raise TimeoutError()
+
+    reg = ToolRegistry([query_order])
+    ex = ToolExecutor(reg, timeout_seconds=5, max_retries=2, max_result_chars=4000,
+                      tool_policies={"query_faq": (20.0, 0)})
+    outcome = await ex.execute({"name": "query_order", "args": {"order_id": "1"}, "id": "1",
+                                "type": "tool_call"})
+    assert outcome.record.error_code == "tool_unavailable"
+    assert calls["n"] == 3            # 默认 2 次重试不变

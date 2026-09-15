@@ -5,7 +5,7 @@ import pytest
 from app.config import Settings
 from app.main import AppRuntime
 from app.sessions import InMemorySessionStore
-from app.tools.business import MOCK_TOOLS
+from app.tools.business import MOCK_TOOLS, RetrievalTrace, TurnToolset
 
 TEST_USER_ID = "11111111-1111-1111-1111-111111111111"
 
@@ -30,7 +30,8 @@ class UserBoundMemoryStore(InMemorySessionStore):
 def make_runtime(tools=None, store=None):
     return AppRuntime(
         store=store or UserBoundMemoryStore(1000, 100, 8000),
-        toolset_factory=lambda sid: list(MOCK_TOOLS if tools is None else tools),
+        toolset_factory=lambda sid: TurnToolset(
+            list(MOCK_TOOLS if tools is None else tools), RetrievalTrace()),
     )
 
 

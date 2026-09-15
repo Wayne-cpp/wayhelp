@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from app.tool_envelope import truncate_content, unwrap, wrap
+from app.tool_envelope import truncate_content, unwrap, unwrap_metadata, wrap
 
 
 def test_roundtrip_success():
@@ -55,6 +55,22 @@ def test_unwrap_corrupted_raises():
     with pytest.raises(ValueError):
         unwrap("not-json")
     with pytest.raises(ValueError):
-        unwrap('{"v":2,"ok":true,"content":"x"}')  # 版本不符
+        unwrap('{"v":3,"ok":true,"content":"x"}')  # 版本不符(v2 已合法,v3 拒绝)
     with pytest.raises(ValueError):
         unwrap('{"v":1,"content":"x"}')  # 缺 ok
+
+
+def test_wrap_v2_with_metadata_and_unwrap():
+    text = wrap("结果", True, None, 4000,
+                metadata={"citations": [{"ref_no": 1, "chunk_id": 5}]})
+    payload = json.loads(text)
+    assert payload["v"] == 2 and payload["metadata"]["citations"][0]["chunk_id"] == 5
+    assert unwrap(text) == ("结果", True)
+    assert unwrap_metadata(text)["citations"][0]["ref_no"] == 1
+
+
+def test_unwrap_v1_still_works_and_no_metadata():
+    text = wrap("旧格式", True, None, 4000)
+    assert json.loads(text)["v"] == 1
+    assert unwrap(text) == ("旧格式", True)
+    assert unwrap_metadata(text) is None
