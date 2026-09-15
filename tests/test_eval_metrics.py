@@ -48,24 +48,34 @@ def test_choose_threshold_no_feasible_exits():
         choose_threshold(cases, max_fpr=0.10)  # 负例满分,任何阈值都误召回
 
 
-def test_load_cases_derives_relevant_set():
+def test_load_cases_derives_relevant_set(tmp_path, monkeypatch):
     """_load_cases 必须把 relevant_chunks 派生成可比对的关键集合(relevant),
-    否则 choose_threshold/main 真实运行 KeyError(单测全用现成 relevant 没暴露)。"""
-    from pathlib import Path
-    from app.knowledge.chunking import chunk_document
-    from evals.run_knowledge_eval import _load_cases
-    corpus_keys = set()
-    for p in sorted(Path("knowledge_docs").glob("*.md")):
-        src = f"knowledge_docs/{p.name}"
-        for i, _ in enumerate(
-                chunk_document(p.read_text(encoding="utf-8"), source=src,
-                               max_chars=500, overlap_chars=80), start=1):
-            corpus_keys.add((src, i))
-    assert len(corpus_keys) == 14
-    cases = _load_cases(corpus_keys)
+    否则 choose_threshold/main 真实运行 KeyError(单测全用现成 relevant 没暴露)。
+    ch04 语料换血后 knowledge_recall.jsonl 标注已失效(引用已删除的旧文档名),
+    改用合成标注集钉同一回归,不再依赖真实 knowledge_docs。"""
+    import json
+    from evals import run_knowledge_eval as rke
+
+    def case(cid, split, answerable, chunks):
+        return {"id": cid, "split": split, "query": f"q{cid}", "answerable": answerable,
+                "relevant_chunks": [{"source_doc": d, "chunk_index": i} for d, i in chunks],
+                "answer_points": []}
+
+    synthetic = [case(f"p{i:02d}", "calibration" if i % 2 else "test", True, [("d1.md", i)])
+                 for i in range(1, 22)]           # 21 正例:奇 cal / 偶 test
+    synthetic.append(case("p_youfei", "test", True, [("d2.md", 3)]))  # 凑足 22 正例
+    synthetic += [case(f"n{i:02d}", "calibration" if i % 2 else "test", False, [])
+                  for i in range(1, 21)]          # 20 负例
+    path = tmp_path / "cases.jsonl"
+    path.write_text("\n".join(map(json.dumps, synthetic)), encoding="utf-8")
+    monkeypatch.setattr(rke, "CASES", path)
+
+    corpus_keys = {("d1.md", i) for i in range(1, 22)} | {("d2.md", 3)}
+    cases = rke._load_cases(corpus_keys)
     assert all(isinstance(c["relevant"], frozenset) for c in cases)
     youfei = next(c for c in cases if c["id"] == "p_youfei")
-    assert youfei["relevant"] == frozenset({("knowledge_docs/商品FAQ.md", 1)})
+    assert youfei["relevant"] == frozenset({("d2.md", 3)})
+    assert next(c for c in cases if not c["answerable"])["relevant"] == frozenset()
 
 
 def test_choose_threshold_tie_prefers_lower():
