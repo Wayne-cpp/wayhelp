@@ -83,6 +83,8 @@ curl -X POST http://127.0.0.1:8000/v1/extract \
 
 - 语料完整性校验(离线,无需 key):`uv run python evals/validate_corpus.py`
 - 四策略对比 + 生成段 Faithfulness 评估(300 case):`uv run python evals/run_retrieval_compare.py`(可加 `--max-d-pass 0.10` 调 D 桶误通过上限);产物落 `evals/results/{时间戳}_compare.json` 与 `.md`,报告含各策略 SR@5/10、CH@5/10、MRR@10、D 桶拒答正确率、误拒率与冻结阈值;某策略在 D 约束下无可行阈值时该臂 ungated 仅观测(threshold=null,有命中即过闸),评估不中断
+- `make eval-rag`:等价于上面的四策略评估命令;跑完产出 `evals/results/rag_eval.json`,后台 `/rag-eval` 页(报告 / 编造个案台账 / 就地重跑)读这份产物。
+- 部署契约:本应用按**单 Uvicorn worker** 运行(内存作业注册表与 Milvus Lite 独占均不支持多 worker);不要配置 `--workers >1`。
 - ch03 的 `evals/run_knowledge_eval.py` 已弃用:ch04 语料换血后旧标注失效,该脚本仅供指标函数复用
 
 ### 新增依赖与环境变量
