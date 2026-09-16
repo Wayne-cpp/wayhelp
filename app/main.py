@@ -31,7 +31,9 @@ from app.routers.chat import router as chat_router
 from app.routers.extract import router as extract_router
 from app.routers.jobs import router as jobs_router
 from app.routers.kb import router as kb_router
+from app.routers.rag_eval import router as rag_eval_router
 from app.services import rag_eval as rag_eval_service
+from app.services.rag_eval import ReportCorruptError
 from app.services.chat_service import ChatService
 from app.services.kb_admin import DEFAULT_DOCS_DIR, KbAdminError
 from app.store_db import DbSessionStore
@@ -139,6 +141,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.include_router(extract_router)
     app.include_router(kb_router)
     app.include_router(jobs_router)
+    app.include_router(rag_eval_router)
 
     root_dir = Path(__file__).resolve().parent.parent
     app.state.rag_eval_report_path = root_dir / "evals" / "results" / "rag_eval.json"
@@ -198,6 +201,12 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     async def _(request: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(status_code=422,
                             content=_error_body("invalid_request", "请求参数不合法"))
+
+    @app.exception_handler(ReportCorruptError)
+    async def _(request: Request, exc: ReportCorruptError) -> JSONResponse:
+        return JSONResponse(status_code=502,
+                            content=_error_body("rag_eval_report_corrupt",
+                                                "评估报告文件损坏或契约不合法"))
 
     @app.exception_handler(Exception)
     async def _(request: Request, exc: Exception) -> JSONResponse:

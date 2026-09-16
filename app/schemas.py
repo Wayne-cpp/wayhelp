@@ -101,6 +101,12 @@ class KbSearchRequest(BaseModel):
         return _require_non_blank(v)
 
 
+class FaithCasePatchRequest(BaseModel):
+    """台账处置:resolution 由路由去首尾空白后校验 1-300 字符。"""
+    status: Literal["已解决", "无需解决"]
+    resolution: str
+
+
 class AfterSaleExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
