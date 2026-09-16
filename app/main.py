@@ -13,6 +13,7 @@ from langchain_openai import ChatOpenAI
 
 from app.config import Settings
 from app.db import check_ch04_tables, make_engine, make_session_factory, ping
+from app.jobs.runner import JobRunner
 from app.knowledge.embedding import build_embeddings
 from app.knowledge.milvus_store import MilvusKnowledgeStore
 from app.knowledge.reranker import SiliconFlowReranker
@@ -28,7 +29,9 @@ from app.errors import (
 from app.prompts.service import SERVICE_SYSTEM_PROMPT
 from app.routers.chat import router as chat_router
 from app.routers.extract import router as extract_router
+from app.routers.jobs import router as jobs_router
 from app.routers.kb import router as kb_router
+from app.services import rag_eval as rag_eval_service
 from app.services.chat_service import ChatService
 from app.services.kb_admin import DEFAULT_DOCS_DIR, KbAdminError
 from app.store_db import DbSessionStore
@@ -114,6 +117,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
+        await app.state.job_runner.close()   # 先收评估子进程
         if owns_runtime and runtime.retriever is not None:
             runtime.retriever.close()
 
@@ -134,6 +138,22 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.include_router(chat_router)
     app.include_router(extract_router)
     app.include_router(kb_router)
+    app.include_router(jobs_router)
+
+    root_dir = Path(__file__).resolve().parent.parent
+    app.state.rag_eval_report_path = root_dir / "evals" / "results" / "rag_eval.json"
+
+    def _report_loader():
+        try:
+            return rag_eval_service.load_report(app.state.rag_eval_report_path)
+        except Exception:
+            return None
+
+    job_runner = JobRunner(log_dir=root_dir / "data" / "jobs",
+                           report_loader=_report_loader, cwd=root_dir)
+    job_runner.register("eval-rag",
+                        ["uv", "run", "python", "evals/run_retrieval_compare.py"])
+    app.state.job_runner = job_runner
 
     static_dir = Path(__file__).parent / "static"
 
