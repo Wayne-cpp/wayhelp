@@ -7,6 +7,8 @@
 产物:evals/results/{UTC 时间戳}_compare.json + .md
 口径(2026-09-16 用户批准):某策略在 D 约束下无可行阈值时,该臂不冻结阈值
 (ungated, threshold=null,有命中即过闸),报告标注「仅观测」,评估不中断。
+另:评估模型关思考模式(extra_body thinking disabled)——思考模式下合成的
+tool_call 消息缺 reasoning_content 会被 API 400,生产链路回放真实消息不受影响。
 """
 import json
 import re
@@ -371,7 +373,11 @@ def main(argv: list[str]) -> int:
     main_sf = make_session_factory(main_engine)
     model = ChatOpenAI(model=settings.model_name, api_key=settings.openai_api_key,
                        base_url=settings.openai_base_url,
-                       max_tokens=settings.max_output_tokens)
+                       max_tokens=settings.max_output_tokens,
+                       # 评估专用:思考模式下合成的 tool_call 消息缺 reasoning_content 会
+                       # 被 400(deepseek thinking 默认开;生产链路回放真实消息不受影响),
+                       # 故评估生成段/judge 关思考。口径 2026-09-16 记 dev-notes。
+                       extra_body={"thinking": {"type": "disabled"}})
     embed = build_embeddings(settings)
     engine = _prepare_eval_db(settings)  # 复用 ch03 版:独立评估库重放 03-ddl
     store = MilvusKnowledgeStore(str(Path(tempfile.mkdtemp()) / "compare_milvus.db"),
@@ -460,6 +466,7 @@ def main(argv: list[str]) -> int:
         out = {
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "max_d_pass": max_d_pass, "model": settings.model_name,
+            "thinking_mode": "disabled(评估专用,见模块 docstring)",
             "judge_model": settings.model_name,
             "embedding_model": settings.embedding_model,
             "corpus_chunks": len(chunk_meta), "cases_file": CASES.name,
