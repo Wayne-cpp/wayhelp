@@ -143,3 +143,32 @@ def test_parse_judge_output():
         parse_judge_output("not json")
     with pytest.raises(ValueError):
         parse_judge_output('{"verdict": "maybe", "unsupported_claims": [], "cited_refs": []}')
+
+
+def test_ungated_threshold_fallback():
+    from evals.run_retrieval_compare import _ungated_threshold
+    samples = [
+        {"bucket": "D_absent", "should_refuse": True, "top1": 0.9, "recall10": 0.0},
+        {"bucket": "D_absent", "should_refuse": True, "top1": None, "recall10": 0.0},
+        {"bucket": "A_policy", "should_refuse": False, "top1": 0.8, "recall10": 1.0},
+        {"bucket": "A_policy", "should_refuse": False, "top1": None, "recall10": 0.0},
+    ]
+    out = _ungated_threshold(samples)
+    assert out["threshold"] is None and out["ungated"] is True
+    assert out["d_pass_rate"] == 0.5        # 不设闸:有命中的 D 全放过
+    assert out["over_refusal_rate"] == 0.5  # 无命中正例计误拒
+    assert out["pass_adjusted_recall"] == 0.5
+
+
+def test_test_metrics_ungated_pass_semantics():
+    from evals.run_retrieval_compare import _test_metrics
+    cases = [
+        {"bucket": "A_policy", "should_refuse": False, "gt_groups": G,
+         "retrieval": {"hybrid": {"top1": 0.03, "paths": ["规格 > MH-LP100 款"]}}},
+        {"bucket": "D_absent", "should_refuse": True, "gt_groups": (),
+         "retrieval": {"hybrid": {"top1": None, "paths": []}}},
+    ]
+    m = _test_metrics(cases, "hybrid", None)   # ungated:有命中即过闸
+    assert m["threshold"] is None
+    assert m["section_recall_at_10"] == 0.5    # G 两组只命中一组
+    assert m["d_refuse_correct_rate"] == 1.0   # D 无命中 -> 拒,计正确

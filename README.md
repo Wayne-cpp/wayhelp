@@ -82,7 +82,7 @@ curl -X POST http://127.0.0.1:8000/v1/extract \
 ### 验证(eval 脚本)
 
 - 语料完整性校验(离线,无需 key):`uv run python evals/validate_corpus.py`
-- 四策略对比 + 生成段 Faithfulness 评估(300 case):`uv run python evals/run_retrieval_compare.py`(可加 `--max-d-pass 0.10` 调 D 桶误通过上限);产物落 `evals/results/{时间戳}_compare.json` 与 `.md`,报告含各策略 SR@5/10、CH@5/10、MRR@10、D 桶拒答正确率、误拒率与冻结阈值
+- 四策略对比 + 生成段 Faithfulness 评估(300 case):`uv run python evals/run_retrieval_compare.py`(可加 `--max-d-pass 0.10` 调 D 桶误通过上限);产物落 `evals/results/{时间戳}_compare.json` 与 `.md`,报告含各策略 SR@5/10、CH@5/10、MRR@10、D 桶拒答正确率、误拒率与冻结阈值;某策略在 D 约束下无可行阈值时该臂 ungated 仅观测(threshold=null,有命中即过闸),评估不中断
 - ch03 的 `evals/run_knowledge_eval.py` 已弃用:ch04 语料换血后旧标注失效,该脚本仅供指标函数复用
 
 ### 新增依赖与环境变量

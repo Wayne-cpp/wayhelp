@@ -5,6 +5,8 @@
 前置:EMBEDDING_API_KEY 必填;RERANK_API_KEY 空时回退 EMBEDDING_API_KEY;
 主库须已执行 ch04 DDL(faith_cases 写主业务库);服务已停(Lite 独占)。
 产物:evals/results/{UTC 时间戳}_compare.json + .md
+口径(2026-09-16 用户批准):某策略在 D 约束下无可行阈值时,该臂不冻结阈值
+(ungated, threshold=null,有命中即过闸),报告标注「仅观测」,评估不中断。
 """
 import json
 import re
@@ -109,6 +111,15 @@ def _pareto_rows(samples: list[dict], max_d_pass: float) -> list[dict]:
     return rows
 
 
+def _ungated_threshold(samples: list[dict]) -> dict:
+    """D 约束下无可行阈值的诊断臂兜底:不冻结阈值(threshold=None),三项指标按
+    「不设闸」口径(有命中即过闸)计算,报告标注仅观测。口径经用户批准(2026-09-16)。"""
+    _, pos, neg = _threshold_candidates(samples)
+    d_rate, over_refusal, par = _score_threshold(pos, neg, float("-inf"))
+    return {"threshold": None, "ungated": True, "d_pass_rate": d_rate,
+            "over_refusal_rate": over_refusal, "pass_adjusted_recall": par}
+
+
 _JUDGE_JSON_RE = re.compile(r"\{.*\}", re.S)
 
 
@@ -158,12 +169,13 @@ def _case_dict(c) -> dict:
             "split": c.split}
 
 
-def _test_metrics(test_cases: list[dict], strat: str, threshold: float) -> dict:
-    """test 分片指标:recall 族宏平均只计 A/B/C/E 正例(被拒计 0);D 只进拒答正确率。"""
+def _test_metrics(test_cases: list[dict], strat: str, threshold: float | None) -> dict:
+    """test 分片指标:recall 族宏平均只计 A/B/C/E 正例(被拒计 0);D 只进拒答正确率。
+    threshold=None 为 ungated 臂(仅观测):有命中即过闸。"""
     per = []
     for c in test_cases:
         r = c["retrieval"][strat]
-        passed = r["top1"] is not None and r["top1"] >= threshold
+        passed = r["top1"] is not None and (threshold is None or r["top1"] >= threshold)
         paths = r["paths"]
         per.append({
             "bucket": c["bucket"], "should_refuse": c["should_refuse"], "passed": passed,
@@ -231,14 +243,15 @@ def _judge(model, query: str, answer: str, evidence: list[dict]) -> tuple[dict |
     return None, err
 
 
-def _generation_segment(test_cases: list[dict], threshold: float, settings, model,
+def _generation_segment(test_cases: list[dict], threshold: float | None, settings, model,
                         main_sf) -> tuple[list[dict], int]:
     """生成段(test 分片,hybrid_rerank):低置信不调模型直接拒答话术;非拒答的
-    A/B/C/E case 交 judge;编造落 faith_cases 主库。返回 (逐 case 行, judge_error 数)。"""
+    A/B/C/E case 交 judge;编造落 faith_cases 主库。返回 (逐 case 行, judge_error 数)。
+    threshold=None 为 ungated 兜底:只有零命中才判低置信。"""
     rows, judge_errors = [], 0
     for c in test_cases:
         r = c["retrieval"]["hybrid_rerank"]
-        low = r["top1"] is None or r["top1"] < threshold
+        low = r["top1"] is None or (threshold is not None and r["top1"] < threshold)
         if low:
             answer, evidence = REFUSAL_ANSWER, []
         else:
@@ -281,8 +294,17 @@ def _render_md(out: dict) -> str:
              "|---|---|---|---|---|"]
     for strat in STRATEGIES:
         th = out["thresholds"][strat]
-        lines.append(f"| {strat} | {th['threshold']:.4f} | {th['d_pass_rate']:.3f} | "
-                     f"{th['over_refusal_rate']:.3f} | {th['pass_adjusted_recall']:.3f} |")
+        if th.get("ungated"):
+            lines.append(f"| {strat} | ungated(仅观测) | {th['d_pass_rate']:.3f} | "
+                         f"{th['over_refusal_rate']:.3f} | {th['pass_adjusted_recall']:.3f} |")
+        else:
+            lines.append(f"| {strat} | {th['threshold']:.4f} | {th['d_pass_rate']:.3f} | "
+                         f"{th['over_refusal_rate']:.3f} | {th['pass_adjusted_recall']:.3f} |")
+    ungated = [s for s in STRATEGIES if out["thresholds"][s].get("ungated")]
+    if ungated:
+        lines += ["", "> " + "/".join(ungated) +
+                  " 在 D 约束下无可行阈值:ungated=不冻结阈值、有命中即过闸,"
+                  "三项指标为不设闸口径,仅供观测(口径经用户批准 2026-09-16)。"]
     lines += ["", "## test 分片指标(偶数编号;被拒正例计 0,recall 族只宏平均 A/B/C/E)", "",
               "| strategy | SR@5 | SR@10 | CH@5 | CH@10 | MRR@10 | D拒答正确率 | 误拒率 |",
               "|---|---|---|---|---|---|---|---|"]
@@ -396,14 +418,23 @@ def main(argv: list[str]) -> int:
                         "recall10": section_recall_at_k(c["retrieval"][strat]["paths"],
                                                         c["gt_groups"], 10)}
                        for c in calibration]
-            thresholds[strat] = choose_strategy_threshold(samples, max_d_pass)
+            try:
+                thresholds[strat] = choose_strategy_threshold(samples, max_d_pass)
+            except SystemExit:  # D 约束无可行阈值 -> 该臂 ungated 仅观测,不中断
+                thresholds[strat] = _ungated_threshold(samples)
             pareto[strat] = _pareto_rows(samples, max_d_pass)
             th = thresholds[strat]
-            print(f"[compare] {strat}: threshold={th['threshold']:.4f} "
-                  f"d_pass={th['d_pass_rate']:.3f} "
-                  f"over_refusal={th['over_refusal_rate']:.3f} "
-                  f"par={th['pass_adjusted_recall']:.3f} "
-                  f"(可行候选 {len(pareto[strat])} 个)")
+            if th.get("ungated"):
+                print(f"[compare] {strat}: D 约束下无可行阈值 -> ungated 仅观测 "
+                      f"(不设闸口径 d_pass={th['d_pass_rate']:.3f} "
+                      f"over_refusal={th['over_refusal_rate']:.3f} "
+                      f"par={th['pass_adjusted_recall']:.3f})")
+            else:
+                print(f"[compare] {strat}: threshold={th['threshold']:.4f} "
+                      f"d_pass={th['d_pass_rate']:.3f} "
+                      f"over_refusal={th['over_refusal_rate']:.3f} "
+                      f"par={th['pass_adjusted_recall']:.3f} "
+                      f"(可行候选 {len(pareto[strat])} 个)")
         test_cases = [c for c in cases if c["split"] == "test"]
         metrics = {strat: _test_metrics(test_cases, strat, thresholds[strat]["threshold"])
                    for strat in STRATEGIES}
@@ -423,7 +454,7 @@ def main(argv: list[str]) -> int:
                 t = thresholds[strat]["threshold"]
                 entry["strategies"][strat] = {
                     "top1": r["top1"],
-                    "passed": r["top1"] is not None and r["top1"] >= t,
+                    "passed": r["top1"] is not None and (t is None or r["top1"] >= t),
                     "recall10": section_recall_at_k(r["paths"], c["gt_groups"], 10)}
             diagnosis.append(entry)
         out = {
