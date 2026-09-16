@@ -136,13 +136,33 @@ def test_choose_threshold_no_feasible():
 
 def test_parse_judge_output():
     out = parse_judge_output('{"verdict": "fabricated", "unsupported_claims": '
-                             '[{"claim": "c", "reason": "r"}], "cited_refs": [1, 3]}')
+                             '[{"claim": "c", "reason": "r"}], "cited_refs": [1, 3], '
+                             '"coverage": 0.5}')
     assert out["verdict"] == "fabricated" and out["cited_refs"] == [1, 3]
+    assert out["coverage"] == 0.5
     import pytest
     with pytest.raises(ValueError):
         parse_judge_output("not json")
     with pytest.raises(ValueError):
-        parse_judge_output('{"verdict": "maybe", "unsupported_claims": [], "cited_refs": []}')
+        parse_judge_output('{"verdict": "maybe", "unsupported_claims": [], '
+                           '"cited_refs": [], "coverage": 0.5}')
+
+
+def test_parse_judge_output_coverage_validation():
+    """coverage 缺失/字符串/bool/NaN/越界 → ValueError(计入重试与 judge_error)。"""
+    import pytest
+    base = '"verdict": "faithful", "unsupported_claims": [], "cited_refs": []'
+    for payload in (
+        "{" + base + "}",                                  # 缺失
+        "{" + base + ', "coverage": "0.5"}',               # 字符串
+        "{" + base + ', "coverage": true}',                # bool
+        "{" + base + ', "coverage": NaN}',                 # 非有限(json.loads 会放行 NaN)
+        "{" + base + ', "coverage": 1.5}',                 # 越界
+    ):
+        with pytest.raises(ValueError):
+            parse_judge_output(payload)
+    out = parse_judge_output("{" + base + ', "coverage": 1}')   # int 合法
+    assert out["coverage"] == 1.0 and isinstance(out["coverage"], float)
 
 
 def test_ungated_threshold_fallback():

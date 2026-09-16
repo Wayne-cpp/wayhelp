@@ -1,12 +1,17 @@
-JUDGE_PROMPT = """你是回答忠实度裁判。给定用户问题、客服回答、以及当轮提供给模型的证据列表(编号即回答中的引用角标),判断回答是否忠实于证据。
+JUDGE_PROMPT = """你是回答忠实度与覆盖度裁判。给定用户问题、客服回答、当轮提供给模型的证据列表(编号即回答中的引用角标)、以及该题的标准要点,判断回答是否忠实于证据,并给答案覆盖分。
 
 判定规则:
 - faithful:回答中的每个事实性陈述都能在证据中找到依据;引用角标与证据编号对应正确。
 - fabricated:回答含证据中没有的事实性陈述(数字、时限、政策、承诺等),或引用了不存在的证据编号。
 
+覆盖分 coverage 规则(逐要点二值):
+- 答案明确覆盖一个标准要点记 1,否则记 0;coverage = 覆盖要点数 / 要点总数,取值 0.0 到 1.0。
+- 同义表达算覆盖;回答中额外的正确信息不加分。
+
 只输出一行 JSON:
-{"verdict": "faithful" 或 "fabricated", "unsupported_claims": [{"claim": "编造的那句话", "reason": "为什么证据不支持"}], "cited_refs": [回答实际引用的编号,整数列表]}
+{"verdict": "faithful" 或 "fabricated", "unsupported_claims": [{"claim": "编造的那句话", "reason": "为什么证据不支持"}], "cited_refs": [回答实际引用的编号,整数列表], "coverage": 0.0 到 1.0 的数值}
 
 用户问题:{query}
 客服回答:{answer}
-证据列表:{evidence}"""
+证据列表:{evidence}
+标准要点:{expect_points}"""

@@ -12,6 +12,7 @@ tool_call 消息缺 reasoning_content 会被 API 400,生产链路回放真实消
 bm25 硬门槛为不设闸原始命中口径(验收本意=BM25 路命中型号,与闸门无关)。
 """
 import json
+import math
 import re
 import sys
 import tempfile
@@ -137,9 +138,14 @@ def parse_judge_output(text: str) -> dict:
     refs = data.get("cited_refs")
     if not isinstance(claims, list) or not isinstance(refs, list):
         raise ValueError("judge fields invalid")
+    coverage = data.get("coverage")
+    if (isinstance(coverage, bool) or not isinstance(coverage, (int, float))
+            or not math.isfinite(coverage) or not 0.0 <= coverage <= 1.0):
+        raise ValueError("judge coverage invalid")
     return {"verdict": data["verdict"],
             "unsupported_claims": claims,
-            "cited_refs": [int(x) for x in refs]}
+            "cited_refs": [int(x) for x in refs],
+            "coverage": float(coverage)}
 
 
 def upsert_faith_case(s, *, eval_id, bucket, query, answer, reason, citations,
@@ -231,10 +237,12 @@ def _simulate_second_turn(model, query: str, evidence: list[dict]) -> str:
     return resp.content if isinstance(resp.content, str) else ""
 
 
-def _judge(model, query: str, answer: str, evidence: list[dict]) -> tuple[dict | None, str | None]:
-    """忠实度裁判;失败(模型异常/解析非法)重试一次,再失败返回 (None, 错误描述)。"""
+def _judge(model, query: str, answer: str, evidence: list[dict],
+           expect_points) -> tuple[dict | None, str | None]:
+    """忠实度+覆盖度裁判;失败(模型异常/解析非法)重试一次,再失败返回 (None, 错误描述)。"""
     prompt = (JUDGE_PROMPT.replace("{query}", query).replace("{answer}", answer)
-              .replace("{evidence}", json.dumps(evidence, ensure_ascii=False)))
+              .replace("{evidence}", json.dumps(evidence, ensure_ascii=False))
+              .replace("{expect_points}", "、".join(expect_points)))
     err = None
     for _ in range(2):
         try:
@@ -266,7 +274,7 @@ def _generation_segment(test_cases: list[dict], threshold: float | None, setting
         row = {"id": c["id"], "bucket": c["bucket"], "low_confidence": low,
                "refused": refused, "answer": answer, "judge": None}
         if not refused and not c["should_refuse"]:
-            verdict, err = _judge(model, c["query"], answer, evidence)
+            verdict, err = _judge(model, c["query"], answer, evidence, c["expect_points"])
             if verdict is None:
                 row["judge"] = "judge_error"
                 row["judge_error"] = err
@@ -275,6 +283,7 @@ def _generation_segment(test_cases: list[dict], threshold: float | None, setting
                 row["judge"] = verdict["verdict"]
                 row["unsupported_claims"] = verdict["unsupported_claims"]
                 row["cited_refs"] = verdict["cited_refs"]
+                row["coverage"] = verdict["coverage"]
                 if verdict["verdict"] == "fabricated":
                     with main_sf() as s:
                         upsert_faith_case(s, eval_id=c["id"], bucket=c["bucket"],
