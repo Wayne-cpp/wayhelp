@@ -168,6 +168,10 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     async def kb_ui() -> FileResponse:
         return FileResponse(static_dir / "kb.html")
 
+    @app.get("/rag-eval", include_in_schema=False)
+    async def rag_eval_ui() -> FileResponse:
+        return FileResponse(static_dir / "rag-eval.html")
+
     @app.get("/1784959384051.jpg", include_in_schema=False)
     async def brand_mark() -> FileResponse:
         return FileResponse(static_dir / "1784959384051.jpg")

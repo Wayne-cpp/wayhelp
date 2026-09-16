@@ -28,6 +28,11 @@ def test_kb_page_six_sections_and_gauge():
     assert "--accent: #c96442" in html  # 复用 chat 页设计 tokens
 
 
+def test_nav_has_rag_eval():
+    html = KB_HTML.read_text(encoding="utf-8")
+    assert "/rag-eval" in html
+
+
 def test_kb_page_api_hooks():
     html = KB_HTML.read_text(encoding="utf-8")
     for path in ("/kb/api/state", "/kb/api/manual/preview", "/kb/api/manual/ingest",

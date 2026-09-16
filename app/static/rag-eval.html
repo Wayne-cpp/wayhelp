@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG 评估 - wayhelp</title>
+<style>
+  /* ─── 与 chat.html 同源的设计 tokens ─── */
+  :root {
+    --bg: #f5f4ed;
+    --surface: #faf9f5;
+    --surface-warm: #e8e6dc;
+    --bg-deep: color-mix(in oklab, var(--bg), var(--surface-warm) 65%);
+
+    --fg: #141413;
+    --fg-2: #3d3d3a;
+    --muted: #5e5d59;
+    --meta: #87867f;
+
+    --border: #f0eee6;
+    --border-soft: #e8e6dc;
+
+    --accent: #c96442;
+    --accent-on: #faf9f5;
+    --accent-hover: color-mix(in oklab, var(--accent), black 8%);
+    --accent-active: color-mix(in oklab, var(--accent), black 14%);
+
+    --success: #17a34a;
+    --warn: #eab308;
+    --danger: #b53333;
+
+    --font-display: "Anthropic Serif", Georgia, "Times New Roman", serif;
+    --font-body: "Anthropic Sans", "Arial", system-ui, -apple-system, sans-serif;
+    --font-mono: "Anthropic Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+
+    --text-xs: 10px;
+    --text-sm: 14px;
+    --text-base: 16px;
+
+    --leading-body: 1.6;
+    --leading-tight: 1.1;
+
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-pill: 9999px;
+
+    --elev-ring: 0 0 0 1px var(--border);
+    --elev-raised: rgba(0, 0, 0, 0.05) 0px 4px 24px;
+    --focus-ring: 0 0 0 3px rgba(56, 152, 236, 0.3);
+    --motion-fast: 150ms;
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font-family: var(--font-sans, "Anthropic Sans", sans-serif); }
+.wrap { max-width: 960px; margin: 0 auto; padding: 24px 20px 80px; }
+.topnav { display: flex; gap: 16px; margin-bottom: 8px; }
+.topnav a { color: var(--accent); text-decoration: none; font-size: 13px; }
+h1 { font-size: 22px; margin: 8px 0 4px; }
+h2 { font-size: 16px; margin: 28px 0 12px; border-bottom: 1px solid var(--border, #e0dccd);
+     padding-bottom: 6px; }
+.muted { color: var(--muted, #8a8a7a); font-size: 12px; }
+.banner { border-radius: 8px; padding: 10px 14px; margin: 12px 0; font-size: 13px; }
+.banner.ok { background: #e7f2ea; color: #2e6b3f; }
+.banner.warn { background: #faf0e6; color: #a05a2c; }
+.banner.err { background: #f8e8e4; color: #a13c2a; }
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.card { background: #fff; border: 1px solid var(--border, #e0dccd); border-radius: 10px;
+        padding: 14px; }
+.card .k { font-size: 12px; color: var(--muted, #8a8a7a); }
+.card .v { font-size: 22px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.card .s { font-size: 11px; color: var(--muted, #8a8a7a); margin-top: 4px; }
+.tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.tabs button { border: 1px solid var(--border, #e0dccd); background: #fff;
+               border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 13px; }
+.tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.caption { font-size: 12px; color: var(--muted, #8a8a7a); margin-top: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; background: #fff; }
+th, td { border: 1px solid var(--border, #e0dccd); padding: 6px 8px; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+tr.best td { background: #f3ece4; font-weight: 600; }
+.case { background: #fff; border: 1px solid var(--border, #e0dccd); border-radius: 8px;
+        padding: 12px; margin-bottom: 10px; font-size: 13px; }
+.case .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.chip { font-size: 11px; background: #f0ede2; border-radius: 4px; padding: 1px 6px; }
+.ev { margin-top: 8px; border-top: 1px dashed var(--border, #e0dccd); padding-top: 8px; }
+.ev .item { padding: 6px 8px; border-radius: 6px; margin-bottom: 6px; background: #faf9f4; }
+.ev .item.cited { background: #fdf1ea; border-left: 3px solid var(--accent); }
+button.act { border: 1px solid var(--accent); color: var(--accent); background: #fff;
+             border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+.pager { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 13px; }
+#log-window { background: #23211d; color: #d8d4c8; font-family: var(--font-mono, monospace);
+              font-size: 12px; border-radius: 8px; padding: 12px; height: 220px;
+              overflow-y: auto; white-space: pre-wrap; margin-top: 10px; }
+#dispose-modal { position: fixed; inset: 0; background: rgba(0,0,0,.35);
+                 display: none; align-items: center; justify-content: center; }
+#dispose-modal .box { background: #fff; border-radius: 10px; padding: 20px;
+                      width: 420px; }
+#dispose-modal textarea { width: 100%; height: 80px; margin: 8px 0; }
+.big-btn { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+           padding: 8px 18px; font-size: 14px; cursor: pointer; }
+.big-btn:disabled { opacity: .5; cursor: default; }
+.grid2 { display: grid; grid-template-columns: 1fr 260px; gap: 20px; align-items: start; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topnav"><a href="/">← 返回对话</a><a href="/kb">知识库管理</a></div>
+  <h1>RAG 评估</h1>
+
+  <section id="report-header">
+    <div id="report-meta" class="muted">加载中…</div>
+    <div id="gates-banner"></div>
+    <div id="run-banner"></div>
+  </section>
+
+  <h2>四项 KPI</h2>
+  <section id="kpis" class="cards">
+    <div class="card" id="kpi-mrr"><div class="k">最佳整体 MRR</div><div class="v">-</div><div class="s"></div></div>
+    <div class="card" id="kpi-colloquial"><div class="k">口语桶 MRR 提升</div><div class="v">-</div><div class="s">hybrid_rerank 对 dense / C_colloquial</div></div>
+    <div class="card" id="kpi-coverage"><div class="k">答案覆盖度</div><div class="v">-</div><div class="s">上线管线 hybrid_rerank</div></div>
+    <div class="card" id="kpi-refuse"><div class="k">库外拒答率</div><div class="v">-</div><div class="s">上线管线 D_absent 桶</div></div>
+  </section>
+
+  <h2>检索质量(四策略 × 四桶)</h2>
+  <section id="retrieval">
+    <div class="tabs" id="metric-tabs">
+      <button data-metric="mrr" class="on">MRR</button>
+      <button data-metric="recall5">Recall@5</button>
+      <button data-metric="evidence_coverage">证据覆盖度</button>
+    </div>
+    <div id="retrieval-chart"></div>
+    <div class="caption" id="retrieval-caption"></div>
+  </section>
+
+  <h2>生成质量</h2>
+  <section id="generation" class="grid2">
+    <div>
+      <div class="muted">四策略答案覆盖度</div>
+      <div id="coverage-chart"></div>
+      <div class="caption" id="coverage-caption"></div>
+      <div class="muted" style="margin-top:14px">上线管线四桶忠实率(已回答样本)</div>
+      <div id="faith-chart"></div>
+      <div class="caption" id="faith-note"></div>
+    </div>
+    <div>
+      <div class="muted">库外拒答率(上线管线)</div>
+      <div id="refuse-donut"></div>
+    </div>
+  </section>
+
+  <h2>完整数据</h2>
+  <section id="summary">
+    <table id="summary-table"></table>
+    <details id="fabricated-details" style="margin-top:12px">
+      <summary>编造个案(本轮,上线管线)</summary>
+      <div id="fabricated-list" style="margin-top:10px"></div>
+    </details>
+  </section>
+
+  <h2>编造个案台账</h2>
+  <section id="ledger">
+    <div id="ledger-stats" class="muted"></div>
+    <div class="tabs" id="ledger-tabs" style="margin-top:8px">
+      <button data-status="未解决" class="on">未解决</button>
+      <button data-status="已解决">已解决</button>
+      <button data-status="无需解决">无需解决</button>
+    </div>
+    <div id="ledger-list"></div>
+    <div class="pager" id="ledger-pager">
+      <button class="act" id="pager-prev">上一页</button>
+      <span id="pager-info"></span>
+      <button class="act" id="pager-next">下一页</button>
+    </div>
+  </section>
+
+  <h2>就地重跑</h2>
+  <section id="rerun">
+    <button class="big-btn" id="run-btn">重跑 RAG 评估</button>
+    <span id="run-status" class="muted" style="margin-left:10px"></span>
+    <div id="log-window"></div>
+  </section>
+</div>
+
+<div id="dispose-modal">
+  <div class="box">
+    <div id="dispose-title" style="font-size:14px;margin-bottom:6px"></div>
+    <textarea id="dispose-text" placeholder="处置说明(必填,1-300 字)"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="act" id="dispose-cancel">取消</button>
+      <button class="act" id="dispose-ok">确认</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var STRATEGIES = ["dense", "bm25", "hybrid", "hybrid_rerank"];
+var BUCKETS = ["A_policy", "B_model", "C_colloquial", "E_multi"];
+var BUCKET_CN = {A_policy: "政策", B_model: "型号", C_colloquial: "口语", E_multi: "多意图"};
+var COLORS = ["#8a8a7a", "#4a6fa5", "#c0a03c", "#c96442"];
+var SVGNS = "http://www.w3.org/2000/svg";
+var report = null;            // 当前报告(或 null)
+var ledgerState = {status: "未解决", page: 1, size: 10, total: 0};
+var pollTimer = null;
+
+function el(tag, attrs, text) {
+  var n = document.createElement(tag);
+  if (attrs) Object.keys(attrs).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+  if (text !== undefined && text !== null) n.textContent = text;
+  return n;
+}
+function sel(id) { return document.getElementById(id); }
+function fmt(v, d) { return (v === null || v === undefined) ? "不可用" : Number(v).toFixed(d === undefined ? 3 : d); }
+function pct(v) { return (v === null || v === undefined) ? "不可用" : (v * 100).toFixed(1) + "%"; }
+
+function api(path, opts) {
+  return fetch(path, opts).then(function (r) {
+    if (!r.ok) { var e = new Error("HTTP " + r.status); e.status = r.status; throw e; }
+    return r.json();
+  });
+}
+
+/* ---------- SVG 图(全部 DOM API,不拼 HTML 字符串) ---------- */
+function svgEl(tag, attrs, text) {
+  var n = document.createElementNS(SVGNS, tag);
+  if (attrs) Object.keys(attrs).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+  if (text !== undefined && text !== null) n.textContent = text;
+  return n;
+}
+
+/* 分组柱状图:groups=桶, series=策略, values[series][group]=number|null */
+function groupedBars(mount, groups, series, values) {
+  mount.replaceChildren();
+  var W = 760, H = 250, padL = 40, padB = 44, padT = 14;
+  var innerW = W - padL, innerH = H - padB - padT;
+  var svg = svgEl("svg", {width: W, height: H, role: "img"});
+  svg.appendChild(svgEl("line", {x1: padL, y1: H - padB, x2: W, y2: H - padB, stroke: "#c9c4b4"}));
+  var gw = innerW / groups.length;
+  var bw = Math.min(16, (gw - 30) / series.length);
+  groups.forEach(function (g, gi) {
+    var gx = padL + gi * gw;
+    series.forEach(function (s, si) {
+      var v = values[s] ? values[s][g] : null;
+      if (v === null || v === undefined) return;      // null 不画 0
+      var h = Math.max(1, v * innerH);
+      var x = gx + 15 + si * (bw + 3);
+      var rect = svgEl("rect", {x: x, y: H - padB - h, width: bw, height: h,
+                                fill: COLORS[si % COLORS.length]});
+      rect.appendChild(svgEl("title", null, s + " / " + g + ": " + fmt(v)));
+      svg.appendChild(rect);
+      svg.appendChild(svgEl("text", {x: x + bw / 2, y: H - padB - h - 3,
+                                     "text-anchor": "middle", "font-size": 8,
+                                     fill: "#6b675c"}, fmt(v, 2)));
+    });
+    svg.appendChild(svgEl("text", {x: gx + gw / 2, y: H - padB + 14,
+                                   "text-anchor": "middle", "font-size": 11,
+                                   fill: "#6b675c"}, BUCKET_CN[g] || g));
+  });
+  series.forEach(function (s, si) {                   // 图例
+    var lx = padL + si * 130;
+    svg.appendChild(svgEl("rect", {x: lx, y: H - 16, width: 10, height: 10,
+                                   fill: COLORS[si % COLORS.length]}));
+    svg.appendChild(svgEl("text", {x: lx + 14, y: H - 7, "font-size": 10,
+                                   fill: "#6b675c"}, s));
+  });
+  mount.appendChild(svg);
+}
+
+/* 单序列也走分组图:valuesToNested 把 (labels, values) 折成 {label: {label: v}} */
+function valuesToNested(labels, values) {
+  var out = {}; labels.forEach(function (l, i) { out[l] = {}; out[l][l] = values[i]; });
+  return out;
+}
+
+/* 圆环:value 0..1 或 null */
+function donut(mount, value) {
+  mount.replaceChildren();
+  var svg = svgEl("svg", {width: 160, height: 160, role: "img"});
+  var r = 60, cx = 80, cy = 80, c = 2 * Math.PI * r;
+  svg.appendChild(svgEl("circle", {cx: cx, cy: cy, r: r, fill: "none",
+                                   stroke: "#e8e4d6", "stroke-width": 16}));
+  if (value !== null && value !== undefined) {
+    svg.appendChild(svgEl("circle", {cx: cx, cy: cy, r: r, fill: "none",
+                                     stroke: "#c96442", "stroke-width": 16,
+                                     "stroke-dasharray": (value * c) + " " + c,
+                                     transform: "rotate(-90 80 80)"}));
+  }
+  svg.appendChild(svgEl("text", {x: cx, y: cy + 6, "text-anchor": "middle",
+                                 "font-size": 18, fill: "#3d3a33"}, pct(value)));
+  mount.appendChild(svg);
+}
+
+/* ---------- 报告渲染 ---------- */
+function renderReport(rep) {
+  report = rep;
+  var m = rep.meta;
+  sel("report-meta").replaceChildren(
+    document.createTextNode(
+      "评估集 " + m.total_cases + " 题(校准 " + m.calibration_cases +
+      " / 测试 " + m.test_cases + ")| 知识库 " + m.corpus_chunks + " 块 | 嵌入 " +
+      m.embedding_model + " | 重排 " + m.rerank_model + " | 裁判 " + m.judge_model +
+      " | 上次跑 " + m.ts + "(run " + m.run_id + ")"));
+
+  var g = rep.gates || {};
+  var gb = sel("gates-banner");
+  gb.replaceChildren();
+  var gcls = g.passed ? "banner ok" : "banner warn";
+  var gtxt = g.passed ? "质量门槛:通过"
+    : "质量门槛:未通过(judge_error_zero=" + String(g.judge_error_zero) +
+      ", bm25 B 桶 SR@10=" + fmt(g.bm25_b_model_section_recall_at_10) + ")";
+  gb.appendChild(el("div", {class: gcls}, gtxt));
+
+  /* KPI */
+  var best = null;
+  STRATEGIES.forEach(function (s) {
+    var v = rep.retrieval[s].overall.mrr;
+    if (v !== null && (best === null || v > best.v)) best = {s: s, v: v};
+  });
+  setKpi("kpi-mrr", best ? fmt(best.v) : "不可用", best ? best.s : "");
+  var colo = rep.retrieval.hybrid_rerank.by_bucket.C_colloquial;
+  var coloD = rep.retrieval.dense.by_bucket.C_colloquial;
+  var lift = (colo && coloD) ? colo.mrr - coloD.mrr : null;
+  setKpi("kpi-colloquial", lift === null ? "不可用" : (lift >= 0 ? "+" : "") + fmt(lift),
+         "hybrid_rerank " + fmt(colo && colo.mrr) + " vs dense " + fmt(coloD && coloD.mrr));
+  var online = rep.generation[rep.generation.online_strategy];
+  setKpi("kpi-coverage", pct(online.answer_coverage),
+         "已回答 " + online.answered + "/" + online.answerable_total);
+  setKpi("kpi-refuse", pct(online.d_refuse_rate),
+         online.d_refused + "/" + online.d_total + " 题");
+
+  renderRetrieval(currentMetric());
+  renderGeneration(rep, online);
+  renderSummary(rep);
+}
+
+function setKpi(id, v, s) {
+  sel(id).querySelector(".v").textContent = v;
+  sel(id).querySelector(".s").textContent = s || "";
+}
+
+function currentMetric() {
+  var b = sel("metric-tabs").querySelector("button.on");
+  return b ? b.getAttribute("data-metric") : "mrr";
+}
+
+function renderRetrieval(metric) {
+  var values = {};
+  STRATEGIES.forEach(function (s) {
+    values[s] = {};
+    BUCKETS.forEach(function (b) {
+      var bb = report.retrieval[s].by_bucket[b];
+      values[s][b] = bb ? bb[metric] : null;
+    });
+  });
+  groupedBars(sel("retrieval-chart"), BUCKETS, STRATEGIES, values);
+  sel("retrieval-caption").textContent = caption(metric);
+}
+
+function caption(metric) {
+  var names = {mrr: "MRR", recall5: "Recall@5", evidence_coverage: "证据覆盖度"};
+  var best = null, denseV = null;
+  STRATEGIES.forEach(function (s) {
+    var vals = BUCKETS.map(function (b) {
+      var bb = report.retrieval[s].by_bucket[b];
+      return bb ? bb[metric] : null;
+    }).filter(function (v) { return v !== null; });
+    if (!vals.length) return;
+    var avg = vals.reduce(function (a, x) { return a + x; }, 0) / vals.length;
+    if (s === "dense") denseV = avg;
+    if (best === null || avg > best.v) best = {s: s, v: avg};
+  });
+  if (!best) return "数据不可用。";
+  var tail = "";
+  if (denseV !== null && best.s !== "dense") {
+    tail = ",较基线 dense " + (best.v - denseV >= 0 ? "+" : "") + fmt(best.v - denseV);
+  }
+  return names[metric] + " 四桶均值最佳为 " + best.s + "(" + fmt(best.v) + ")" + tail + "。";
+}
+
+function renderGeneration(rep, online) {
+  groupedBars(sel("coverage-chart"), STRATEGIES, STRATEGIES,
+              valuesToNested(STRATEGIES, STRATEGIES.map(function (s) {
+                return rep.generation[s].answer_coverage;
+              })));
+  sel("coverage-caption").textContent =
+    "拒答记 0 分;裁判失败的策略为「不可用」。";
+  groupedBars(sel("faith-chart"), BUCKETS, BUCKETS,
+              valuesToNested(BUCKETS, BUCKETS.map(function (b) {
+                var bb = online.by_bucket[b];
+                return bb ? bb.faithful_rate : null;
+              })));
+  sel("faith-note").textContent =
+    "忠实率 = faithful/judged(仅已回答且裁判成功样本);本轮已回答 " +
+    online.answered + "/" + online.answerable_total + ",裁判失败 " +
+    online.judge_errors + " 题。";
+  donut(sel("refuse-donut"), online.d_refuse_rate);
+}
+
+function renderSummary(rep) {
+  var t = sel("summary-table");
+  t.replaceChildren();
+  var head = el("tr");
+  ["策略", "MRR 总体", "MRR 政策", "MRR 型号", "MRR 口语", "MRR 多意图",
+   "证据覆盖度", "答案覆盖度"].forEach(function (h) { head.appendChild(el("th", null, h)); });
+  t.appendChild(head);
+  var best = null;
+  STRATEGIES.forEach(function (s) {
+    var v = rep.retrieval[s].overall.mrr;
+    if (v !== null && (best === null || v > best)) best = v;
+  });
+  STRATEGIES.forEach(function (s) {
+    var r = rep.retrieval[s], genv = rep.generation[s];
+    var tr = el("tr");
+    if (r.overall.mrr === best) tr.className = "best";   // 总体 MRR 最佳行带底色
+    tr.appendChild(el("td", null, s + (r.ungated ? "(仅观测)" : "")));
+    tr.appendChild(el("td", null, fmt(r.overall.mrr)));
+    BUCKETS.forEach(function (b) {
+      var bb = r.by_bucket[b];
+      tr.appendChild(el("td", null, bb ? fmt(bb.mrr) : "不可用"));
+    });
+    tr.appendChild(el("td", null, fmt(r.overall.evidence_coverage)));
+    tr.appendChild(el("td", null, fmt(genv.answer_coverage)));
+    t.appendChild(tr);
+  });
+
+  var list = sel("fabricated-list");
+  list.replaceChildren();
+  var cases = rep.generation.faithfulness_cases || [];
+  sel("fabricated-details").querySelector("summary").textContent =
+    "编造个案(本轮,上线管线,共 " + cases.length + " 条)";
+  cases.forEach(function (c) {
+    var card = el("div", {class: "case"});
+    card.appendChild(el("div", {class: "head"}, c.case_id + "(" + c.bucket + ")"));
+    card.appendChild(el("div", null, "问题:" + c.query));
+    card.appendChild(el("div", null, "答案:" + c.answer));
+    var claims = (c.unsupported_claims || []).map(function (x) {
+      return (x.claim || "") + " — " + (x.reason || "");
+    }).join(";") || "(无理由)";
+    card.appendChild(el("div", {class: "muted"}, "裁判理由:" + claims));
+    list.appendChild(card);
+  });
+}
+
+/* ---------- 台账 ---------- */
+function loadLedger() {
+  var q = "?status=" + encodeURIComponent(ledgerState.status) +
+          "&page=" + ledgerState.page + "&size=" + ledgerState.size;
+  api("/api/rag-eval/faith-cases" + q).then(function (data) {
+    ledgerState.total = data.total;
+    renderLedgerStats(data.stats);
+    renderLedgerList(data.items);
+    var pages = Math.max(1, Math.ceil(data.total / ledgerState.size));
+    sel("pager-info").textContent = "第 " + ledgerState.page + " / " + pages + " 页(共 " + data.total + " 条)";
+    sel("pager-prev").disabled = ledgerState.page <= 1;
+    sel("pager-next").disabled = ledgerState.page >= pages;
+  }).catch(function () { sel("ledger-list").textContent = "台账加载失败"; });
+}
+
+function renderLedgerStats(st) {
+  var box = sel("ledger-stats");
+  box.replaceChildren();
+  var line1 = "本轮裁判判出率 " + pct(st.judge_rate) +
+              " | 本轮人工确认幻觉率 " + pct(st.confirmed_rate) +
+              (st.current_run_missing > 0 ? "(缺 " + st.current_run_missing +  " 条本轮快照,口径不可用)" : "");
+  var l = st.ledger;
+  var line2 = "台账累计 " + l.total + " 条:未解决 " + l["未解决"] +
+              " / 已解决 " + l["已解决"] + " / 无需解决 " + l["无需解决"];
+  box.appendChild(el("div", null, line1));
+  box.appendChild(el("div", null, line2));
+}
+
+function renderLedgerList(items) {
+  var box = sel("ledger-list");
+  box.replaceChildren();
+  if (!items.length) { box.appendChild(el("div", {class: "muted"}, "(空)")); return; }
+  items.forEach(function (it) {
+    var card = el("div", {class: "case"});
+    var head = el("div", {class: "head"});
+    head.appendChild(el("span", {class: "chip"}, it.case_id));
+    head.appendChild(el("span", {class: "chip"}, it.bucket));
+    head.appendChild(el("span", {class: "muted"},
+                        "出现 " + it.seen_count + " 次 | 最近 " + (it.last_seen_at || "-")));
+    if (ledgerState.status === "未解决") {
+      ["已解决", "无需解决"].forEach(function (st) {
+        var btn = el("button", {class: "act"}, st);
+        btn.addEventListener("click", function () { openDispose(it, st); });
+        head.appendChild(btn);
+      });
+    }
+    card.appendChild(head);
+    card.appendChild(el("div", null, "问题:" + it.query));
+    card.appendChild(el("div", null, "答案:" + it.answer));
+    var claims = (it.unsupported_claims || []);
+    card.appendChild(el("div", {class: "muted"}, "裁判理由:" +
+      (Array.isArray(claims) ? claims.map(function (x) {
+        return (x.claim || "") + " — " + (x.reason || ""); }).join(";")
+        : String(claims))));
+    if (it.resolution) card.appendChild(el("div", {class: "muted"}, "处置:" + it.resolution));
+    var det = el("details", {class: "ev"});
+    det.appendChild(el("summary", null, "本轮 Top-K 证据(" +
+      it.citations.evidence.length + " 条,高亮为答案引用)"));
+    var cited = {};
+    (it.citations.cited_refs || []).forEach(function (n) { cited[n] = true; });
+    it.citations.evidence.forEach(function (ev) {
+      var item = el("div", {class: "item" + (cited[ev.ref_no] ? " cited" : "")});
+      item.appendChild(el("div", null, "[" + ev.ref_no + "] " +
+        (ev.section_path || "") + (cited[ev.ref_no] ? "(答案引用)" : "")));
+      item.appendChild(el("div", {class: "muted"},
+                          (ev.question || "") + " / " + (ev.answer || "")));
+      det.appendChild(item);
+    });
+    card.appendChild(det);
+    box.appendChild(card);
+  });
+}
+
+/* 处置弹窗 */
+var disposeTarget = null;
+function openDispose(item, st) {
+  disposeTarget = {id: item.id, status: st};
+  sel("dispose-title").textContent = "将 " + item.case_id + " 标记为「" + st + "」";
+  sel("dispose-text").value = "";
+  sel("dispose-modal").style.display = "flex";
+}
+function closeDispose() { sel("dispose-modal").style.display = "none"; disposeTarget = null; }
+
+/* ---------- 重跑 ---------- */
+function setRunning(running) {
+  sel("run-btn").disabled = running;
+  sel("run-status").textContent = running ? "评估运行中…(约几十分钟)" : "";
+}
+function showRunResult(st) {
+  var box = sel("run-banner");
+  box.replaceChildren();
+  if (st.status === "ok" && st.quality_passed === false) {
+    box.appendChild(el("div", {class: "banner warn"}, "评估完成,质量门槛未通过;已展示本轮报告。"));
+  } else if (st.status === "ok") {
+    box.appendChild(el("div", {class: "banner ok"}, "评估完成,质量门槛通过。"));
+  } else {
+    box.appendChild(el("div", {class: "banner err"},
+                        "评估运行失败(exit " + st.exit_code + "),页面保留上一份报告;详见日志。"));
+  }
+}
+function pollJob() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(function () {
+    api("/api/jobs/eval-rag").then(function (st) {
+      var lw = sel("log-window");
+      lw.textContent = st.log_tail || "";
+      lw.scrollTop = lw.scrollHeight;
+      if (st.status === "ok" || st.status === "failed") {
+        clearInterval(pollTimer); pollTimer = null;
+        setRunning(false);
+        showRunResult(st);
+        loadAll();                       // 跑完自动重新取数
+      }
+    }).catch(function () { /* 下一轮再试 */ });
+  }, 2000);
+}
+
+/* ---------- 入口 ---------- */
+function loadAll() {
+  api("/api/rag-eval/report").then(function (rep) {
+    if (rep.empty) {
+      sel("report-meta").textContent = "还没有评估报告 — 点下方「重跑 RAG 评估」跑第一轮。";
+      return;
+    }
+    renderReport(rep);
+  }).catch(function (e) {
+    sel("report-meta").textContent =
+      e.status === 502 ? "评估报告文件损坏,请重跑。" : "报告加载失败。";
+  });
+  loadLedger();
+  api("/api/jobs/eval-rag").then(function (st) {   // 页面打开时若正在跑,接着轮询
+    sel("log-window").textContent = st.log_tail || "";
+    if (st.status === "running") { setRunning(true); pollJob(); }
+  }).catch(function () {});
+}
+
+sel("metric-tabs").addEventListener("click", function (e) {
+  if (e.target.tagName !== "BUTTON") return;
+  sel("metric-tabs").querySelectorAll("button").forEach(function (b) { b.className = ""; });
+  e.target.className = "on";
+  if (report) renderRetrieval(e.target.getAttribute("data-metric"));
+});
+sel("ledger-tabs").addEventListener("click", function (e) {
+  if (e.target.tagName !== "BUTTON") return;
+  sel("ledger-tabs").querySelectorAll("button").forEach(function (b) { b.className = ""; });
+  e.target.className = "on";
+  ledgerState.status = e.target.getAttribute("data-status");
+  ledgerState.page = 1;
+  loadLedger();
+});
+sel("pager-prev").addEventListener("click", function () {
+  if (ledgerState.page > 1) { ledgerState.page--; loadLedger(); }
+});
+sel("pager-next").addEventListener("click", function () {
+  ledgerState.page++; loadLedger();
+});
+sel("dispose-cancel").addEventListener("click", closeDispose);
+sel("dispose-ok").addEventListener("click", function () {
+  var text = sel("dispose-text").value.trim();
+  if (!text || !disposeTarget) return;
+  api("/api/rag-eval/faith-cases/" + disposeTarget.id, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({status: disposeTarget.status, resolution: text}),
+  }).then(function () { closeDispose(); loadLedger(); })
+    .catch(function (e) { sel("dispose-title").textContent = "提交失败:HTTP " + (e.status || "?"); });
+});
+sel("run-btn").addEventListener("click", function () {
+  api("/api/jobs/eval-rag/run", {method: "POST"}).then(function () {
+    setRunning(true); pollJob();
+  }).catch(function (e) {
+    if (e.status === 409) { setRunning(true); pollJob(); }
+  });
+});
+
+loadAll();
+</script>
+</body>
+</html>

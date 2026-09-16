@@ -50,6 +50,12 @@ def test_chat_page_settle_badge_safe_lookup():
     assert '[data-tool-call-id="' not in html
 
 
+def test_nav_has_rag_eval():
+    from pathlib import Path
+    html = (Path(__file__).parent.parent / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    assert "/rag-eval" in html
+
+
 def test_chat_page_citations_and_feedback():
     from pathlib import Path
     html = (Path(__file__).parent.parent / "app" / "static" / "chat.html").read_text(encoding="utf-8")
