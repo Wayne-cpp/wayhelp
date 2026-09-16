@@ -2,6 +2,10 @@
 
 规格:docs/superpowers/specs/2026-09-16-rag-eval-page-design.md(生成指标口径一节)。
 """
+import json
+import os
+import tempfile
+from pathlib import Path
 
 STRATEGIES = ("dense", "bm25", "hybrid", "hybrid_rerank")
 ANSWERABLE_BUCKETS = ("A_policy", "B_model", "C_colloquial", "E_multi")
@@ -67,3 +71,94 @@ def check_generation_invariants(agg: dict) -> None:
           and agg["d_refused"] <= agg["d_total"])
     if not ok:
         raise RuntimeError(f"生成段计数不变量违反: {agg}")
+
+
+def new_run_id(now) -> str:
+    """含微秒的 UTC 紧凑时间戳;连续运行不重复。"""
+    return now.strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def build_rag_eval(*, run_id, ts, elapsed_s, settings, cases, corpus_chunks,
+                   thresholds, test_metrics, gen_agg, faithfulness_cases, gates) -> dict:
+    test = [c for c in cases if c["split"] == "test"]
+    retrieval = {}
+    for s in STRATEGIES:
+        m = test_metrics[s]
+        retrieval[s] = {
+            "threshold": thresholds[s]["threshold"],
+            "ungated": bool(thresholds[s].get("ungated")),
+            "overall": {"mrr": m["mrr_at_10"], "recall5": m["section_recall_at_5"],
+                        "evidence_coverage": m["complete_hit_at_10"],
+                        "sr10": m["section_recall_at_10"]},
+            "by_bucket": {b: {"mrr": bb["mrr_at_10"], "recall5": bb["recall5"],
+                              "evidence_coverage": bb["evidence_coverage"]}
+                          for b, bb in m["by_bucket"].items()},
+        }
+    return {
+        "meta": {"run_id": run_id, "ts": ts, "elapsed_s": round(elapsed_s, 1),
+                 "total_cases": len(cases),
+                 "calibration_cases": len(cases) - len(test),
+                 "test_cases": len(test),
+                 "answerable_test_cases": sum(1 for c in test
+                                              if c["bucket"] in ANSWERABLE_BUCKETS),
+                 "d_test_cases": sum(1 for c in test if c["bucket"] == "D_absent"),
+                 "corpus_chunks": corpus_chunks,
+                 "embedding_model": settings.embedding_model,
+                 "rerank_model": settings.rerank_model,
+                 "eval_model": settings.model_name,
+                 "judge_model": settings.model_name},
+        "retrieval": retrieval,
+        "generation": {"online_strategy": "hybrid_rerank",
+                       **{s: gen_agg[s] for s in STRATEGIES},
+                       "faithfulness_cases": faithfulness_cases},
+        "gates": gates,
+    }
+
+
+def validate_rag_eval(data) -> None:
+    """发布前契约校验;不合法即 ValueError。"""
+    if not isinstance(data, dict) or any(
+            k not in data for k in ("meta", "retrieval", "generation", "gates")):
+        raise ValueError("rag_eval 缺顶层键 meta/retrieval/generation/gates")
+    meta = data["meta"]
+    for k in ("run_id", "ts", "total_cases", "calibration_cases", "test_cases",
+              "answerable_test_cases", "d_test_cases", "corpus_chunks",
+              "embedding_model", "rerank_model", "eval_model", "judge_model"):
+        if k not in meta:
+            raise ValueError(f"rag_eval meta 缺 {k}")
+    gen = data["generation"]
+    if gen.get("online_strategy") != "hybrid_rerank":
+        raise ValueError("online_strategy 非 hybrid_rerank")
+    if not isinstance(gen.get("faithfulness_cases"), list):
+        raise ValueError("faithfulness_cases 非列表")
+    for s in STRATEGIES:
+        r = data["retrieval"].get(s)
+        if not isinstance(r, dict) or "overall" not in r or "by_bucket" not in r:
+            raise ValueError(f"rag_eval retrieval 缺 {s}")
+        g = gen.get(s)
+        if not isinstance(g, dict) or any(k not in g for k in GENERATION_COUNTERS):
+            raise ValueError(f"rag_eval generation 缺 {s} 计数")
+        try:
+            check_generation_invariants(g)
+        except RuntimeError as exc:          # 不变量违反统一视为校验失败
+            raise ValueError(str(exc)) from exc
+
+
+def publish_rag_eval(data, results_dir) -> Path:
+    """原子发布:先校验;临时文件写全后 os.replace;失败清理临时文件并保留旧报告。"""
+    validate_rag_eval(data)
+    results_dir = Path(results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    target = results_dir / REPORT_FILENAME
+    fd, tmp = tempfile.mkstemp(dir=results_dir, prefix=".rag_eval-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return target

@@ -16,6 +16,7 @@ import math
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +38,11 @@ from app.knowledge.scope import derive_scope
 from app.models import KnowledgeChunk
 from app.prompts.faithfulness import JUDGE_PROMPT
 from app.prompts.service import REFUSAL_ANSWER, SERVICE_SYSTEM_PROMPT
+from evals.rag_eval_report import (
+    STRATEGIES as _REPORT_STRATEGIES,  # 与本模块 STRATEGIES 同值,断言钉住
+    aggregate_generation, build_rag_eval, check_generation_invariants,
+    new_run_id, publish_rag_eval, validate_rag_eval,
+)
 from evals.run_knowledge_eval import _prepare_eval_db
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,6 +51,8 @@ RESULTS_DIR = Path(__file__).parent / "results"
 STRATEGIES = ("dense", "bm25", "hybrid", "hybrid_rerank")
 DEFAULT_MAX_D_PASS = 0.10
 MIN_B_RECALL = 0.5   # 硬门槛:B_model test 桶 bm25 SectionRecall@10 下限
+
+assert tuple(STRATEGIES) == tuple(_REPORT_STRATEGIES)
 
 
 def section_recall_at_k(hit_paths: list[str], groups, k: int) -> float:
@@ -345,6 +353,19 @@ def _render_md(out: dict) -> str:
         lines += [f"- {r['id']}({r['bucket']}):{r['judge']}" for r in flagged]
     else:
         lines.append("- (无)")
+    lines += ["", "## 生成段四策略覆盖/忠实(test 分片;null = 有裁判失败,不可用)", "",
+              "| strategy | answer_coverage | faithful_rate | answered | judged | "
+              "judge_error | D拒答率 |", "|---|---|---|---|---|---|---|"]
+    for strat in STRATEGIES:
+        a = out["generation"]["per_strategy"][strat]
+
+        def _fmt(v):
+            return "不可用" if v is None else f"{v:.3f}"
+
+        lines.append(f"| {strat} | {_fmt(a['answer_coverage'])} | "
+                     f"{_fmt(a['faithful_rate'])} | "
+                     f"{a['answered']}/{a['answerable_total']} | {a['judged']} | "
+                     f"{a['judge_errors']} | {_fmt(a['d_refuse_rate'])} |")
     gates = out["gates"]
     lines += ["", "## 硬门槛", "",
               f"- judge_error == 0:{'通过' if gates['judge_error_zero'] else '未过'}",
@@ -374,8 +395,9 @@ def _parse_max_d_pass(argv: list[str]) -> float:
 
 
 def main(argv: list[str]) -> int:
+    _t0 = time.monotonic()
     max_d_pass = _parse_max_d_pass(argv)
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")  # 含微秒,连跑不重
+    run_id = new_run_id(datetime.now(timezone.utc))  # 含微秒,连跑不重
     settings = Settings()
     if not settings.has_embedding_key():
         print("[compare] embedding_api_key 未配置", file=sys.stderr)
@@ -464,21 +486,13 @@ def main(argv: list[str]) -> int:
         test_cases = [c for c in cases if c["split"] == "test"]
         metrics = {strat: _test_metrics(test_cases, strat, thresholds[strat]["threshold"])
                    for strat in STRATEGIES}
-        gen_rows = _run_generation(test_cases, "hybrid_rerank",
-                                   thresholds["hybrid_rerank"]["threshold"],
-                                   settings, model)
-        judge_errors = sum(1 for r in gen_rows if r["judge"] == "judge_error")
-        for r in gen_rows:  # Task 5 改为单事务批量;此处保持逐 case 语义不变
-            if r["judge"] == "fabricated":
-                with main_sf() as s:
-                    upsert_faith_case(s, run_id=run_id, eval_id=r["id"],
-                                      bucket=r["bucket"],
-                                      query=by_id[r["id"]]["query"], answer=r["answer"],
-                                      reason=json.dumps(r["unsupported_claims"],
-                                                        ensure_ascii=False),
-                                      evidence=r["evidence"], cited_refs=r["cited_refs"],
-                                      judge_model=settings.model_name)
-                    s.commit()
+        gen_rows = {s: _run_generation(test_cases, s, thresholds[s]["threshold"],
+                                       settings, model)
+                    for s in STRATEGIES}
+        gen_agg = {s: aggregate_generation(gen_rows[s]) for s in STRATEGIES}
+        for s in STRATEGIES:
+            check_generation_invariants(gen_agg[s])
+        judge_errors = sum(gen_agg[s]["judge_errors"] for s in STRATEGIES)  # 全策略合计
         # 硬门槛口径(2026-09-16 用户批准):bm25 B_model 用不设闸原始命中——
         # 验收本意是「BM25 路能否命中型号」,与闸门无关;闸后口径因阈值退化恒 0 无信息量
         bm25_b_rows = [section_recall_at_k(c["retrieval"]["bm25"]["paths"],
@@ -513,11 +527,16 @@ def main(argv: list[str]) -> int:
             "thresholds": thresholds, "pareto": pareto,
             "test_metrics": metrics,
             "generation": {
+                # 既有字段保持 hybrid_rerank 口径,兼容旧读者;.md 同
                 "strategy": "hybrid_rerank",
-                "refused": sum(1 for r in gen_rows if r["refused"]),
-                "faithful": sum(1 for r in gen_rows if r["judge"] == "faithful"),
-                "fabricated": sum(1 for r in gen_rows if r["judge"] == "fabricated"),
-                "judge_errors": judge_errors, "rows": [_public_row(r) for r in gen_rows],
+                "refused": sum(1 for r in gen_rows["hybrid_rerank"] if r["refused"]),
+                "faithful": gen_agg["hybrid_rerank"]["faithful"],
+                "fabricated": gen_agg["hybrid_rerank"]["fabricated"],
+                "judge_errors": gen_agg["hybrid_rerank"]["judge_errors"],
+                "rows": [_public_row(r) for r in gen_rows["hybrid_rerank"]],
+                "per_strategy": {s: {**gen_agg[s],
+                                     "rows": [_public_row(r) for r in gen_rows[s]]}
+                                 for s in STRATEGIES},
             },
             "diagnosis": diagnosis, "gates": gates,
         }
@@ -532,6 +551,35 @@ def main(argv: list[str]) -> int:
         print(f"[compare] 门槛: judge_error={judge_errors} "
               f"bm25_B_原始SR@10={bm25_b:.3f}(>= {MIN_B_RECALL}) "
               f"-> {'通过' if gates['passed'] else '未通过'}")
+        # --- rag_eval.json:规范化报告(校验 → 台账单事务 → 原子发布,最后落盘)---
+        faith_rows = [
+            {"case_id": r["id"], "bucket": r["bucket"],
+             "query": by_id[r["id"]]["query"], "answer": r["answer"],
+             "strategy": "hybrid_rerank",
+             "unsupported_claims": r["unsupported_claims"],
+             "cited_refs": r["cited_refs"], "evidence": r["evidence"]}
+            for r in gen_rows["hybrid_rerank"] if r["judge"] == "fabricated"
+        ]
+        report = build_rag_eval(
+            run_id=run_id, ts=out["ts"], elapsed_s=time.monotonic() - _t0,
+            settings=settings, cases=cases, corpus_chunks=len(chunk_meta),
+            thresholds=thresholds, test_metrics=metrics, gen_agg=gen_agg,
+            faithfulness_cases=faith_rows, gates=gates)
+        validate_rag_eval(report)          # 校验通过才动台账
+        if faith_rows:                     # 单事务批量 upsert;失败 → 不发布本轮
+            with main_sf() as s:
+                for fr in faith_rows:
+                    upsert_faith_case(s, run_id=run_id, eval_id=fr["case_id"],
+                                      bucket=fr["bucket"], query=fr["query"],
+                                      answer=fr["answer"],
+                                      reason=json.dumps(fr["unsupported_claims"],
+                                                        ensure_ascii=False),
+                                      evidence=fr["evidence"],
+                                      cited_refs=fr["cited_refs"],
+                                      judge_model=settings.model_name)
+                s.commit()
+        rag_eval_path = publish_rag_eval(report, RESULTS_DIR)
+        print(f"[compare] rag_eval 报告: {rag_eval_path}")
         return 0 if gates["passed"] else 1
     finally:
         store.close()
