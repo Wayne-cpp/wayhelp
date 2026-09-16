@@ -41,7 +41,7 @@ CREATE TABLE faith_cases (
   strategy      VARCHAR(24)     NOT NULL DEFAULT 'hybrid_rerank' COMMENT '产出这条答案的检索策略',
   answer        TEXT            NOT NULL                COMMENT '被判编造的那版生成答案原文',
   reason        TEXT            NOT NULL                COMMENT '裁判给的理由:编在哪一句',
-  citations     JSON            NULL                    COMMENT '这一轮喂给模型的 Top-K 证据全集快照:[{n,chunk_id,section_path,question,answer}];答案里的角标 [n] 就是这份列表的序号,答案通常只引用其中两三条;老数据没记为 NULL',
+  citations     JSON            NULL                    COMMENT '本轮 Top-K 证据快照:{run_id,evidence:[{ref_no,chunk_id,section_path,question,answer,category}],cited_refs:[答案实际引用的 ref_no]};2026-09-16 前为裸 evidence 列表,更老为 NULL',
   judge_model   VARCHAR(64)     NULL                    COMMENT '判这条的裁判模型',
   status        ENUM('未解决','已解决','无需解决') NOT NULL DEFAULT '未解决' COMMENT '处置状态,人工点按钮改',
   seen_count    INT UNSIGNED    NOT NULL DEFAULT 1      COMMENT '被判编造的累计次数(跨轮)',

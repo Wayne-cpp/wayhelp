@@ -148,10 +148,12 @@ def parse_judge_output(text: str) -> dict:
             "coverage": float(coverage)}
 
 
-def upsert_faith_case(s, *, eval_id, bucket, query, answer, reason, citations,
-                      judge_model) -> None:
-    """一题一行;重判更新快照 + seen_count+1;已解决复发退回未解决并清空 resolution。"""
+def upsert_faith_case(s, *, run_id, eval_id, bucket, query, answer, reason,
+                      evidence, cited_refs, judge_model) -> None:
+    """一题一行;重判更新快照 + seen_count+1;已解决复发退回未解决并清空 resolution。
+    citations = {run_id, evidence, cited_refs}:哪一轮 / Top-K 证据全集 / 答案引用的 ref_no。"""
     from app.models import FaithCase
+    citations = {"run_id": run_id, "evidence": evidence, "cited_refs": cited_refs}
     row = s.query(FaithCase).filter_by(eval_id=eval_id).first()
     now = datetime.now()
     if row is None:
@@ -260,7 +262,7 @@ def _judge(model, query: str, answer: str, evidence: list[dict],
 
 
 def _generation_segment(test_cases: list[dict], threshold: float | None, settings, model,
-                        main_sf) -> tuple[list[dict], int]:
+                        main_sf, run_id) -> tuple[list[dict], int]:
     """生成段(test 分片,hybrid_rerank):低置信不调模型直接拒答话术;非拒答的
     A/B/C/E case 交 judge;编造落 faith_cases 主库。返回 (逐 case 行, judge_error 数)。
     threshold=None 为 ungated 兜底:只有零命中才判低置信。"""
@@ -291,11 +293,13 @@ def _generation_segment(test_cases: list[dict], threshold: float | None, setting
                 row["coverage"] = verdict["coverage"]
                 if verdict["verdict"] == "fabricated":
                     with main_sf() as s:
-                        upsert_faith_case(s, eval_id=c["id"], bucket=c["bucket"],
-                                          query=c["query"], answer=answer,
+                        upsert_faith_case(s, run_id=run_id, eval_id=c["id"],
+                                          bucket=c["bucket"], query=c["query"],
+                                          answer=answer,
                                           reason=json.dumps(verdict["unsupported_claims"],
                                                             ensure_ascii=False),
-                                          citations=evidence,
+                                          evidence=evidence,
+                                          cited_refs=verdict["cited_refs"],
                                           judge_model=settings.model_name)
                         s.commit()
         rows.append(row)
@@ -372,6 +376,7 @@ def _parse_max_d_pass(argv: list[str]) -> float:
 
 def main(argv: list[str]) -> int:
     max_d_pass = _parse_max_d_pass(argv)
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")  # 含微秒,连跑不重
     settings = Settings()
     if not settings.has_embedding_key():
         print("[compare] embedding_api_key 未配置", file=sys.stderr)
@@ -460,7 +465,8 @@ def main(argv: list[str]) -> int:
         metrics = {strat: _test_metrics(test_cases, strat, thresholds[strat]["threshold"])
                    for strat in STRATEGIES}
         gen_rows, judge_errors = _generation_segment(
-            test_cases, thresholds["hybrid_rerank"]["threshold"], settings, model, main_sf)
+            test_cases, thresholds["hybrid_rerank"]["threshold"], settings, model, main_sf,
+            run_id)
         # 硬门槛口径(2026-09-16 用户批准):bm25 B_model 用不设闸原始命中——
         # 验收本意是「BM25 路能否命中型号」,与闸门无关;闸后口径因阈值退化恒 0 无信息量
         bm25_b_rows = [section_recall_at_k(c["retrieval"]["bm25"]["paths"],
@@ -485,6 +491,7 @@ def main(argv: list[str]) -> int:
             diagnosis.append(entry)
         out = {
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "run_id": run_id,
             "max_d_pass": max_d_pass, "model": settings.model_name,
             "thinking_mode": "disabled(评估专用,见模块 docstring)",
             "judge_model": settings.model_name,
