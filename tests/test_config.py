@@ -94,7 +94,7 @@ def test_ch03_defaults():
     assert s.embedding_dim == 1024
     assert s.milvus_uri == "./data/milvus_lite.db"
     assert s.knowledge_top_k == 5
-    assert s.knowledge_min_score == 0.623  # 评估冻结值(2026-09-11)
+    assert s.knowledge_min_score == 0.6491  # 评估冻结值(2026-09-16,0.10 档)
     assert s.mining_batch_size == 10
     assert s.max_chunk_chars == 500
     assert s.chunk_overlap_chars == 80
@@ -141,7 +141,7 @@ def test_ch04_defaults():
     assert s.rerank_max_retries == 2 and s.rerank_timeout_seconds == 5
     assert s.knowledge_tool_timeout_seconds == 20
     assert s.query_rewrite_enabled is True
-    assert s.rerank_min_score == 0.0 and s.bm25_min_score == 0.0 and s.hybrid_min_score == 0.0
+    assert s.rerank_min_score == 0.0553 and s.bm25_min_score == 0.0 and s.hybrid_min_score == 0.0
     assert s.has_rerank_key() is False  # 两 key 均空
 
 

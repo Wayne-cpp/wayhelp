@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     embedding_dim: Literal[1024] = 1024
     milvus_uri: str = "./data/milvus_lite.db"
     knowledge_top_k: int = Field(default=5, gt=0)
-    knowledge_min_score: float = Field(default=0.623, ge=-1, le=1)  # 2026-09-11 真实评估冻结(evals/results/20260911T100709Z.json)
+    knowledge_min_score: float = Field(default=0.6491, ge=-1, le=1)  # 2026-09-16 四策略评估 0.10 档重冻(evals/results/20260916T021207Z_compare.json;旧值 0.623 系 ch03 旧语料校准)
     mining_batch_size: int = Field(default=10, gt=0)
     max_chunk_chars: int = Field(default=500, gt=0)
     chunk_overlap_chars: int = Field(default=80, ge=0)
@@ -44,9 +44,9 @@ class Settings(BaseSettings):
     rerank_max_retries: int = Field(default=2, ge=0)   # 内部追加重试;2 = 最多共 3 次请求
     retrieval_candidate_k: int = Field(default=50, gt=0)
     rerank_top_n: int = Field(default=10, gt=0)
-    rerank_min_score: float = Field(default=0.0)   # 占位,评估校准后冻结
-    bm25_min_score: float = Field(default=0.0)     # 占位,同上
-    hybrid_min_score: float = Field(default=0.0)   # 占位,同上;含 rerank 降级路径
+    rerank_min_score: float = Field(default=0.0553)  # 2026-09-16 校准冻结(0.10 档,par=0.971;同上报告)
+    bm25_min_score: float = Field(default=0.0)     # 校准确认无可用闸门(分数退化),保持 0.0
+    hybrid_min_score: float = Field(default=0.0)   # 校准确认 RRF 同分不可闸,保持 0.0;rerank 降级路径靠自评软闸门
     knowledge_strategy: Literal["dense", "bm25", "hybrid", "hybrid_rerank"] = "hybrid_rerank"
     query_rewrite_enabled: bool = True
     knowledge_tool_timeout_seconds: float = Field(default=20, gt=0)

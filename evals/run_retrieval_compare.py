@@ -9,6 +9,7 @@
 (ungated, threshold=null,有命中即过闸),报告标注「仅观测」,评估不中断。
 另:评估模型关思考模式(extra_body thinking disabled)——思考模式下合成的
 tool_call 消息缺 reasoning_content 会被 API 400,生产链路回放真实消息不受影响。
+bm25 硬门槛为不设闸原始命中口径(验收本意=BM25 路命中型号,与闸门无关)。
 """
 import json
 import re
@@ -330,7 +331,7 @@ def _render_md(out: dict) -> str:
     gates = out["gates"]
     lines += ["", "## 硬门槛", "",
               f"- judge_error == 0:{'通过' if gates['judge_error_zero'] else '未过'}",
-              f"- bm25 B_model test SR@10 ≥ {MIN_B_RECALL}:"
+              f"- bm25 B_model test 原始(不设闸)SR@10 ≥ {MIN_B_RECALL}:"
               f"{gates['bm25_b_model_section_recall_at_10']:.3f}"
               f"({'通过' if gates['bm25_b_model_gate'] else '未过'})",
               "", f"**结论:{'通过' if gates['passed'] else '未通过'}**", "",
@@ -446,7 +447,12 @@ def main(argv: list[str]) -> int:
                    for strat in STRATEGIES}
         gen_rows, judge_errors = _generation_segment(
             test_cases, thresholds["hybrid_rerank"]["threshold"], settings, model, main_sf)
-        bm25_b = metrics["bm25"]["by_bucket"]["B_model"]["section_recall_at_10"]
+        # 硬门槛口径(2026-09-16 用户批准):bm25 B_model 用不设闸原始命中——
+        # 验收本意是「BM25 路能否命中型号」,与闸门无关;闸后口径因阈值退化恒 0 无信息量
+        bm25_b_rows = [section_recall_at_k(c["retrieval"]["bm25"]["paths"],
+                                           c["gt_groups"], 10)
+                       for c in test_cases if c["bucket"] == "B_model"]
+        bm25_b = sum(bm25_b_rows) / len(bm25_b_rows) if bm25_b_rows else 0.0
         gates = {"judge_error_zero": judge_errors == 0,
                  "bm25_b_model_section_recall_at_10": bm25_b,
                  "bm25_b_model_gate": bm25_b >= MIN_B_RECALL}
@@ -491,7 +497,7 @@ def main(argv: list[str]) -> int:
         md_path.write_text(_render_md(out), encoding="utf-8")
         print(f"[compare] 报告: {json_path}")
         print(f"[compare] 门槛: judge_error={judge_errors} "
-              f"bm25_B_SR@10={bm25_b:.3f}(>= {MIN_B_RECALL}) "
+              f"bm25_B_原始SR@10={bm25_b:.3f}(>= {MIN_B_RECALL}) "
               f"-> {'通过' if gates['passed'] else '未通过'}")
         return 0 if gates["passed"] else 1
     finally:
