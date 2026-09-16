@@ -204,8 +204,13 @@ def _test_metrics(test_cases: list[dict], strat: str, threshold: float | None) -
     for b in BUCKETS:
         bp = [p for p in pos if p["bucket"] == b]
         if bp:
-            by_bucket[b] = {"section_recall_at_10": avg([p["recall10"] for p in bp]),
-                            "refused": sum(1 for p in bp if not p["passed"])}
+            by_bucket[b] = {
+                "section_recall_at_10": avg([p["recall10"] for p in bp]),
+                "mrr_at_10": avg([p["mrr10"] for p in bp]),
+                "recall5": avg([p["recall5"] for p in bp]),
+                "evidence_coverage": avg([p["ch10"] for p in bp]),
+                "refused": sum(1 for p in bp if not p["passed"]),
+            }
     return {
         "threshold": threshold,
         "section_recall_at_5": avg([p["recall5"] for p in pos]),

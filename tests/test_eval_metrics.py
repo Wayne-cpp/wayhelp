@@ -192,3 +192,28 @@ def test_test_metrics_ungated_pass_semantics():
     assert m["threshold"] is None
     assert m["section_recall_at_10"] == 0.5    # G 两组只命中一组
     assert m["d_refuse_correct_rate"] == 1.0   # D 无命中 -> 拒,计正确
+
+
+def test_test_metrics_by_bucket_three_metrics():
+    """by_bucket 聚合 MRR/Recall@5/证据覆盖度(CH@10);D 桶不进 by_bucket。"""
+    from evals.run_retrieval_compare import _test_metrics
+    G2 = (("规格",), ("保修",))
+    cases = [
+        {"bucket": "A_policy", "should_refuse": False, "gt_groups": G2,
+         "retrieval": {"dense": {"top1": 0.9, "paths": ["售后 > 保修说明", "产品规格 > 规格"]}}},
+        {"bucket": "A_policy", "should_refuse": False, "gt_groups": G2,
+         "retrieval": {"dense": {"top1": 0.8, "paths": ["无关"]}}},
+        {"bucket": "C_colloquial", "should_refuse": False, "gt_groups": G2,
+         "retrieval": {"dense": {"top1": 0.7, "paths": ["产品规格 > 规格"]}}},
+        {"bucket": "D_absent", "should_refuse": True, "gt_groups": (),
+         "retrieval": {"dense": {"top1": None, "paths": []}}},
+    ]
+    m = _test_metrics(cases, "dense", 0.5)
+    a = m["by_bucket"]["A_policy"]
+    assert a["mrr_at_10"] == 0.5            # (1.0 + 0.0) / 2
+    assert a["recall5"] == 0.5
+    assert a["evidence_coverage"] == 0.5    # CH@10:(1 + 0) / 2
+    assert a["section_recall_at_10"] == 0.5 and a["refused"] == 0
+    c = m["by_bucket"]["C_colloquial"]
+    assert c["recall5"] == 0.5 and c["evidence_coverage"] == 0.0 and c["mrr_at_10"] == 1.0
+    assert "D_absent" not in m["by_bucket"]
