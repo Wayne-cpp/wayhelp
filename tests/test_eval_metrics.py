@@ -217,3 +217,65 @@ def test_test_metrics_by_bucket_three_metrics():
     c = m["by_bucket"]["C_colloquial"]
     assert c["recall5"] == 0.5 and c["evidence_coverage"] == 0.0 and c["mrr_at_10"] == 1.0
     assert "D_absent" not in m["by_bucket"]
+
+
+def test_simulate_second_turn_uses_real_effective_strategy():
+    """rerank 降级时工具出参用实际 effective_strategy,不再硬编码 hybrid_rerank。"""
+    from evals.run_retrieval_compare import _simulate_second_turn
+
+    class _Cap:
+        def __init__(self):
+            self.messages = None
+
+        def invoke(self, messages):
+            self.messages = messages
+            class R:
+                content = "答"
+            return R()
+
+    m = _Cap()
+    _simulate_second_turn(m, "q", [], "hybrid")
+    import json as _json
+    payload = _json.loads(m.messages[-1].content)
+    assert payload["effective_strategy"] == "hybrid"
+
+
+def test_run_generation_counts():
+    """_run_generation:低置信硬拒答 / 正常裁判 / D 桶不送裁判 / degraded 标记。"""
+    from evals.run_retrieval_compare import _run_generation
+
+    class _Fake:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            class R:
+                content = "答"
+            if isinstance(messages, list) and messages and isinstance(
+                    messages[0], tuple):                       # 裁判调用
+                R.content = ('{"verdict": "faithful", "unsupported_claims": [], '
+                             '"cited_refs": [1], "coverage": 1.0}')
+            return R()
+
+    class _Settings:
+        rerank_top_n = 10
+        max_tool_result_chars = 4000
+
+    cases = [
+        {"id": "A2", "bucket": "A_policy", "should_refuse": False,
+         "query": "q1", "expect_points": ("p",),
+         "retrieval": {"dense": {"top1": 0.9, "hits": [], "effective_strategy": "dense"}}},
+        {"id": "A4", "bucket": "A_policy", "should_refuse": False,
+         "query": "q2", "expect_points": ("p",),
+         "retrieval": {"dense": {"top1": 0.1, "hits": [], "effective_strategy": "dense"}}},
+        {"id": "D2", "bucket": "D_absent", "should_refuse": True,
+         "query": "q3", "expect_points": (),
+         "retrieval": {"dense": {"top1": None, "hits": [], "effective_strategy": "dense"}}},
+    ]
+    rows = _run_generation(cases, "dense", 0.5, _Settings(), _Fake())
+    a2, a4, d2 = rows
+    assert a2["judge"] == "faithful" and a2["coverage"] == 1.0 and not a2["refused"]
+    assert a4["refused"] and a4["low_confidence"] and a4["judge"] is None
+    assert d2["refused"] and d2["judge"] is None               # D 桶不送裁判
+    assert all(not r["degraded"] for r in rows)

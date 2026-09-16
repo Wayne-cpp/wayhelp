@@ -226,10 +226,12 @@ def _test_metrics(test_cases: list[dict], strat: str, threshold: float | None) -
     }
 
 
-def _simulate_second_turn(model, query: str, evidence: list[dict]) -> str:
+def _simulate_second_turn(model, query: str, evidence: list[dict],
+                          effective_strategy: str) -> str:
     """模拟第二轮消息:System(SERVICE) + Human(query) + AIMessage(query_faq tool_call)
-    + ToolMessage(query_faq 出参 JSON),同步 invoke 生成答案。"""
-    payload = {"effective_strategy": "hybrid_rerank", "low_confidence": False,
+    + ToolMessage(query_faq 出参 JSON),同步 invoke 生成答案。
+    effective_strategy 用该次检索的真实值(rerank 降级时为 hybrid),不再硬编码。"""
+    payload = {"effective_strategy": effective_strategy, "low_confidence": False,
                "note": None, "evidence": evidence}
     call_id = "call_compare"
     messages = [
@@ -261,14 +263,15 @@ def _judge(model, query: str, answer: str, evidence: list[dict],
     return None, err
 
 
-def _generation_segment(test_cases: list[dict], threshold: float | None, settings, model,
-                        main_sf, run_id) -> tuple[list[dict], int]:
-    """生成段(test 分片,hybrid_rerank):低置信不调模型直接拒答话术;非拒答的
-    A/B/C/E case 交 judge;编造落 faith_cases 主库。返回 (逐 case 行, judge_error 数)。
-    threshold=None 为 ungated 兜底:只有零命中才判低置信。"""
-    rows, judge_errors = [], 0
+def _run_generation(test_cases: list[dict], strat: str, threshold: float | None,
+                    settings, model) -> list[dict]:
+    """单策略生成段(test 分片):低置信不调模型直接拒答话术;非拒答的 A/B/C/E case 交裁判。
+    threshold=None 为 ungated 兜底:只有零命中才判低置信。
+    行结构:{id,bucket,should_refuse,low_confidence,refused,answer,degraded,evidence,
+    judge,unsupported_claims?,cited_refs?,coverage?,judge_error?}"""
+    rows = []
     for c in test_cases:
-        r = c["retrieval"]["hybrid_rerank"]
+        r = c["retrieval"][strat]
         low = r["top1"] is None or (threshold is not None and r["top1"] < threshold)
         if low:
             answer, evidence = REFUSAL_ANSWER, []
@@ -276,34 +279,30 @@ def _generation_segment(test_cases: list[dict], threshold: float | None, setting
             evidence = [e.to_dict() for e in assemble_evidence(
                 r["hits"], max_items=settings.rerank_top_n,
                 budget_chars=settings.max_tool_result_chars, overhead_chars=200)]
-            answer = _simulate_second_turn(model, c["query"], evidence)
+            answer = _simulate_second_turn(model, c["query"], evidence,
+                                           r["effective_strategy"])
         refused = answer.strip() == REFUSAL_ANSWER
-        row = {"id": c["id"], "bucket": c["bucket"], "low_confidence": low,
-               "refused": refused, "answer": answer, "judge": None}
+        row = {"id": c["id"], "bucket": c["bucket"], "should_refuse": c["should_refuse"],
+               "low_confidence": low, "refused": refused, "answer": answer,
+               "degraded": r["effective_strategy"] != strat, "evidence": evidence,
+               "judge": None}
         if not refused and not c["should_refuse"]:
             verdict, err = _judge(model, c["query"], answer, evidence, c["expect_points"])
             if verdict is None:
                 row["judge"] = "judge_error"
                 row["judge_error"] = err
-                judge_errors += 1
             else:
                 row["judge"] = verdict["verdict"]
                 row["unsupported_claims"] = verdict["unsupported_claims"]
                 row["cited_refs"] = verdict["cited_refs"]
                 row["coverage"] = verdict["coverage"]
-                if verdict["verdict"] == "fabricated":
-                    with main_sf() as s:
-                        upsert_faith_case(s, run_id=run_id, eval_id=c["id"],
-                                          bucket=c["bucket"], query=c["query"],
-                                          answer=answer,
-                                          reason=json.dumps(verdict["unsupported_claims"],
-                                                            ensure_ascii=False),
-                                          evidence=evidence,
-                                          cited_refs=verdict["cited_refs"],
-                                          judge_model=settings.model_name)
-                        s.commit()
         rows.append(row)
-    return rows, judge_errors
+    return rows
+
+
+def _public_row(row: dict) -> dict:
+    """写进 _compare.json 的行:去掉 evidence(体积大,台账与 rag_eval.json 另有快照)。"""
+    return {k: v for k, v in row.items() if k != "evidence"}
 
 
 def _render_md(out: dict) -> str:
@@ -414,6 +413,7 @@ def main(argv: list[str]) -> int:
                           for r in s.query(KnowledgeChunk).all()}
         corpus_paths = [m[0] for m in chunk_meta.values()]
         cases = [_case_dict(c) for c in load_compare_cases(CASES)]
+        by_id = {c["id"]: c for c in cases}
         for c in cases:  # 覆盖断言:每个正例 AND 组至少一个别名命中语料 section_path
             for g in c["gt_groups"]:
                 assert covered_groups(corpus_paths, (g,)) >= 1, \
@@ -464,9 +464,21 @@ def main(argv: list[str]) -> int:
         test_cases = [c for c in cases if c["split"] == "test"]
         metrics = {strat: _test_metrics(test_cases, strat, thresholds[strat]["threshold"])
                    for strat in STRATEGIES}
-        gen_rows, judge_errors = _generation_segment(
-            test_cases, thresholds["hybrid_rerank"]["threshold"], settings, model, main_sf,
-            run_id)
+        gen_rows = _run_generation(test_cases, "hybrid_rerank",
+                                   thresholds["hybrid_rerank"]["threshold"],
+                                   settings, model)
+        judge_errors = sum(1 for r in gen_rows if r["judge"] == "judge_error")
+        for r in gen_rows:  # Task 5 改为单事务批量;此处保持逐 case 语义不变
+            if r["judge"] == "fabricated":
+                with main_sf() as s:
+                    upsert_faith_case(s, run_id=run_id, eval_id=r["id"],
+                                      bucket=r["bucket"],
+                                      query=by_id[r["id"]]["query"], answer=r["answer"],
+                                      reason=json.dumps(r["unsupported_claims"],
+                                                        ensure_ascii=False),
+                                      evidence=r["evidence"], cited_refs=r["cited_refs"],
+                                      judge_model=settings.model_name)
+                    s.commit()
         # 硬门槛口径(2026-09-16 用户批准):bm25 B_model 用不设闸原始命中——
         # 验收本意是「BM25 路能否命中型号」,与闸门无关;闸后口径因阈值退化恒 0 无信息量
         bm25_b_rows = [section_recall_at_k(c["retrieval"]["bm25"]["paths"],
@@ -505,7 +517,7 @@ def main(argv: list[str]) -> int:
                 "refused": sum(1 for r in gen_rows if r["refused"]),
                 "faithful": sum(1 for r in gen_rows if r["judge"] == "faithful"),
                 "fabricated": sum(1 for r in gen_rows if r["judge"] == "fabricated"),
-                "judge_errors": judge_errors, "rows": gen_rows,
+                "judge_errors": judge_errors, "rows": [_public_row(r) for r in gen_rows],
             },
             "diagnosis": diagnosis, "gates": gates,
         }
