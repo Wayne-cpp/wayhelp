@@ -42,7 +42,7 @@
 其他改动:
 
 - `examples/bare_agent.py` — 热身留档(见 §11)
-- `app/prompts/intent.py` — `INTENT_PROMPT`;`app/prompts/service.py` 加 `COMPLAINT_REPLY` / `CHITCHAT_REPLY` 常量并修订与 ReAct 冲突的条款(见 §6.6)
+- `app/prompts/intent.py` — `INTENT_PROMPT`;`app/prompts/service.py` 加 `COMPLAINT_REPLY` / `CHITCHAT_REPLY` 常量并修订与 ReAct 冲突的条款(见 §7)
 - `app/routers/chat.py` — 新增 `POST /v1/chat/action`;`app/schemas.py` 加 `ChatActionRequest`
 - `app/services/chat_service.py` — `stream()` 内部换成驱动图;prepare 三段语义(建/验会话 → 每会话锁 → finally 释锁)保留在路由/服务边界,`aclose` 释锁契约不动
 - `app/tools/business.py` — 从 `create_ticket` 抽出纯写库函数 `write_ticket()`(见 §9)
@@ -130,7 +130,7 @@ loop:
 细则:
 
 - **工具集** = 第 2 章业务工具 `query_order` / `query_product` / `query_logistics` / `create_ticket`。`query_faq` 退出聊天工具集(知识类已由预检索覆盖;工具本身保留,评估链路在用)。本章不新写业务工具。
-- **编排伪工具** `suggest_options(options: list["转人工","建工单"])`:Agent 认为合适时调用 = 只发建议信号;loop 识别后写 `state.suggested_actions` 并提示模型收尾,零副作用、不进 ToolExecutor 写路径、不算业务工具。建议可只给一个也可两个都给;后端不自动执行任何动作。
+- **编排伪工具** `suggest_options(options: list["转人工","建工单"])`(参数用中文标签,节点映射为 §8 的 action id:「转人工」→`transfer_human`,「建工单」→`create_ticket` 并带 `ticket_type`):Agent 认为合适时调用 = 只发建议信号;loop 识别后写 `state.suggested_actions` 并提示模型收尾,零副作用、不进 ToolExecutor 写路径、不算业务工具。建议可只给一个也可两个都给;后端不自动执行任何动作。
 - **护栏**:单次响应 tool_calls 上限 5(沿用);每轮 `create_ticket` ≤ 1(沿用);空最终文本兜底 `FALLBACK_ANSWER`(沿用)。
 - **流式**:token 经 `stream_mode="messages"` 从节点内流出,按 `langgraph_node` 元数据过滤只取 main_agent;结构化事件(tool_start/tool_end/citations/suggest_actions)经 `get_stream_writer` + `stream_mode="custom"` 流出。
 - **citations**:知识类且答复引用证据时,沿现有 `[n]` 角标协议发 `citations` 帧。
@@ -157,7 +157,7 @@ suggest_actions: {"options": [
 
 - 请求 `ChatActionRequest`:`{user_id, session_id, action: "create_ticket", ticket_type: "售后|投诉|咨询"}`(action 枚举本章只有一个值,留扩展)。
 - 校验:会话存在且属于 user_id(404 语义同现有聊天接口);参数非法 422。
-- 行为:从 `create_ticket` 抽出纯写库函数 `write_ticket(session_factory, conversation_id, description, ticket_type) -> ticket_no`(只 INSERT tickets 行);端点调它,**不改 `conversations.status`**——建工单与转人工是两回事,互不绑定。description 取该会话最近一条用户消息,取不到用固定兜底文案。
+- 行为:从 `create_ticket` 抽出纯写库函数 `write_ticket(session_factory, conversation_id, description, ticket_type) -> ticket_no`(只 INSERT tickets 行);端点调它,**不改 `conversations.status`**——建工单与转人工是两回事,互不绑定。description 取该会话最近一条用户消息,取不到用固定兜底文案「用户通过快捷操作请求建单」。
 - 响应 `{ticket_no, status: "待处理"}`。
 - Agent 工具路径的 `create_ticket` 维持 ch02 旧行为(同事务置「已转人工」,有测试钉),内部改为调 `write_ticket` + 置状态,行为不变。
 - 「转人工」不进此端点:本章纯前端模拟,不接真人系统、不做任何后端动作。
@@ -165,7 +165,7 @@ suggest_actions: {"options": [
 ## 10. 会话状态与持久化
 
 - State 用 `add_messages` reducer 累积 messages;`thread_id = session_id`。
-- checkpointer = `AsyncSqliteSaver`(langgraph-checkpoint-sqlite,含 aiosqlite),库文件落 `data/`(与 Milvus Lite 同风格);在 `create_app` lifespan 建/关,单 worker 约束不变。
+- checkpointer = `AsyncSqliteSaver`(langgraph-checkpoint-sqlite,含 aiosqlite),库文件 `data/checkpoints.db`(与 Milvus Lite 同风格,确认 .gitignore 覆盖);在 `create_app` lifespan 建/关,单 worker 约束不变。
 - 职责分离:checkpoint = 图工作记忆(跨轮上下文),MySQL = 账本(会话/消息/低置信池,log 节点照旧写)。
 - 已知限制(写进文档):checkpoint 文件丢失/删除时退化为「无历史新会话」,不回填 MySQL 历史;两库不做对账。
 
@@ -173,15 +173,15 @@ suggest_actions: {"options": [
 
 - 无框架最裸 Agent 循环:`model.bind_tools(tools)` + `invoke` + 手写「有 tool_calls 就执行并喂回、没有就收敛」的 for 循环 + max_steps。
 - 工具复用真实只读业务工具(query_order / query_logistics,mock JSON 不触库),证明「同一个 Agent,框架只是壳」。
-- 可 `uv run python examples/bare_agent.py` 直接运行(FakeStreamModel 之外再带一个真实模型开关,默认走假模型演示)。
+- 可 `uv run python examples/bare_agent.py` 直接运行:脚本自包含一个脚本化假模型(不依赖 tests/),默认走假模型演示;带开关可切真实模型。
 - `tests/test_bare_agent.py` 用 FakeStreamModel 钉:一次收敛、工具结果喂回、max_steps 兜底。
 - 正式开发时把同一循环结构重构进 `agent_node.py`(invoke→astream、加 token 预算、加事件流出)。
 
 ## 12. 前端改动(chat.html,Vibe 例外照旧)
 
-- 新增 suggest_actions 帧处理:在该条 assistant 气泡下渲染**各自独立的按钮**(复用 addFeedback 的组件形态与一次锁定模式)。
-- 点「转人工」:纯前端渲染「已转接人工客服」系统提示 + 客服小猫问候气泡(「您好,我是客服小猫,请问有什么可以帮您的?」);不发任何请求;按钮锁定。
-- 点「建工单」:`POST /v1/chat/action`,成功后渲染「已为您创建工单 T…」;失败给错误提示;按钮锁定。
+- 新增 suggest_actions 帧处理:在该条 assistant 气泡下渲染**各自独立的按钮**(复用 addFeedback 的组件形态;锁定粒度为「被点的那个按钮自己锁定防重」,另一个按钮不受影响,不用反馈组件的整组锁定)。
+- 点「转人工」:纯前端渲染「已转接人工客服」系统提示 + 客服小猫问候气泡(「您好,我是客服小猫,请问有什么可以帮您的?」);不发任何请求。
+- 点「建工单」:`POST /v1/chat/action`,成功后渲染「已为您创建工单 T…」;失败给错误提示。
 - 两按钮互不绑定;用户都不点、继续发消息 = 普通对话正常走(后端无任何动作)。
 - `test_chat_page.py` 补字符串断言(两个按钮文案、小猫问候、action 调用),人工点验照旧。
 
@@ -211,7 +211,7 @@ suggest_actions: {"options": [
 | 4. 闲聊固定话术 | delta 帧 = CHITCHAT_REPLY;断言除意图识别外无生成调用 |
 | 5. 先订单后物流的复杂问题 ReAct 多步 | tool_start 帧序列 [query_order, query_logistics],agent_steps ≥ 2 |
 
-测试基建沿用:FakeStreamModel、假 retriever、dbfixtures(Docker MySQL);checkpointer 测试用 `:memory:` SqliteSaver。全量 `uv run pytest` 绿才交付。
+测试基建沿用:FakeStreamModel、假 retriever、dbfixtures(Docker MySQL);checkpointer 测试用内存版 AsyncSqliteSaver(`:memory:`)。全量 `uv run pytest` 绿才交付。
 
 ## 14. 依赖变更
 
