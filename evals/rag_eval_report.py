@@ -94,6 +94,8 @@ def build_rag_eval(*, run_id, ts, elapsed_s, settings, cases, corpus_chunks,
                               "evidence_coverage": bb["evidence_coverage"]}
                           for b, bb in m["by_bucket"].items()},
         }
+        if thresholds[s].get("signal"):   # hybrid_rerank:本轮校准胜出的闸门置信信号
+            retrieval[s]["signal"] = thresholds[s]["signal"]
     return {
         "meta": {"run_id": run_id, "ts": ts, "elapsed_s": round(elapsed_s, 1),
                  "total_cases": len(cases),

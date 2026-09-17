@@ -8,8 +8,10 @@ JUDGE_PROMPT = """你是回答忠实度与覆盖度裁判。给定用户问题�
 - 答案明确覆盖一个标准要点记 1,否则记 0;coverage = 覆盖要点数 / 要点总数,取值 0.0 到 1.0。
 - 同义表达算覆盖;回答中额外的正确信息不加分。
 
-只输出一行 JSON:
-{"verdict": "faithful" 或 "fabricated", "unsupported_claims": [{"claim": "编造的那句话", "reason": "为什么证据不支持"}], "cited_refs": [回答实际引用的编号,整数列表], "coverage": 0.0 到 1.0 的数值}
+先逐条核对回答中的事实性陈述与引用角标,再下结论。只输出一行 JSON,字段顺序固定(verdict 放最后):
+{"unsupported_claims": [{"claim": "编造的那句话", "reason": "为什么证据不支持"}], "cited_refs": [回答实际引用的编号,整数列表], "coverage": 0.0 到 1.0 的数值, "verdict": "faithful" 或 "fabricated"}
+
+一致性约束:unsupported_claims 为空时 verdict 必须为 faithful;verdict 为 fabricated 时 unsupported_claims 必须至少列出一条。
 
 用户问题:{query}
 客服回答:{answer}

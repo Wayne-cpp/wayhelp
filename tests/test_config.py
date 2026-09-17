@@ -142,6 +142,7 @@ def test_ch04_defaults():
     assert s.knowledge_tool_timeout_seconds == 20
     assert s.query_rewrite_enabled is True
     assert s.rerank_min_score == 0.0553 and s.bm25_min_score == 0.0 and s.hybrid_min_score == 0.0
+    assert s.rerank_confidence_signal == "top1"   # 未冻结前保持基线信号
     assert s.has_rerank_key() is False  # 两 key 均空
 
 

@@ -4,9 +4,10 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimi
 
 from app.knowledge.ingest import vector_text
 from app.knowledge.milvus_store import MilvusKnowledgeStore
-from app.knowledge.query_understanding import passthrough_plan
+from app.knowledge.query_understanding import QueryPlan, passthrough_plan
 from app.knowledge.retriever import (
-    KnowledgeRetriever, RetryableKnowledgeError, _as_retryable,
+    KnowledgeHit, KnowledgeRetriever, RetryableKnowledgeError, _as_retryable,
+    confidence_from_scores,
 )
 from app.models import KnowledgeChunk
 from tests.conftest import make_settings
@@ -232,3 +233,139 @@ def test_executor_no_retry_on_plain_error():
                                       "type": "tool_call"}))
     assert outcome.record.error_code == "tool_error"
     assert calls["n"] == 1
+
+
+# ─── 闸门置信信号(四策略评估选拔,胜者冻结进配置)─────────────────────────────
+
+
+def test_confidence_from_scores_math():
+    assert confidence_from_scores([], "top1") is None
+    assert confidence_from_scores([0.5], "top1") == 0.5
+    assert confidence_from_scores([0.5], "margin12") == 0.5       # 单命中:s1 按 0
+    assert confidence_from_scores([0.6, 0.4, 0.2], "margin12") == pytest.approx(0.2)
+    assert confidence_from_scores([0.6, 0.4], "product") == pytest.approx(0.12)
+    assert confidence_from_scores([0.6, 0.6, 0.6, 0.6, 0.6], "ratio5") == 1.0
+    assert confidence_from_scores([0.5, 0.25, 0.25, 0.0, 0.0],
+                                  "ratio5") == pytest.approx(2.5)  # 0.5 / mean(1.0/5)
+    assert confidence_from_scores([0.0, 0.0], "ratio5") is None   # 全 0 分布不可比
+    with pytest.raises(ValueError):
+        confidence_from_scores([0.5], "nope")
+
+
+def test_confidence_signal_applies_only_to_hybrid_rerank(store, db_session_factory):
+    _seed_knowledge(db_session_factory, store)
+    s = make_settings(rerank_confidence_signal="margin12")
+    r = _retriever(s, store, db_session_factory, reranker=FakeReranker())
+    res = r.search("邮费怎么算", query_plan=_plan("邮费怎么算"))
+    # FakeReranker 对 2 块给分 1.0/0.5 → margin12 = 0.5(非 top1 的 1.0)
+    assert res.effective_strategy == "hybrid_rerank"
+    assert res.confidence_score == pytest.approx(0.5)
+    res_dense = r.search("邮费怎么算", strategy="dense", query_plan=_plan("邮费怎么算"))
+    assert res_dense.confidence_score == res_dense.hits[0].score   # dense 臂不受信号配置影响
+
+
+def test_confidence_signal_default_is_top1(store, db_session_factory):
+    _seed_knowledge(db_session_factory, store)
+    r = _retriever(make_settings(), store, db_session_factory, reranker=FakeReranker())
+    res = r.search("邮费怎么算", query_plan=_plan("邮费怎么算"))
+    assert res.confidence_score == res.hits[0].score == 1.0
+
+
+# ─── 多意图支路(QueryPlan.sub_queries,仅 hybrid_rerank)───────────────────────
+
+
+class IntentReranker:
+    """按 query 与文档的关键词重合给分,模拟「重排只认当前 query 表达的意图」:
+    query 含「故障」时只有故障文档高分,含「时限」时只有时限文档高分。"""
+    def rerank(self, query, documents, top_n, deadline=None):
+        from app.knowledge.reranker import RerankOutcome
+        ranking = []
+        for i, doc in enumerate(documents):
+            hit = ("故障" in query and "故障" in doc) or ("时限" in query and "时限" in doc)
+            ranking.append((i, 0.9 if hit else 0.1))
+        ranking.sort(key=lambda x: -x[1])   # python sort 稳定:同分保持原序
+        return RerankOutcome(True, ranking[:top_n], None)
+
+
+def _seed_intent_knowledge(sf, store):
+    with sf() as s:
+        rows = [
+            KnowledgeChunk(category="售后", questions="常见故障自查",
+                           answer="报错可自查滚筒。", content_type="faq",
+                           section_path="售后手册 > 常见故障自查",
+                           source_doc="d.md", chunk_index=1,
+                           vectorize_status="done", vector_id="i1"),
+            KnowledgeChunk(category="售后", questions="常见问题处理时限",
+                           answer="维修 7 个工作日。", content_type="faq",
+                           section_path="售后手册 > 常见问题处理时限",
+                           source_doc="d.md", chunk_index=2,
+                           vectorize_status="done", vector_id="i2"),
+        ]
+        s.add_all(rows)
+        s.flush()
+        ids = [r.id for r in rows]
+        s.commit()
+    store.ensure_collection()
+    store.upsert([(ids[0], [0.0, 0.0, 1.0, 0.0], "故障自查", "faq"),
+                  (ids[1], [0.0, 0.0, 0.9, 0.1], "处理时限", "faq")])
+    return ids
+
+
+def test_multi_intent_subquery_boosts_second_intent(store, db_session_factory):
+    ids = _seed_intent_knowledge(db_session_factory, store)
+    r = _retriever(make_settings(), store, db_session_factory, reranker=IntentReranker())
+    # 对照:无子查询 → 主问两意图关键词都不含,两榜同分按融合序,故障块在前
+    plan_plain = QueryPlan("猫砂盆报错能自修吗维修要等几天", (), None, False, None)
+    res0 = r.search("猫砂盆报错能自修吗维修要等几天", query_plan=plan_plain)
+    assert res0.hits[0].chunk_id == ids[0] and res0.hits[0].score == pytest.approx(0.1)
+    # 多意图:子查询「维修处理时限」分榜重排 → 时限块 0.9 升到榜首
+    plan_sub = QueryPlan("猫砂盆报错能自修吗维修要等几天", (), None, False, None,
+                         ("维修处理时限",))
+    res = r.search("猫砂盆报错能自修吗维修要等几天", query_plan=plan_sub)
+    assert res.hits[0].chunk_id == ids[1] and res.hits[0].score == pytest.approx(0.9)
+    assert res.confidence_score == pytest.approx(0.9)   # top1 置信分取合并后榜首
+    assert res.leg_counts["sub_queries"] == 1
+    assert res.effective_strategy == "hybrid_rerank"
+
+
+def test_merge_sub_intents_pins_low_score_into_topn(store, db_session_factory):
+    """子意图榜头名分数很低、跌出 top_n 时,保底从榜尾换入(不置顶污染 top1)。"""
+    ids = _seed_intent_knowledge(db_session_factory, store)
+
+    class _LowReranker:
+        def rerank(self, query, documents, top_n, deadline=None):
+            from app.knowledge.reranker import RerankOutcome
+            return RerankOutcome(True, [(i, 0.05 - i * 0.01)
+                                        for i in range(len(documents))][:top_n], None)
+
+    r = _retriever(make_settings(), store, db_session_factory, reranker=_LowReranker())
+    main = [KnowledgeHit(9000 + i, 0.9 - i * 0.01, "c", "q", "a", None, None, None)
+            for i in range(12)]                        # 12 块高分主榜,无需落库
+    sub_raws = [("子查询", [(ids[0], 9.9), (ids[1], 9.8)])]  # 两意图块低分
+    merged = r._merge_sub_intents(main, sub_raws, None)
+    top_ids = [h.chunk_id for h in merged[:10]]
+    assert ids[0] in top_ids and ids[1] in top_ids      # 都被保底拉回 top_n
+    assert merged[0].chunk_id == 9000                    # 榜首仍是主榜最高分
+    assert [h.chunk_id for h in merged[:8]] == [9000 + i for i in range(8)]
+    assert {merged[8].chunk_id, merged[9].chunk_id} == set(ids)   # 钉在榜尾区段
+
+
+def test_sub_intent_rerank_failure_keeps_main_ranking(store, db_session_factory):
+    _seed_intent_knowledge(db_session_factory, store)
+
+    class _SubFailReranker:
+        def __init__(self): self.calls = 0
+        def rerank(self, query, documents, top_n, deadline=None):
+            from app.knowledge.reranker import RerankOutcome
+            self.calls += 1
+            if self.calls == 1:   # 主榜正常;子意图臂失败
+                return RerankOutcome(True, [(i, 1.0 - i * 0.1)
+                                            for i in range(len(documents))], None)
+            return RerankOutcome(False, [], "rerank_http_500")
+
+    r = _retriever(make_settings(), store, db_session_factory, reranker=_SubFailReranker())
+    plan = QueryPlan("猫砂盆报错能自修吗维修要等几天", (), None, False, None,
+                     ("维修处理时限",))
+    res = r.search("猫砂盆报错能自修吗维修要等几天", query_plan=plan)
+    assert res.effective_strategy == "hybrid_rerank"     # 子臂失败不降级
+    assert [h.score for h in res.hits] == [pytest.approx(1.0), pytest.approx(0.9)]

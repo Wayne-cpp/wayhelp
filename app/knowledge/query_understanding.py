@@ -20,6 +20,7 @@ class QueryPlan:
     rewrite_model: str | None   # 实际执行改写的模型名;降级为 None
     degraded: bool
     note: str | None
+    sub_queries: tuple[str, ...] = ()   # 多意图拆分(仅 hybrid_rerank 支路用);单意图/降级为 ()
 
 
 def passthrough_plan(query: str, note: str | None = None) -> QueryPlan:
@@ -45,7 +46,16 @@ def parse_plan(text: str, raw_query: str, model_name: str | None) -> QueryPlan:
     if not isinstance(syns, list):
         syns = []
     syns = tuple(s.strip() for s in syns[:5] if isinstance(s, str) and s.strip())
-    return QueryPlan(std.strip(), syns, model_name, False, None)
+    subs = data.get("sub_queries")
+    if not isinstance(subs, list):
+        subs = []
+    sub_queries = []
+    for s in subs:                      # 去重、去与主问同文,封顶 3 个
+        if isinstance(s, str) and s.strip() and s.strip() != std.strip() \
+                and s.strip() not in sub_queries:
+            sub_queries.append(s.strip())
+    return QueryPlan(std.strip(), syns, model_name, False, None,
+                     tuple(sub_queries[:3]))
 
 
 def plan_query(model, query: str, *, enabled: bool, timeout_seconds: float,

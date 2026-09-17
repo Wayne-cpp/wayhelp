@@ -184,9 +184,10 @@ def test_test_metrics_ungated_pass_semantics():
     from evals.run_retrieval_compare import _test_metrics
     cases = [
         {"bucket": "A_policy", "should_refuse": False, "gt_groups": G,
-         "retrieval": {"hybrid": {"top1": 0.03, "paths": ["规格 > MH-LP100 款"]}}},
+         "retrieval": {"hybrid": {"top1": 0.03, "gate": 0.03,
+                                  "paths": ["规格 > MH-LP100 款"]}}},
         {"bucket": "D_absent", "should_refuse": True, "gt_groups": (),
-         "retrieval": {"hybrid": {"top1": None, "paths": []}}},
+         "retrieval": {"hybrid": {"top1": None, "gate": None, "paths": []}}},
     ]
     m = _test_metrics(cases, "hybrid", None)   # ungated:有命中即过闸
     assert m["threshold"] is None
@@ -200,13 +201,14 @@ def test_test_metrics_by_bucket_three_metrics():
     G2 = (("规格",), ("保修",))
     cases = [
         {"bucket": "A_policy", "should_refuse": False, "gt_groups": G2,
-         "retrieval": {"dense": {"top1": 0.9, "paths": ["售后 > 保修说明", "产品规格 > 规格"]}}},
+         "retrieval": {"dense": {"top1": 0.9, "gate": 0.9,
+                                 "paths": ["售后 > 保修说明", "产品规格 > 规格"]}}},
         {"bucket": "A_policy", "should_refuse": False, "gt_groups": G2,
-         "retrieval": {"dense": {"top1": 0.8, "paths": ["无关"]}}},
+         "retrieval": {"dense": {"top1": 0.8, "gate": 0.8, "paths": ["无关"]}}},
         {"bucket": "C_colloquial", "should_refuse": False, "gt_groups": G2,
-         "retrieval": {"dense": {"top1": 0.7, "paths": ["产品规格 > 规格"]}}},
+         "retrieval": {"dense": {"top1": 0.7, "gate": 0.7, "paths": ["产品规格 > 规格"]}}},
         {"bucket": "D_absent", "should_refuse": True, "gt_groups": (),
-         "retrieval": {"dense": {"top1": None, "paths": []}}},
+         "retrieval": {"dense": {"top1": None, "gate": None, "paths": []}}},
     ]
     m = _test_metrics(cases, "dense", 0.5)
     a = m["by_bucket"]["A_policy"]
@@ -265,13 +267,16 @@ def test_run_generation_counts():
     cases = [
         {"id": "A2", "bucket": "A_policy", "should_refuse": False,
          "query": "q1", "expect_points": ("p",),
-         "retrieval": {"dense": {"top1": 0.9, "hits": [], "effective_strategy": "dense"}}},
+         "retrieval": {"dense": {"top1": 0.9, "gate": 0.9, "hits": [],
+                                 "effective_strategy": "dense"}}},
         {"id": "A4", "bucket": "A_policy", "should_refuse": False,
          "query": "q2", "expect_points": ("p",),
-         "retrieval": {"dense": {"top1": 0.1, "hits": [], "effective_strategy": "dense"}}},
+         "retrieval": {"dense": {"top1": 0.1, "gate": 0.1, "hits": [],
+                                 "effective_strategy": "dense"}}},
         {"id": "D2", "bucket": "D_absent", "should_refuse": True,
          "query": "q3", "expect_points": (),
-         "retrieval": {"dense": {"top1": None, "hits": [], "effective_strategy": "dense"}}},
+         "retrieval": {"dense": {"top1": None, "gate": None, "hits": [],
+                                 "effective_strategy": "dense"}}},
     ]
     rows = _run_generation(cases, "dense", 0.5, _Settings(), _Fake())
     a2, a4, d2 = rows
@@ -279,3 +284,47 @@ def test_run_generation_counts():
     assert a4["refused"] and a4["low_confidence"] and a4["judge"] is None
     assert d2["refused"] and d2["judge"] is None               # D 桶不送裁判
     assert all(not r["degraded"] for r in rows)
+
+
+def test_choose_confidence_signal_prefers_better_separator():
+    """top1 完全重叠(无可行阈值 → ungated),相对特征完美分离 → 胜出。"""
+    from evals.run_retrieval_compare import choose_confidence_signal
+    samples = [
+        {"bucket": "D_absent", "should_refuse": True, "recall10": 0.0,
+         "signals": {"top1": 0.5, "margin12": 0.01, "product": 0.005, "ratio5": 1.05}},
+        {"bucket": "D_absent", "should_refuse": True, "recall10": 0.0,
+         "signals": {"top1": 0.5, "margin12": 0.02, "product": 0.010, "ratio5": 1.10}},
+        {"bucket": "A_policy", "should_refuse": False, "recall10": 1.0,
+         "signals": {"top1": 0.5, "margin12": 0.30, "product": 0.150, "ratio5": 2.0}},
+        {"bucket": "A_policy", "should_refuse": False, "recall10": 1.0,
+         "signals": {"top1": 0.5, "margin12": 0.40, "product": 0.200, "ratio5": 2.5}},
+    ]
+    winner, th, all_res = choose_confidence_signal(samples, max_d_pass=0.0)
+    assert winner == "margin12"   # 三信号同分,序靠前者胜(top1 已出局)
+    assert th["threshold"] == 0.3
+    assert th["d_pass_rate"] == 0.0 and th["over_refusal_rate"] == 0.0
+    assert th["pass_adjusted_recall"] == 1.0
+    assert set(all_res) == {"top1", "margin12", "product", "ratio5"}
+    assert all_res["top1"]["ungated"] is True
+
+
+def test_choose_confidence_signal_tie_prefers_top1():
+    """信号间 (par, 误拒, D误通过) 全同 → top1 胜出(简单优先)。"""
+    from evals.run_retrieval_compare import choose_confidence_signal
+    samples = [
+        {"bucket": "D_absent", "should_refuse": True, "recall10": 0.0,
+         "signals": {"top1": 0.1, "margin12": 0.1, "product": 0.01, "ratio5": 1.1}},
+        {"bucket": "A_policy", "should_refuse": False, "recall10": 1.0,
+         "signals": {"top1": 0.9, "margin12": 0.9, "product": 0.81, "ratio5": 2.0}},
+    ]
+    winner, th, _ = choose_confidence_signal(samples, max_d_pass=0.0)
+    assert winner == "top1" and th["threshold"] == 0.9
+
+
+def test_choose_confidence_signal_all_ungated_falls_back_top1():
+    """全部信号无可行阈值 → 回 top1(ungated 兜底臂,由上层按仅观测口径处理)。"""
+    from evals.run_retrieval_compare import choose_confidence_signal
+    samples = [{"bucket": "D_absent", "should_refuse": True, "recall10": 0.0,
+                "signals": {"top1": 0.9, "margin12": 0.9, "product": 0.9, "ratio5": 0.9}}]
+    winner, th, _ = choose_confidence_signal(samples, max_d_pass=0.0)
+    assert winner == "top1" and th["ungated"] is True and th["threshold"] is None

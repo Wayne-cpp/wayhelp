@@ -533,7 +533,7 @@
       </button>
     </div>
   </div>
-  <div class="composer-hint">小蜜是 AI 助手，涉及具体订单将为你转接人工核实 · Enter 发送，Shift+Enter 换行 · <a href="/kb">知识库管理</a></div>
+  <div class="composer-hint">小蜜是 AI 助手，涉及具体订单将为你转接人工核实 · Enter 发送，Shift+Enter 换行 · <a href="/kb">知识库管理</a> · <a href="/rag-eval">RAG 评估</a></div>
 </div>
 
 <script>
@@ -644,10 +644,9 @@
     citePop = null;
   }
 
-  function openCitePop(sup) {
+  function openCitePop(sup, c) {
     closeCitePop();
     var n = parseInt(sup.getAttribute("data-n"), 10);
-    var c = lastCitations[n - 1];
     if (!c) return;
     var pop = document.createElement("div");
     pop.className = "cite-pop";
@@ -686,9 +685,10 @@
       sup.className = "cite";
       sup.setAttribute("data-n", n);
       sup.textContent = "[" + n + "]";
+      let cite = citations[n - 1]; // 块级捕获:本气泡自己的引用,不受后续轮次覆盖
       sup.addEventListener("click", function (e) {
         e.stopPropagation();
-        openCitePop(this);
+        openCitePop(this, cite);
       });
       frag.appendChild(sup);
       last = m.index + m[0].length;

@@ -130,7 +130,7 @@ button.act { border: 1px solid var(--accent); color: var(--accent); background: 
     <div class="card" id="kpi-refuse"><div class="k">库外拒答率</div><div class="v">-</div><div class="s">上线管线 D_absent 桶</div></div>
   </section>
 
-  <h2>检索质量(四策略 × 四桶)</h2>
+  <h2>检索质量(四策略 × 总体+四桶)</h2>
   <section id="retrieval">
     <div class="tabs" id="metric-tabs">
       <button data-metric="mrr" class="on">MRR</button>
@@ -144,9 +144,12 @@ button.act { border: 1px solid var(--accent); color: var(--accent); background: 
   <h2>生成质量</h2>
   <section id="generation" class="grid2">
     <div>
-      <div class="muted">四策略答案覆盖度</div>
-      <div id="coverage-chart"></div>
-      <div class="caption" id="coverage-caption"></div>
+      <div class="tabs" id="gen-metric-tabs">
+        <button data-metric="coverage" class="on">答案覆盖度</button>
+        <button data-metric="faithful_rate">忠实率</button>
+      </div>
+      <div id="gen-chart"></div>
+      <div class="caption" id="gen-caption"></div>
       <div class="muted" style="margin-top:14px">上线管线四桶忠实率(已回答样本)</div>
       <div id="faith-chart"></div>
       <div class="caption" id="faith-note"></div>
@@ -204,7 +207,8 @@ button.act { border: 1px solid var(--accent); color: var(--accent); background: 
 <script>
 var STRATEGIES = ["dense", "bm25", "hybrid", "hybrid_rerank"];
 var BUCKETS = ["A_policy", "B_model", "C_colloquial", "E_multi"];
-var BUCKET_CN = {A_policy: "政策", B_model: "型号", C_colloquial: "口语", E_multi: "多意图"};
+var RET_GROUPS = ["__overall"].concat(BUCKETS);   // 检索图分组:总体 + 四桶
+var BUCKET_CN = {__overall: "总体", A_policy: "政策", B_model: "型号", C_colloquial: "口语", E_multi: "多意图"};
 var COLORS = ["#8a8a7a", "#4a6fa5", "#c0a03c", "#c96442"];
 var SVGNS = "http://www.w3.org/2000/svg";
 var report = null;            // 当前报告(或 null)
@@ -354,13 +358,13 @@ function currentMetric() {
 function renderRetrieval(metric) {
   var values = {};
   STRATEGIES.forEach(function (s) {
-    values[s] = {};
+    values[s] = {__overall: report.retrieval[s].overall[metric]};
     BUCKETS.forEach(function (b) {
       var bb = report.retrieval[s].by_bucket[b];
       values[s][b] = bb ? bb[metric] : null;
     });
   });
-  groupedBars(sel("retrieval-chart"), BUCKETS, STRATEGIES, values);
+  groupedBars(sel("retrieval-chart"), RET_GROUPS, STRATEGIES, values);
   sel("retrieval-caption").textContent = caption(metric);
 }
 
@@ -368,30 +372,43 @@ function caption(metric) {
   var names = {mrr: "MRR", recall5: "Recall@5", evidence_coverage: "证据覆盖度"};
   var best = null, denseV = null;
   STRATEGIES.forEach(function (s) {
-    var vals = BUCKETS.map(function (b) {
-      var bb = report.retrieval[s].by_bucket[b];
-      return bb ? bb[metric] : null;
-    }).filter(function (v) { return v !== null; });
-    if (!vals.length) return;
-    var avg = vals.reduce(function (a, x) { return a + x; }, 0) / vals.length;
-    if (s === "dense") denseV = avg;
-    if (best === null || avg > best.v) best = {s: s, v: avg};
+    var v = report.retrieval[s].overall[metric];
+    if (v === null || v === undefined) return;
+    if (s === "dense") denseV = v;
+    if (best === null || v > best.v) best = {s: s, v: v};
   });
   if (!best) return "数据不可用。";
   var tail = "";
   if (denseV !== null && best.s !== "dense") {
     tail = ",较基线 dense " + (best.v - denseV >= 0 ? "+" : "") + fmt(best.v - denseV);
   }
-  return names[metric] + " 四桶均值最佳为 " + best.s + "(" + fmt(best.v) + ")" + tail + "。";
+  return names[metric] + " 总体最佳为 " + best.s + "(" + fmt(best.v) + ")" + tail + "。";
+}
+
+function currentGenMetric() {
+  var b = sel("gen-metric-tabs").querySelector("button.on");
+  return b ? b.getAttribute("data-metric") : "coverage";
+}
+
+function renderGenChart(metric) {
+  var okey = metric === "coverage" ? "answer_coverage" : "faithful_rate";
+  var values = {};
+  STRATEGIES.forEach(function (s) {
+    var g = report.generation[s];
+    values[s] = {__overall: g[okey]};
+    BUCKETS.forEach(function (b) {
+      var bb = g.by_bucket[b];
+      values[s][b] = bb ? bb[metric] : null;
+    });
+  });
+  groupedBars(sel("gen-chart"), RET_GROUPS, STRATEGIES, values);
+  sel("gen-caption").textContent = metric === "coverage"
+    ? "拒答记 0 分;裁判失败的策略为「不可用」。"
+    : "忠实率 = faithful/judged(仅已回答且裁判成功样本);bm25 本轮全拒,无可判样本,不画。";
 }
 
 function renderGeneration(rep, online) {
-  groupedBars(sel("coverage-chart"), STRATEGIES, STRATEGIES,
-              valuesToNested(STRATEGIES, STRATEGIES.map(function (s) {
-                return rep.generation[s].answer_coverage;
-              })));
-  sel("coverage-caption").textContent =
-    "拒答记 0 分;裁判失败的策略为「不可用」。";
+  renderGenChart(currentGenMetric());
   groupedBars(sel("faith-chart"), BUCKETS, BUCKETS,
               valuesToNested(BUCKETS, BUCKETS.map(function (b) {
                 var bb = online.by_bucket[b];
@@ -590,6 +607,12 @@ sel("metric-tabs").addEventListener("click", function (e) {
   sel("metric-tabs").querySelectorAll("button").forEach(function (b) { b.className = ""; });
   e.target.className = "on";
   if (report) renderRetrieval(e.target.getAttribute("data-metric"));
+});
+sel("gen-metric-tabs").addEventListener("click", function (e) {
+  if (e.target.tagName !== "BUTTON") return;
+  sel("gen-metric-tabs").querySelectorAll("button").forEach(function (b) { b.className = ""; });
+  e.target.className = "on";
+  if (report) renderGenChart(e.target.getAttribute("data-metric"));
 });
 sel("ledger-tabs").addEventListener("click", function (e) {
   if (e.target.tagName !== "BUTTON") return;

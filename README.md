@@ -9,7 +9,7 @@ SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,�
 ## 运行
 ```bash
 docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversations/messages/tickets + 灌 faq seed)
-uv run pytest                 # 测试 317 条(DB 用例需 Docker 在线)
+uv run pytest                 # 测试 365 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
@@ -83,7 +83,14 @@ curl -X POST http://127.0.0.1:8000/v1/extract \
 
 - 语料完整性校验(离线,无需 key):`uv run python evals/validate_corpus.py`
 - 四策略对比 + 生成段 Faithfulness 评估(300 case):`uv run python evals/run_retrieval_compare.py`(可加 `--max-d-pass 0.10` 调 D 桶误通过上限);产物落 `evals/results/{时间戳}_compare.json` 与 `.md`,报告含各策略 SR@5/10、CH@5/10、MRR@10、D 桶拒答正确率、误拒率与冻结阈值;某策略在 D 约束下无可行阈值时该臂 ungated 仅观测(threshold=null,有命中即过闸),评估不中断
-- `make eval-rag`:等价于上面的四策略评估命令;跑完产出 `evals/results/rag_eval.json`,后台 `/rag-eval` 页(报告 / 编造个案台账 / 就地重跑)读这份产物。
+- `make eval-rag`:等价于上面的四策略评估命令;跑完产出 `evals/results/rag_eval.json`,后台 `/rag-eval` 页读这份产物。评估产物(滚动报告 + 时间戳归档)均不入库
+
+### RAG 评估页与编造个案台账
+
+- `http://127.0.0.1:8000/rag-eval`:报告头 / 四项 KPI / 检索质量(四策略 × 总体+四桶,MRR / Recall@5 / 证据覆盖度切换)/ 生成质量 / 完整数据汇总表 / 编造个案台账 / 就地重跑(日志窗,跑完自动重新取数)
+- 台账三状态:`未解决` → 人工裁决为「已解决」(确认是真编造且根因已修)或「无需解决」(裁判误判),处置必填一句说明;已解决的个案若复发会被自动打回未解决
+- 两个幻觉率口径:本轮裁判判出率 = 上线策略 fabricated/judged;人工确认率 = 本轮判出中已标「已解决」的比例(个案证据快照须与当前报告同 run_id,否则该轮不计算)
+- 经验值:deepseek-v4-flash 当裁判的误杀率约五成(19 条历史个案人工裁决出 9 条误判),判出率虚高,以人工确认率为准;一轮评估约 25 分钟、烧 API 额度
 - 部署契约:本应用按**单 Uvicorn worker** 运行(内存作业注册表与 Milvus Lite 独占均不支持多 worker);不要配置 `--workers >1`。
 - ch03 的 `evals/run_knowledge_eval.py` 已弃用:ch04 语料换血后旧标注失效,该脚本仅供指标函数复用
 
@@ -94,5 +101,6 @@ curl -X POST http://127.0.0.1:8000/v1/extract \
 
 ### 运行约束(沿用 ch03)
 
-- 服务单 worker;Milvus Lite 本地库独占打开:服务运行时勿另跑知识库 CLI,跑评估先停服务
+- 服务单 worker;Milvus Lite 本地库独占打开(文件锁):ingest_docs / mine_qa 等直写 `./data` 库的 CLI 须先停服;`make eval-rag` 用独立临时 Milvus,与在线服务并存无冲突;/rag-eval 就地重跑在 uvicorn 进程内执行,无需停服
+- 修改 `knowledge_docs/` 已导入的文档后,ingest_docs 会因「不覆盖旧知识」拒绝——改库唯一路径:/kb 页「重建索引」或 `POST /kb/api/rebuild`(服内执行,预检评估集 GT 覆盖,全量重置)
 - 评估前置:EMBEDDING_API_KEY 必填(重排密钥回退同 key);生成段还需 OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME;主库须已执行 ch04 DDL(faith_cases 写主业务库)

@@ -44,7 +44,8 @@ class Settings(BaseSettings):
     rerank_max_retries: int = Field(default=2, ge=0)   # 内部追加重试;2 = 最多共 3 次请求
     retrieval_candidate_k: int = Field(default=50, gt=0)
     rerank_top_n: int = Field(default=10, gt=0)
-    rerank_min_score: float = Field(default=0.0553)  # 2026-09-16 校准冻结(0.10 档,par=0.971;同上报告)
+    rerank_confidence_signal: Literal["top1", "margin12", "product", "ratio5"] = "top1"  # 闸门置信信号;胜者由评估校准选拔后冻结
+    rerank_min_score: float = Field(default=0.0553)  # 2026-09-16 校准冻结(0.10 档,par=0.971;同上报告);阈值语义随 confidence_signal
     bm25_min_score: float = Field(default=0.0)     # 校准确认无可用闸门(分数退化),保持 0.0
     hybrid_min_score: float = Field(default=0.0)   # 校准确认 RRF 同分不可闸,保持 0.0;rerank 降级路径靠自评软闸门
     knowledge_strategy: Literal["dense", "bm25", "hybrid", "hybrid_rerank"] = "hybrid_rerank"

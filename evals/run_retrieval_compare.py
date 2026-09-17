@@ -33,7 +33,10 @@ from app.knowledge.ingest import run_ingest
 from app.knowledge.milvus_store import MilvusKnowledgeStore
 from app.knowledge.query_understanding import plan_query
 from app.knowledge.reranker import SiliconFlowReranker
-from app.knowledge.retriever import KnowledgeRetriever, assemble_evidence
+from app.knowledge.retriever import (
+    CONFIDENCE_SIGNALS, KnowledgeRetriever, RetryableKnowledgeError,
+    assemble_evidence, confidence_from_scores,
+)
 from app.knowledge.scope import derive_scope
 from app.models import KnowledgeChunk
 from app.prompts.faithfulness import JUDGE_PROMPT
@@ -55,6 +58,20 @@ MIN_B_RECALL = 0.5   # 硬门槛:B_model test 桶 bm25 SectionRecall@10 下限
 assert tuple(STRATEGIES) == tuple(_REPORT_STRATEGIES)
 
 
+def _search_with_retry(retriever: KnowledgeRetriever, query: str, strat: str,
+                       plan, attempts: int = 4):
+    """评估裸调 retriever 不经过 executor,此处补可重试异常的有限重试(2/4/8s),
+    防嵌入/重排 API 偶发超时炸掉整轮评估;不可重试异常与耗尽照常抛出。"""
+    for i in range(attempts):
+        try:
+            return retriever.search(query, strategy=strat, min_score=-1.0,
+                                    query_plan=plan)
+        except RetryableKnowledgeError:
+            if i == attempts - 1:
+                raise
+            time.sleep(2 ** (i + 1))
+
+
 def section_recall_at_k(hit_paths: list[str], groups, k: int) -> float:
     if not groups:
         return 0.0
@@ -70,6 +87,10 @@ def mrr_at_10(hit_paths: list[str], groups) -> float:
         if covered_groups([p], groups):
             return 1.0 / rank
     return 0.0
+
+
+def fmt_th(t) -> str:
+    return "ungated" if t is None else f"{t:.4f}"
 
 
 def _score_threshold(pos, neg, t: float) -> tuple[float, float, float]:
@@ -130,6 +151,37 @@ def _ungated_threshold(samples: list[dict]) -> dict:
     d_rate, over_refusal, par = _score_threshold(pos, neg, float("-inf"))
     return {"threshold": None, "ungated": True, "d_pass_rate": d_rate,
             "over_refusal_rate": over_refusal, "pass_adjusted_recall": par}
+
+
+def choose_confidence_signal(samples: list[dict], max_d_pass: float) -> tuple[str, dict, dict]:
+    """hybrid_rerank 置信信号选拔:samples 带 signals={信号: 值}(calibration 分片)。
+    每个信号独立走 choose_strategy_threshold(同口径),返回 (胜者, 胜者阈值, 全信号结果)。
+    胜出口径:有可行闸门优先;其间 par 高 → 误拒低 → D 误通过低 → CONFIDENCE_SIGNALS 序靠前
+    (top1 优先,简单优先)。某信号无可行阈值 → ungated 兜底记录,不参与胜出(全部不可行时
+    回 top1,由调用方按既有 ungated 口径处理)。"""
+    results = {}
+    for sig in CONFIDENCE_SIGNALS:
+        ss = [{"bucket": s["bucket"], "should_refuse": s["should_refuse"],
+               "top1": s["signals"][sig], "recall10": s["recall10"]} for s in samples]
+        try:
+            th = choose_strategy_threshold(ss, max_d_pass)
+        except SystemExit:
+            th = _ungated_threshold(ss)
+        th["pareto"] = _pareto_rows(ss, max_d_pass)
+        results[sig] = th
+    gated = [(i, sig) for i, sig in enumerate(CONFIDENCE_SIGNALS)
+             if not results[sig].get("ungated")]
+    if not gated:
+        return "top1", results["top1"], results
+
+    def _key(item) -> tuple:
+        i, sig = item
+        th = results[sig]
+        return (th["pass_adjusted_recall"], -th["over_refusal_rate"],
+                -th["d_pass_rate"], -i)
+
+    winner = max(gated, key=_key)[1]
+    return winner, results[winner], results
 
 
 _JUDGE_JSON_RE = re.compile(r"\{.*\}", re.S)
@@ -194,7 +246,7 @@ def _test_metrics(test_cases: list[dict], strat: str, threshold: float | None) -
     per = []
     for c in test_cases:
         r = c["retrieval"][strat]
-        passed = r["top1"] is not None and (threshold is None or r["top1"] >= threshold)
+        passed = r["gate"] is not None and (threshold is None or r["gate"] >= threshold)
         paths = r["paths"]
         per.append({
             "bucket": c["bucket"], "should_refuse": c["should_refuse"], "passed": passed,
@@ -280,7 +332,7 @@ def _run_generation(test_cases: list[dict], strat: str, threshold: float | None,
     rows = []
     for c in test_cases:
         r = c["retrieval"][strat]
-        low = r["top1"] is None or (threshold is not None and r["top1"] < threshold)
+        low = r["gate"] is None or (threshold is not None and r["gate"] < threshold)
         if low:
             answer, evidence = REFUSAL_ANSWER, []
         else:
@@ -333,6 +385,22 @@ def _render_md(out: dict) -> str:
         lines += ["", "> " + "/".join(ungated) +
                   " 在 D 约束下无可行阈值:ungated=不冻结阈值、有命中即过闸,"
                   "三项指标为不设闸口径,仅供观测(口径经用户批准 2026-09-16)。"]
+    sc = out.get("confidence_signals", {}).get("hybrid_rerank")
+    if sc:
+        chosen = out["thresholds"]["hybrid_rerank"].get("signal")
+        lines += ["", "### hybrid_rerank 置信信号选拔(calibration 分片;✓ = 胜出)", "",
+                  "| signal | threshold | D误通过率 | 误拒率 | pass-adj SR@10 |",
+                  "|---|---|---|---|---|---|"]
+        for sig, th in sc.items():
+            mark = " ✓" if sig == chosen else ""
+            if th.get("ungated"):
+                lines.append(f"| {sig}{mark} | ungated | {th['d_pass_rate']:.3f} | "
+                             f"{th['over_refusal_rate']:.3f} | "
+                             f"{th['pass_adjusted_recall']:.3f} |")
+            else:
+                lines.append(f"| {sig}{mark} | {th['threshold']:.4f} | "
+                             f"{th['d_pass_rate']:.3f} | {th['over_refusal_rate']:.3f} | "
+                             f"{th['pass_adjusted_recall']:.3f} |")
     lines += ["", "## test 分片指标(偶数编号;被拒正例计 0,recall 族只宏平均 A/B/C/E)", "",
               "| strategy | SR@5 | SR@10 | CH@5 | CH@10 | MRR@10 | D拒答正确率 | 误拒率 |",
               "|---|---|---|---|---|---|---|---|"]
@@ -450,22 +518,43 @@ def main(argv: list[str]) -> int:
         for c in cases:  # 检索段:四策略 × 全量 300,min_score=-1 阈值离线施加
             c["retrieval"] = {}
             for strat in STRATEGIES:
-                res = retriever.search(c["query"], strategy=strat, min_score=-1.0,
-                                       query_plan=c["plan"])
-                c["retrieval"][strat] = {
+                res = _search_with_retry(retriever, c["query"], strat, c["plan"])
+                scores = [h.score for h in res.hits[:5]]  # 末级排序分向量,供置信信号离线选拔
+                entry = {
                     "hits": res.hits,
                     "paths": [h.section_path or "" for h in res.hits],
-                    "top1": res.confidence_score,
+                    "top1": scores[0] if scores else None,
+                    "scores": scores,
                     "effective_strategy": res.effective_strategy, "note": res.note,
                 }
+                if strat == "hybrid_rerank":
+                    entry["signals"] = {sig: confidence_from_scores(scores, sig)
+                                        for sig in CONFIDENCE_SIGNALS}
+                c["retrieval"][strat] = entry
         calibration = [c for c in cases if c["split"] == "calibration"]
         thresholds, pareto = {}, {}
+        signal_choice = {}
         for strat in STRATEGIES:
             samples = [{"bucket": c["bucket"], "should_refuse": c["should_refuse"],
                         "top1": c["retrieval"][strat]["top1"],
+                        "signals": c["retrieval"][strat].get("signals"),
                         "recall10": section_recall_at_k(c["retrieval"][strat]["paths"],
                                                         c["gt_groups"], 10)}
                        for c in calibration]
+            if strat == "hybrid_rerank":  # 置信信号选拔:四信号同口径竞争
+                winner, th, all_sig = choose_confidence_signal(samples, max_d_pass)
+                thresholds[strat] = {k: v for k, v in th.items() if k != "pareto"}
+                thresholds[strat]["signal"] = winner
+                pareto[strat] = all_sig[winner]["pareto"]
+                signal_choice[strat] = {s: {k: v for k, v in r.items() if k != "pareto"}
+                                        for s, r in all_sig.items()}
+                print(f"[compare] {strat}: signal={winner} "
+                      f"threshold={fmt_th(thresholds[strat]['threshold'])} "
+                      f"d_pass={thresholds[strat]['d_pass_rate']:.3f} "
+                      f"over_refusal={thresholds[strat]['over_refusal_rate']:.3f} "
+                      f"par={thresholds[strat]['pass_adjusted_recall']:.3f} "
+                      f"(候选信号 {len(all_sig)} 个)")
+                continue
             try:
                 thresholds[strat] = choose_strategy_threshold(samples, max_d_pass)
             except SystemExit:  # D 约束无可行阈值 -> 该臂 ungated 仅观测,不中断
@@ -483,6 +572,11 @@ def main(argv: list[str]) -> int:
                       f"over_refusal={th['over_refusal_rate']:.3f} "
                       f"par={th['pass_adjusted_recall']:.3f} "
                       f"(可行候选 {len(pareto[strat])} 个)")
+        for c in cases:  # 闸值口径:hybrid_rerank 用胜出信号值,其余用 top1
+            for strat in STRATEGIES:
+                r = c["retrieval"][strat]
+                sig = thresholds[strat].get("signal")
+                r["gate"] = r["signals"][sig] if sig else r["top1"]
         test_cases = [c for c in cases if c["split"] == "test"]
         metrics = {strat: _test_metrics(test_cases, strat, thresholds[strat]["threshold"])
                    for strat in STRATEGIES}
@@ -511,8 +605,8 @@ def main(argv: list[str]) -> int:
                 r = c["retrieval"][strat]
                 t = thresholds[strat]["threshold"]
                 entry["strategies"][strat] = {
-                    "top1": r["top1"],
-                    "passed": r["top1"] is not None and (t is None or r["top1"] >= t),
+                    "top1": r["top1"], "gate": r["gate"],
+                    "passed": r["gate"] is not None and (t is None or r["gate"] >= t),
                     "recall10": section_recall_at_k(r["paths"], c["gt_groups"], 10)}
             diagnosis.append(entry)
         out = {
@@ -525,6 +619,7 @@ def main(argv: list[str]) -> int:
             "corpus_chunks": len(chunk_meta), "cases_file": CASES.name,
             "corpus": "knowledge_docs/",
             "thresholds": thresholds, "pareto": pareto,
+            "confidence_signals": signal_choice,
             "test_metrics": metrics,
             "generation": {
                 # 既有字段保持 hybrid_rerank 口径,兼容旧读者;.md 同
