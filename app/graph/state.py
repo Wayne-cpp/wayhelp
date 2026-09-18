@@ -6,7 +6,6 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph.message import add_messages
 
 INTENTS = ("物流", "订单", "商品咨询", "退款退货", "售后", "投诉", "闲聊")
-ROUTES = ("knowledge", "business", "complaint", "chitchat")
 
 # 分流规则写死:(intent, needs_knowledge) → route;needs_knowledge=True 优先于意图名称
 ROUTE_TABLE: dict[tuple[str, bool], str] = {

@@ -23,7 +23,7 @@ class GraphDeps:
     model: Any
     settings: Settings
     retriever: Any   # KnowledgeRetriever | None(测试可注假检索器)
-    store: Any       # SessionStore 协议(log 节点用;本任务可为 None)
+    store: Any       # SessionStore 协议(log 节点用;生产装配必连)
     system_prompt: str = ""  # Task 13 装配传 SERVICE_SYSTEM_PROMPT
 
 
@@ -289,9 +289,11 @@ def build_log_node(deps: GraphDeps):
         if state["suggested_actions"]:
             writer(ev_suggest_actions(result.source_message_id,
                                       state["suggested_actions"]))
-        logger.info("node=log session=%s route=%s steps=%s tokens=%s accounting=%s",
-                    sid, state.get("route"), state.get("agent_steps"),
-                    state.get("agent_tokens"), state.get("token_accounting"))
+        logger.info("node=log session=%s intent=%s needs_knowledge=%s route=%s gate=%s steps=%s tokens=%s accounting=%s",
+                    sid, state.get("intent"), state.get("needs_knowledge"),
+                    state.get("route"), state.get("retrieval_status"),
+                    state.get("agent_steps"), state.get("agent_tokens"),
+                    state.get("token_accounting"))
         return {"messages": state["turn_messages"],
                 "source_message_id": result.source_message_id,
                 "node_trace": [*state["node_trace"], {"node": "log"}]}

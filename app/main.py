@@ -147,7 +147,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
         if owns_runtime and runtime.retriever is not None:
             runtime.retriever.close()
 
-    app = FastAPI(title="wayhelp-ch04", lifespan=lifespan)
+    app = FastAPI(title="wayhelp", lifespan=lifespan)
     app.state.settings = settings
     app.state.model = model
     app.state.store = runtime.store

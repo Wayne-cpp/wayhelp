@@ -28,9 +28,10 @@ def suggest_options(options: list[Literal["转人工", "建工单"]],
                     ticket_type: Literal["售后", "投诉", "咨询"] | None = None) -> str:
     """向用户建议后续可选动作(只建议不执行)。options 取 1~2 个不重复标签;
     含「建工单」时 ticket_type 必填,不含时必须省略。"""
-    return "已记录建议,请收尾答复用户。"
+    return _SUGGEST_OK_TEXT
 
 
+_SUGGEST_OK_TEXT = "已记录建议,请收尾答复用户。"
 _ACTION_ID = {"转人工": "transfer_human", "建工单": "create_ticket"}
 
 
@@ -47,9 +48,9 @@ def _handle_suggest_options(call: dict) -> tuple[ToolMessage, list[dict] | None]
     if ("建工单" in options) != (ttype is not None):
         return _suggest_err(call, "工具参数不合法"), None
     actions = [{"action": _ACTION_ID[o], "label": o} for o in options]
-    if ttype is not None:
-        actions[-1]["ticket_type"] = ttype  # 建工单选项携带类型
-    msg = ToolMessage(content="已记录建议,请收尾答复用户。", tool_call_id=call["id"],
+    if ttype is not None:  # ticket_type 只挂 create_ticket,与选项顺序无关(spec §8)
+        next(a for a in actions if a["action"] == "create_ticket")["ticket_type"] = ttype
+    msg = ToolMessage(content=_SUGGEST_OK_TEXT, tool_call_id=call["id"],
                       name="suggest_options", status="success")
     return msg, actions
 
@@ -110,6 +111,8 @@ def build_agent_node(deps: GraphDeps):
             raise TurnAbortError(code)
 
         def _budget_answer():
+            nonlocal visible_chars
+            visible_chars += len(AGENT_BUDGET_ANSWER)  # 计入可见输出;预算兜底属成功回复,不转超限
             writer(ev_fixed_delta(AGENT_BUDGET_ANSWER))
             turn_messages.append(AIMessage(content=AGENT_BUDGET_ANSWER))
             trace.append({"node": "main_agent", "budget": True, "steps": steps})
@@ -191,6 +194,9 @@ def build_agent_node(deps: GraphDeps):
             if not calls:
                 final = "".join(text_parts).strip() or FALLBACK_ANSWER
                 if not "".join(text_parts).strip():
+                    visible_chars += len(FALLBACK_ANSWER)  # 固定兜底计入可见输出长度
+                    if visible_chars > settings.max_message_chars:
+                        _abort("output_too_long", "回复超出长度限制")
                     writer(ev_fixed_delta(FALLBACK_ANSWER))
                 turn_messages.append(AIMessage(content=final))
                 trace.append({"node": "main_agent", "steps": steps})

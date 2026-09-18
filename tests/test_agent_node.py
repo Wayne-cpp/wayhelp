@@ -132,3 +132,35 @@ async def test_usage_settled_once_when_present():
     out = await node.ainvoke(new_turn_state("查订单"))
     assert out["agent_tokens"] == 100 + 5 + 120 + 10  # 两次调用各结算一次
     assert out["token_accounting"] == "usage"
+
+
+async def test_suggest_options_ticket_type_on_create_ticket_regardless_of_order():
+    """建工单不在末位时 ticket_type 也必须挂 create_ticket(spec §8:仅建工单选项携带)。"""
+    node = _agent([
+        _tool_chunk("suggest_options", {"options": ["建工单", "转人工"],
+                                        "ticket_type": "售后"}, "s1"),
+        ("then", ["好的。"]),
+    ])
+    out = await node.ainvoke(new_turn_state("你们这服务不行"))
+    actions = out["suggested_actions"]
+    assert actions[0]["action"] == "create_ticket" and actions[0]["ticket_type"] == "售后"
+    assert actions[1]["action"] == "transfer_human" and "ticket_type" not in actions[1]
+
+
+async def test_missing_usage_settles_as_estimated_reserve():
+    """缺失 usage:按非零预留结算,token_accounting == estimated(spec §7.3)。"""
+    node = _agent(["直接答复。"])
+    out = await node.ainvoke(new_turn_state("你好"))
+    assert out["token_accounting"] == "estimated"
+    assert out["agent_tokens"] > 0
+
+
+async def test_fixed_fallback_counts_toward_output_cap():
+    """固定兜底计入可见输出长度:流满上限后追加 FALLBACK 即超限(spec §7.2)。"""
+    from app.graph.errors import TurnAbortError
+    node = _agent([
+        _tool_chunk("query_order", {"order_id": "1"}, "c1"), "1234567890",
+        ("then", [("finish", "stop")]),
+    ], max_message_chars=10)
+    with pytest.raises(TurnAbortError):
+        await node.ainvoke(new_turn_state("q"))

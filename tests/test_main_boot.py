@@ -12,7 +12,7 @@ from tests.conftest import FakeStreamModel, make_runtime, make_settings
 def test_create_app_title_is_ch04():
     app = create_app(settings=make_settings(), model=FakeStreamModel([]),
                      runtime=make_runtime(tools=[]))
-    assert app.title == "wayhelp-ch04"
+    assert app.title == "wayhelp"
 
 
 def test_create_app_exposes_knowledge_state():

@@ -80,6 +80,23 @@ async def test_action_404_on_role_or_owner_mismatch(db_session_factory):
         assert resp.status_code == 404
 
 
+async def test_action_404_on_assistant_message(db_session_factory):
+    """source_message_id 指向 assistant 消息 → 404(只允许绑定本轮用户消息)。"""
+    sid, _ = _seed_conversation(db_session_factory)
+    with db_session_factory() as s:
+        ai = Message(conversation_id=int(sid), role="assistant", content="您好")
+        s.add(ai)
+        s.flush()
+        s.commit()
+        ai_id = str(ai.id)
+    app = _make_app(db_session_factory)
+    async with await _client(app) as client:
+        resp = await client.post("/v1/chat/action", json={
+            "user_id": TEST_USER_ID, "session_id": sid, "source_message_id": ai_id,
+            "action": "create_ticket", "ticket_type": "投诉"})
+        assert resp.status_code == 404
+
+
 async def test_action_422_on_bad_params(db_session_factory):
     app = _make_app(db_session_factory)
     async with await _client(app) as client:
