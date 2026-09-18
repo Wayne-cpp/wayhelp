@@ -182,3 +182,33 @@ async def test_gate_fallback_texts():
     out2 = await g.ainvoke({**new_turn_state("q"), "retrieval_status": "low_confidence"})
     assert out2["final_text"] == REFUSAL_ANSWER
     assert out2["turn_messages"][-1].content == REFUSAL_ANSWER  # 进本轮消息
+
+
+from app.graph.nodes import build_fixed_nodes
+from app.prompts.service import CHITCHAT_REPLY, COMPLAINT_REPLY
+
+
+def _fixed_graph(node_name):
+    """固定回复节点首行取 writer,裸调在 langgraph 1.2.11 抛 RuntimeError——
+    按 Task 8 裁决 A 经编译图驱动(nodes.py 实现不加防护),断言与 plan 一致。"""
+    g = StateGraph(ChatGraphState)
+    g.add_node(node_name, build_fixed_nodes()[node_name])
+    g.add_edge(START, node_name)
+    g.add_edge(node_name, END)
+    return g.compile()
+
+
+async def test_complaint_reply_with_two_independent_options():
+    out = await _fixed_graph("complaint_reply").ainvoke(new_turn_state("我要投诉"))
+    assert out["final_text"] == COMPLAINT_REPLY
+    assert out["turn_messages"][-1].content == COMPLAINT_REPLY
+    actions = out["suggested_actions"]
+    assert [a["action"] for a in actions] == ["transfer_human", "create_ticket"]
+    assert actions[0]["label"] == "转人工" and "ticket_type" not in actions[0]
+    assert actions[1]["label"] == "建工单" and actions[1]["ticket_type"] == "投诉"
+
+
+async def test_chitchat_reply_no_model_no_actions():
+    out = await _fixed_graph("chitchat_reply").ainvoke(new_turn_state("你好"))
+    assert out["final_text"] == CHITCHAT_REPLY
+    assert out["suggested_actions"] == []

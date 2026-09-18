@@ -176,3 +176,32 @@ def build_knowledge_nodes(deps: GraphDeps) -> dict:
 
     return {"retrieve": retrieve, "confidence_gate": confidence_gate,
             "gate_fallback": gate_fallback, "route_after_gate": route_after_gate}
+
+
+from app.prompts.service import CHITCHAT_REPLY, COMPLAINT_REPLY
+
+COMPLAINT_ACTIONS = [
+    {"action": "transfer_human", "label": "转人工"},
+    {"action": "create_ticket", "label": "建工单", "ticket_type": "投诉"},
+]
+
+
+def build_fixed_nodes() -> dict:
+    async def complaint_reply(state):
+        writer = get_stream_writer()
+        writer(ev_fixed_delta(COMPLAINT_REPLY))
+        logger.info("node=complaint_reply")
+        return {"final_text": COMPLAINT_REPLY,
+                "suggested_actions": [dict(a) for a in COMPLAINT_ACTIONS],
+                "turn_messages": [*state["turn_messages"], AIMessage(content=COMPLAINT_REPLY)],
+                "node_trace": [*state["node_trace"], {"node": "complaint_reply"}]}
+
+    async def chitchat_reply(state):
+        writer = get_stream_writer()
+        writer(ev_fixed_delta(CHITCHAT_REPLY))
+        logger.info("node=chitchat_reply")  # 零模型调用
+        return {"final_text": CHITCHAT_REPLY,
+                "turn_messages": [*state["turn_messages"], AIMessage(content=CHITCHAT_REPLY)],
+                "node_trace": [*state["node_trace"], {"node": "chitchat_reply"}]}
+
+    return {"complaint_reply": complaint_reply, "chitchat_reply": chitchat_reply}
