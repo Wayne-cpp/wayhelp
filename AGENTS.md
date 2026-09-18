@@ -6,7 +6,7 @@
 ## 怎么跑
 - `uv sync`;`cp .env.example .env` 填 OPENAI_* 与 EMBEDDING_API_KEY
 - `docker compose up -d`(MySQL,首启自动建表)→ `uv run uvicorn --factory app.main:create_app`
-- `uv run pytest`(439 条,需 Docker 在线);页面:`/` 聊天、`/kb` 知识库、`/rag-eval` 评估
+- `uv run pytest`(443 条,需 Docker 在线);页面:`/` 聊天、`/kb` 知识库、`/rag-eval` 评估
 - 细节以 README.md 为准;逐章开发实录在 dev-notes/
 
 ## 目录与约定
@@ -24,5 +24,5 @@
 - 聊天 Agent 无写权限:工具绑定与执行注册表只有 query_order / query_product / query_logistics + suggest_options 伪工具,模型伪造 create_ticket 只回 unknown_tool 不写库;建工单唯一通道 `POST /v1/chat/action`(校验会话/消息归属、绑定 source_message_id、不改 conv.status);「转人工」是纯前端模拟,后端零动作
 
 ## 当前状态(2026-09-18)
-- ch05 完成:聊天主链路切换 LangGraph 图驱动(SSE 协议不变 + suggest_actions 帧),spec §13 验收 11 条集成钉 + SQLite checkpoint 文件级持久化验证全绿,全量 pytest 439 passed;ch04 的 R7 忠实度 1.0 / 覆盖 0.970 / 库外拒答 1.0 成果保留
+- ch05 完成:聊天主链路切换 LangGraph 图驱动(SSE 协议不变 + suggest_actions 帧),spec §13 验收 11 条集成钉 + SQLite checkpoint 文件级持久化验证全绿,全量 pytest 443 passed;ch04 的 R7 忠实度 1.0 / 覆盖 0.970 / 库外拒答 1.0 成果保留
 - 运行入口不变(docker compose up -d → uv run uvicorn app.main:create_app --factory);图工作记忆落 data/checkpoints.db(.gitignore 的 data/ 规则已覆盖);DeepSeek 端点 stream_usage 已联调核实(流式 usage 正常返回)
