@@ -1,7 +1,7 @@
 import pytest
 
 from app.errors import SessionCapacityReachedError
-from app.sessions import InMemorySessionStore, LowConfidenceRecord, StoredMessage
+from app.sessions import CommitTurnResult, InMemorySessionStore, LowConfidenceRecord, StoredMessage
 from tests.conftest import TEST_USER_ID
 
 
@@ -96,3 +96,43 @@ async def test_low_confidence_not_recorded_when_turn_invalid():
     with pytest.raises(ValueError):
         await s.commit_turn(sid, [StoredMessage("assistant", "答")], low_confidence=rec)
     assert s.low_confidence == []
+
+
+async def test_commit_turn_returns_source_message_id():
+    s = InMemorySessionStore(10, 100, 8000)
+    sid = await s.create("u")
+    r1 = await s.commit_turn(sid, _pair("q1", "a1"))
+    r2 = await s.commit_turn(sid, _pair("q2", "a2"))
+    assert isinstance(r1, CommitTurnResult) and isinstance(r2, CommitTurnResult)
+    assert r1.source_message_id != r2.source_message_id  # 稳定且递增的唯一 ID
+    assert r1.source_message_id.isdecimal() and r2.source_message_id.isdecimal()
+
+
+async def test_validate_turn_accepts_multiple_tool_groups():
+    s = InMemorySessionStore(10, 100, 8000)
+    sid = await s.create("u")
+    await s.commit_turn(sid, [
+        StoredMessage("user", "先查订单再查物流"),
+        StoredMessage("assistant", None, tool_calls=[
+            {"name": "query_order", "args": {"order_id": "1001"}, "id": "c1", "type": "tool_call"}]),
+        StoredMessage("tool", "env1", tool_call_id="c1"),
+        StoredMessage("assistant", None, tool_calls=[
+            {"name": "query_logistics", "args": {"order_id": "1001"}, "id": "c2", "type": "tool_call"}]),
+        StoredMessage("tool", "env2", tool_call_id="c2"),
+        StoredMessage("assistant", "订单已发货,派送中"),
+    ])  # 不抛异常即通过
+
+
+async def test_validate_turn_rejects_dangling_second_group():
+    s = InMemorySessionStore(10, 100, 8000)
+    sid = await s.create("u")
+    with pytest.raises(ValueError):
+        await s.commit_turn(sid, [
+            StoredMessage("user", "q"),
+            StoredMessage("assistant", None, tool_calls=[
+                {"name": "query_order", "args": {}, "id": "c1", "type": "tool_call"}]),
+            StoredMessage("tool", "env1", tool_call_id="c1"),
+            StoredMessage("assistant", None, tool_calls=[  # 第二组缺 ToolMessage
+                {"name": "query_logistics", "args": {}, "id": "c2", "type": "tool_call"}]),
+            StoredMessage("assistant", "答"),
+        ])

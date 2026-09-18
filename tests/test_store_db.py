@@ -147,3 +147,18 @@ def test_commit_turn_with_low_confidence(db_session_factory):
         rows = s.query(LowConfidenceQuestion).all()
         assert len(rows) == 1 and rows[0].source == "retrieval_low_conf"
         assert rows[0].conversation_id == int(sid)
+
+
+async def test_commit_turn_returns_db_user_message_id(db_session_factory):
+    store = DbSessionStore(db_session_factory, 8000)
+    sid = await store.create(USER)
+    r = await store.commit_turn(sid, _turn())
+    assert r.source_message_id.isdecimal()
+    # 返回的正是本轮 user 行 id:再查库核对
+    from app.models import Message
+    def _check():
+        with db_session_factory() as s:
+            msg = s.get(Message, int(r.source_message_id))
+            assert msg is not None and msg.role == "user"
+            assert msg.conversation_id == int(sid)
+    await asyncio.to_thread(_check)

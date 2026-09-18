@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import select, update
 
 from app.models import Conversation, LowConfidenceQuestion, Message
-from app.sessions import LowConfidenceRecord, StoredMessage, validate_turn
+from app.sessions import CommitTurnResult, LowConfidenceRecord, StoredMessage, validate_turn
 
 _BIGINT_MAX = (1 << 63) - 1  # conversations.id 为 BIGINT 自增
 
@@ -71,27 +71,26 @@ class DbSessionStore:
             ]
 
     async def commit_turn(self, session_id: str, messages: list[StoredMessage],
-                          low_confidence: LowConfidenceRecord | None = None) -> None:
+                          low_confidence: LowConfidenceRecord | None = None) -> CommitTurnResult:
         validate_turn(messages, max_tool_calls=64)  # DB 侧结构校验;数量上限由编排层把关
-        await asyncio.to_thread(self._commit_sync, session_id, messages, low_confidence)
+        return CommitTurnResult(
+            await asyncio.to_thread(self._commit_sync, session_id, messages, low_confidence))
 
     def _commit_sync(self, session_id: str, messages: list[StoredMessage],
-                     low_confidence: LowConfidenceRecord | None = None) -> None:
+                     low_confidence: LowConfidenceRecord | None = None) -> str:
         cid = int(session_id)
         with self._sf() as s:
-            for m in messages:
-                s.add(Message(
-                    conversation_id=cid,
-                    role=m.role,
-                    content=m.content,
-                    tool_calls=m.tool_calls,
-                    tool_call_id=m.tool_call_id,
-                ))
-            s.execute(
-                update(Conversation)
-                .where(Conversation.id == cid)
-                .values(updated_at=datetime.now())
-            )
+            first = Message(conversation_id=cid, role=messages[0].role,
+                            content=messages[0].content, tool_calls=messages[0].tool_calls,
+                            tool_call_id=messages[0].tool_call_id)
+            s.add(first)
+            s.flush()  # 同事务内取 messages.id;失败整体回滚,不暴露半成品
+            source_id = str(first.id)
+            for m in messages[1:]:
+                s.add(Message(conversation_id=cid, role=m.role, content=m.content,
+                              tool_calls=m.tool_calls, tool_call_id=m.tool_call_id))
+            s.execute(update(Conversation).where(Conversation.id == cid)
+                      .values(updated_at=datetime.now()))
             if low_confidence is not None:
                 s.add(LowConfidenceQuestion(
                     conversation_id=low_confidence.conversation_id,
@@ -100,3 +99,4 @@ class DbSessionStore:
                     reason=low_confidence.reason,
                 ))
             s.commit()  # 任一失败整体回滚(Session 上下文管理器);低置信度入池与消息同事务
+            return source_id

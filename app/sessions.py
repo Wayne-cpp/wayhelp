@@ -21,12 +21,17 @@ class LowConfidenceRecord:
     conversation_id: int | None
 
 
+@dataclass(frozen=True)
+class CommitTurnResult:
+    source_message_id: str  # 本轮用户消息 ID 的十进制字符串(内存实现为分配序号)
+
+
 class SessionStore(Protocol):
     async def create(self, user_id: str) -> str: ...
     async def exists(self, session_id: str, user_id: str) -> bool: ...
     async def snapshot(self, session_id: str) -> list[StoredMessage]: ...
     async def commit_turn(self, session_id: str, messages: list[StoredMessage],
-                          low_confidence: LowConfidenceRecord | None = None) -> None: ...
+                          low_confidence: LowConfidenceRecord | None = None) -> CommitTurnResult: ...
 
 
 def validate_turn(messages: list[StoredMessage], max_tool_calls: int) -> None:
@@ -39,37 +44,38 @@ def validate_turn(messages: list[StoredMessage], max_tool_calls: int) -> None:
     if last.role != "assistant" or not (last.content or "").strip():
         raise ValueError("turn must end with a non-empty assistant message")
     middle = messages[1:-1]
-    tool_calls: list[dict] = []
-    tool_ids: list[str] = []
-    i = 0
-    while i < len(middle):
-        m = middle[i]
+    group_calls: list[dict] = []
+    group_ids: list[str] = []
+
+    def close_group() -> None:
+        if group_calls:
+            expected = [c["id"] for c in group_calls]
+            if sorted(expected) != sorted(group_ids) or len(set(group_ids)) != len(group_ids):
+                raise ValueError("tool call ids and tool messages must match one-to-one")
+            group_calls.clear()
+            group_ids.clear()
+
+    for m in middle:
         if m.role == "assistant":
-            if tool_calls or tool_ids:
-                raise ValueError("assistant tool group must be followed by its tool messages")
-            if m.tool_calls:
-                if len(m.tool_calls) > max_tool_calls:
-                    raise ValueError("too many tool calls in turn")
-                tool_calls = list(m.tool_calls)
-                for call in tool_calls:
-                    cid = call.get("id") if isinstance(call, dict) else None
-                    if not isinstance(cid, str) or not cid or len(cid) > 64:
-                        raise ValueError("invalid tool call id")
-                i += 1
-                continue
-            raise ValueError("middle assistant message without tool calls")
-        if m.role == "tool":
-            if not tool_calls:
+            close_group()  # 新 assistant 出现前先结清上一组
+            if not m.tool_calls:
+                raise ValueError("middle assistant message without tool calls")
+            if len(m.tool_calls) > max_tool_calls:
+                raise ValueError("too many tool calls in turn")
+            for call in m.tool_calls:
+                cid = call.get("id") if isinstance(call, dict) else None
+                if not isinstance(cid, str) or not cid or len(cid) > 64:
+                    raise ValueError("invalid tool call id")
+            group_calls.extend(m.tool_calls)
+        elif m.role == "tool":
+            if not group_calls:
                 raise ValueError("orphan tool message")
             if not m.tool_call_id or len(m.tool_call_id) > 64:
                 raise ValueError("tool message missing tool_call_id")
-            tool_ids.append(m.tool_call_id)
-            i += 1
-            continue
-        raise ValueError(f"unexpected role in turn middle: {m.role}")
-    expected = [c["id"] for c in tool_calls]
-    if sorted(expected) != sorted(tool_ids) or len(set(tool_ids)) != len(tool_ids):
-        raise ValueError("tool call ids and tool messages must match one-to-one")
+            group_ids.append(m.tool_call_id)
+        else:
+            raise ValueError(f"unexpected role in turn middle: {m.role}")
+    close_group()
 
 
 def _turns(messages: list[StoredMessage]) -> list[list[StoredMessage]]:
@@ -91,6 +97,7 @@ class InMemorySessionStore:
         self._max_chars = max_message_chars
         self._max_tool_calls = max_tool_calls_per_turn
         self._sessions: dict[str, list[StoredMessage]] = {}
+        self._msg_seq = 0
         self.low_confidence: list[LowConfidenceRecord] = []
 
     async def create(self, user_id: str) -> str:
@@ -107,7 +114,7 @@ class InMemorySessionStore:
         return list(self._sessions[session_id])
 
     async def commit_turn(self, session_id: str, messages: list[StoredMessage],
-                          low_confidence: LowConfidenceRecord | None = None) -> None:
+                          low_confidence: LowConfidenceRecord | None = None) -> CommitTurnResult:
         validate_turn(messages, self._max_tool_calls)
         for m in messages:
             if m.content is not None and len(m.content) > self._max_chars and m.role != "tool":
@@ -122,3 +129,6 @@ class InMemorySessionStore:
             if len(turns) <= 1:
                 break  # 始终保留最新完整 turn
             del msgs[: len(turns[0])]
+        self._msg_seq += 1  # 校验全过后才分配,与入池同点
+        source_id = str(self._msg_seq)
+        return CommitTurnResult(source_id)
