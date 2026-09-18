@@ -88,3 +88,97 @@ async def test_resolve_reference_passthrough():
     nodes = _nodes("{}")
     out = await nodes["resolve_reference"](new_turn_state("原样 透传"))
     assert out["resolved_query"] == "原样 透传"
+
+
+from app.knowledge.retriever import (
+    NOTE_NOT_BUILT, NOTE_REBUILDING, NOTE_UNCONFIGURED, RetrievalResult,
+)
+from app.graph.nodes import build_knowledge_nodes
+from app.prompts.service import KB_UNAVAILABLE_ANSWER, REFUSAL_ANSWER
+
+
+def _result(note=None, low=False, hits=None, score=0.9):
+    return RetrievalResult(
+        hits=hits or [], requested_strategy="hybrid_rerank",
+        effective_strategy="hybrid_rerank", confidence_score=score,
+        confidence_threshold=0.0553, low_confidence=low, note=note,
+        query_plan=None, leg_counts={"dense": 3, "bm25": 2})
+
+
+class _FakeRetriever:
+    def __init__(self, result=None, exc=None):
+        self._result, self._exc = result, exc
+        self.queries = []
+
+    def search(self, query, **kw):
+        self.queries.append(query)
+        if self._exc:
+            raise self._exc
+        return self._result
+
+
+def _knodes(result=None, exc=None):
+    deps = GraphDeps(model=None, settings=make_settings(),
+                     retriever=_FakeRetriever(result, exc), store=None)
+    return build_knowledge_nodes(deps)
+
+
+async def test_retrieve_ok_snapshot_serializable():
+    import json as _json
+    from app.knowledge.retriever import KnowledgeHit
+    hit = KnowledgeHit(chunk_id=7, score=0.9, category="policy", questions="q",
+                       answer="a", source_doc="d.md", chunk_index=0, section_path="退货")
+    nodes = _knodes(result=_result(hits=[hit]))
+    st = new_turn_state("退货政策")
+    st["resolved_query"] = "退货政策"
+    out = await nodes["retrieve"](st)
+    assert out["retrieval_status"] == "ok"
+    _json.dumps(out["retrieval_result"])  # 快照必须可序列化(进 checkpoint)
+    assert out["retrieval_result"]["hits"][0]["chunk_id"] == 7
+
+
+async def test_retrieve_unavailable_states_not_pooled():
+    for note, code in ((NOTE_UNCONFIGURED, "kb_unconfigured"),
+                       (NOTE_REBUILDING, "kb_rebuilding")):
+        nodes = _knodes(result=_result(note=note, low=True, score=None))
+        st = new_turn_state("q"); st["resolved_query"] = "q"
+        out = await nodes["retrieve"](st)
+        assert out["retrieval_status"] == "unavailable"
+        assert out["retrieval_error_code"] == code  # 即使 low_confidence=True 也不算知识缺口
+
+
+async def test_retrieve_exception_is_unavailable():
+    nodes = _knodes(exc=TimeoutError("timeout"))
+    st = new_turn_state("q"); st["resolved_query"] = "q"
+    out = await nodes["retrieve"](st)
+    assert out["retrieval_status"] == "unavailable"
+    assert out["retrieval_error_code"] == "kb_unavailable"
+
+
+async def test_gate_low_confidence_marks_pool_fields():
+    nodes = _knodes(result=_result(note=NOTE_NOT_BUILT, low=True, score=None))
+    st = new_turn_state("q"); st["resolved_query"] = "q"
+    st.update(await nodes["retrieve"](st))
+    out = await nodes["confidence_gate"](st)
+    assert out["low_conf_source"] == "retrieval_low_conf"
+    assert out["low_conf_reason"]["note"] == NOTE_NOT_BUILT
+    assert nodes["route_after_gate"]({**st, **out}) == "gate_fallback"
+
+
+def _gate_graph(nodes):
+    """gate_fallback 首行取 writer,裸调在 langgraph 1.2.11 抛 RuntimeError——
+    按 Task 8 裁决 A 经编译图驱动(nodes.py 实现不加防护),断言与 plan 一致。"""
+    g = StateGraph(ChatGraphState)
+    g.add_node("gate_fallback", nodes["gate_fallback"])
+    g.add_edge(START, "gate_fallback")
+    g.add_edge("gate_fallback", END)
+    return g.compile()
+
+
+async def test_gate_fallback_texts():
+    g = _gate_graph(_knodes())
+    out = await g.ainvoke({**new_turn_state("q"), "retrieval_status": "unavailable"})
+    assert out["final_text"] == KB_UNAVAILABLE_ANSWER
+    out2 = await g.ainvoke({**new_turn_state("q"), "retrieval_status": "low_confidence"})
+    assert out2["final_text"] == REFUSAL_ANSWER
+    assert out2["turn_messages"][-1].content == REFUSAL_ANSWER  # 进本轮消息
