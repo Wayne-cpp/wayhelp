@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import logging
 from pathlib import Path
 from typing import Any, Callable
 
@@ -95,6 +96,10 @@ def _build_production_runtime(settings: Settings, model) -> AppRuntime:
 
 def create_app(settings: Settings | None = None, model: Any | None = None,
                runtime: AppRuntime | None = None) -> FastAPI:
+    # 最小日志配置(master 裁决):生产侧 root 无 handler 时 wayhelp.graph 的 INFO
+    # 日志(retrieve/confidence_gate 等)无处输出;basicConfig 幂等,已配环境无副作用
+    logging.basicConfig()
+    logging.getLogger("wayhelp.graph").setLevel(logging.INFO)
     settings = settings or Settings()
     if model is None:
         model = ChatOpenAI(
@@ -107,6 +112,11 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     owns_runtime = runtime is None
     if runtime is None:
         runtime = _build_production_runtime(settings, model)
+    elif runtime.session_factory is not None:
+        # 裁决 B:注入 session_factory 的测试/嵌入路径 store 换 DbSessionStore,与生产同构
+        # (spec §13 验收 3/10:消息/低置信入池/动作端点全链路写同一 DB 账本)
+        runtime = replace(runtime, store=DbSessionStore(
+            runtime.session_factory, settings.max_message_chars))
     if count_tokens_approximately([SystemMessage(content=SERVICE_SYSTEM_PROMPT)]) >= settings.max_input_tokens:
         raise RuntimeError("system prompt alone exhausts the input token budget")
 

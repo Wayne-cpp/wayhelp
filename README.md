@@ -1,6 +1,6 @@
 # wayhelp — 电商智能客服
 
-SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,后端走「模型定工具 → 执行 → 结果回灌 → 收敛作答」,回答逐 token 吐出,聊天气泡带工具轨迹徽章;ch03 起叠加 Milvus 向量语义检索,FAQ/政策类问题先查知识库;ch04 起升级四策略混合检索与重排,回答带 [n] 引用角标可回原文,证据不足固定话术拒答并入低置信池。单轮工具调用上限 MAX_TOOL_CALLS_PER_TURN(默认 5,create_ticket 单轮限一次)。
+SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,后端走「模型定工具 → 执行 → 结果回灌 → 收敛作答」,回答逐 token 吐出,聊天气泡带工具轨迹徽章;ch03 起叠加 Milvus 向量语义检索,FAQ/政策类问题先查知识库;ch04 起升级四策略混合检索与重排,回答带 [n] 引用角标可回原文,证据不足固定话术拒答并入低置信池;ch05 起聊天主链路由 LangGraph Workflow 图编排(意图分流 → 强制检索 → 置信度闸 → ReAct 主力 Agent → 单事务落库),投诉/建工单改为前端独立按钮 + 动作端点。单轮工具调用上限 MAX_TOOL_CALLS_PER_TURN(默认 5,create_ticket 单轮限一次)。
 
 ## 环境
 - `uv sync`(自动建 Python 3.12 虚拟环境)
@@ -9,7 +9,7 @@ SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,�
 ## 运行
 ```bash
 docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversations/messages/tickets + 灌 faq seed)
-uv run pytest                 # 测试 365 条(DB 用例需 Docker 在线)
+uv run pytest                 # 测试 439 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
@@ -104,3 +104,11 @@ curl -X POST http://127.0.0.1:8000/v1/extract \
 - 服务单 worker;Milvus Lite 本地库独占打开(文件锁):ingest_docs / mine_qa 等直写 `./data` 库的 CLI 须先停服;`make eval-rag` 用独立临时 Milvus,与在线服务并存无冲突;/rag-eval 就地重跑在 uvicorn 进程内执行,无需停服
 - 修改 `knowledge_docs/` 已导入的文档后,ingest_docs 会因「不覆盖旧知识」拒绝——改库唯一路径:/kb 页「重建索引」或 `POST /kb/api/rebuild`(服内执行,预检评估集 GT 覆盖,全量重置)
 - 评估前置:EMBEDDING_API_KEY 必填(重排密钥回退同 key);生成段还需 OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME;主库须已执行 ch04 DDL(faith_cases 写主业务库)
+
+## LangGraph 图编排与动作端点(ch05 新增)
+
+- 聊天主链路改为 LangGraph Workflow 图驱动(`app/graph/`),SSE 帧协议不变,新增 `suggest_actions` 按钮。图节点链:`START → resolve_reference → classify_intent`,按写死的路由表 `(intent, needs_knowledge)` 分四出口——knowledge(`retrieve → confidence_gate` 过闸进 Agent / 卡闸固定话术)、business(直接进 Agent)、complaint(固定安抚 + 转人工/建工单双按钮)、chitchat(固定话术零模型);四出口全汇 `log` 节点单事务提交(消息、低置信入池、按钮帧都在提交成功后才发)
+- 主力 Agent(`app/graph/agent_node.py`)是图内手写 ReAct 多步循环:绑定三只读业务工具 + `suggest_options` 伪工具,步数与累计 token 预算在每次模型调用前检查;聊天 Agent 无任何写权限
+- 建工单唯一通道:`POST /v1/chat/action`(校验会话与消息归属、绑定产生按钮的那条用户消息,不改会话状态);「转人工」为纯前端模拟
+- 跨轮上下文持久化:AsyncSqliteSaver 落 `data/checkpoints.db`(图工作记忆),MySQL 仍为账本;checkpoint 丢失退化为无历史新会话,不回填
+- 验收:`uv run pytest tests/test_ch05_acceptance.py tests/test_graph_persistence.py -v`(spec §13 验收 11 条集成钉 + SQLite 文件级持久化)

@@ -6,11 +6,11 @@
 ## 怎么跑
 - `uv sync`;`cp .env.example .env` 填 OPENAI_* 与 EMBEDDING_API_KEY
 - `docker compose up -d`(MySQL,首启自动建表)→ `uv run uvicorn --factory app.main:create_app`
-- `uv run pytest`(365 条,需 Docker 在线);页面:`/` 聊天、`/kb` 知识库、`/rag-eval` 评估
+- `uv run pytest`(439 条,需 Docker 在线);页面:`/` 聊天、`/kb` 知识库、`/rag-eval` 评估
 - 细节以 README.md 为准;逐章开发实录在 dev-notes/
 
 ## 目录与约定
-- app/{routers,services,knowledge,prompts,tools,static} 分层自明;knowledge_docs/ 是知识库唯一源;evals/ 评估;`sql/chXX-ddl.sql` 与 `db/init/` 同名 DDL 必须逐字节一致(有测试钉)
+- app/{routers,services,knowledge,prompts,tools,static,graph} 分层自明(app/graph/ 是 ch05 LangGraph 图:state / nodes / agent_node / builder);examples/ 是 ch05 热身留档脚本(bare_agent.py);knowledge_docs/ 是知识库唯一源;evals/ 评估;`sql/chXX-ddl.sql` 与 `db/init/` 同名 DDL 必须逐字节一致(有测试钉)
 - Conventional Commits;改 prompt / 检索 / 知识库后跑全量 pytest 再交付
 
 ## 红线与坑(都踩过)
@@ -21,7 +21,8 @@
 - faith_cases 台账:status 取中文值 未解决/已解决/无需解决;「已解决」=确认真编造且已修(复发自动打回未解决),「无需解决」=裁判误判;`eval_id` 列存 case 编号(如 E40),不是 run_id
 - 改 app/prompts/service.py 条款后:test_prompts.py 有契约断言(REFUSAL_ANSWER 逐字内嵌等),跑全量验证
 - chat.html 走 Vibe Coding 例外(无 TDD),前端逻辑靠 test_chat_page 字符串断言 + 人工点验;dev-notes/ch04.md 含用户本人手写段落,改动前先 `git diff` 看清归属
+- 聊天 Agent 无写权限:工具绑定与执行注册表只有 query_order / query_product / query_logistics + suggest_options 伪工具,模型伪造 create_ticket 只回 unknown_tool 不写库;建工单唯一通道 `POST /v1/chat/action`(校验会话/消息归属、绑定 source_message_id、不改 conv.status);「转人工」是纯前端模拟,后端零动作
 
-## 当前状态(2026-09-17)
-- ch04 完成:R7 评估忠实度 1.0(首次零编造)/ 覆盖 0.970 / 库外拒答 1.0,门槛全过;台账 19 条全部裁决(已解决 10 / 无需解决 9)
-- 工作区有一批未提交优化(prompt 第 12/13 条、多意图 sub_queries 支路、评估链路修复、知识库 4 份文档修订),提交前 `git status` 逐项核对,chat.html 与 dev-notes/ch04.md 的用户改动勿裹挟
+## 当前状态(2026-09-18)
+- ch05 完成:聊天主链路切换 LangGraph 图驱动(SSE 协议不变 + suggest_actions 帧),spec §13 验收 11 条集成钉 + SQLite checkpoint 文件级持久化验证全绿,全量 pytest 439 passed;ch04 的 R7 忠实度 1.0 / 覆盖 0.970 / 库外拒答 1.0 成果保留
+- 运行入口不变(docker compose up -d → uv run uvicorn app.main:create_app --factory);图工作记忆落 data/checkpoints.db(.gitignore 的 data/ 规则已覆盖);DeepSeek 端点 stream_usage 已联调核实(流式 usage 正常返回)

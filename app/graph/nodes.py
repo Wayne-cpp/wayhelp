@@ -141,6 +141,7 @@ def build_knowledge_nodes(deps: GraphDeps) -> dict:
 
     async def confidence_gate(state):
         status = state["retrieval_status"]
+        logger.info("node=confidence_gate status=%s", status)  # spec §6.3:节点进出打 INFO 日志
         trace = [*state["node_trace"], {"node": "confidence_gate", "status": status}]
         if status == "low_confidence":
             r = state["retrieval_result"]
