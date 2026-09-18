@@ -1,0 +1,8 @@
+{"query": "订单 1001 的物流到哪了", "intent": "物流", "needs_knowledge": false, "route": "business"}
+{"query": "保温杯还有库存吗", "intent": "商品咨询", "needs_knowledge": false, "route": "business"}
+{"query": "维修寄修流程是什么", "intent": "售后", "needs_knowledge": true, "route": "knowledge"}
+{"query": "未发货订单如何取消", "intent": "订单", "needs_knowledge": true, "route": "knowledge"}
+{"query": "订单 1001 到哪了,退货运费谁承担", "intent": "物流", "needs_knowledge": true, "route": "knowledge"}
+{"query": "我要投诉你们的服务", "intent": "投诉", "needs_knowledge": false, "route": "complaint"}
+{"query": "我要投诉,并问一下退货运费规则", "intent": "投诉", "needs_knowledge": true, "route": "knowledge"}
+{"query": "你好", "intent": "闲聊", "needs_knowledge": false, "route": "chitchat"}
