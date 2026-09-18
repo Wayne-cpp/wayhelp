@@ -13,6 +13,7 @@ from app.services.chat_service import (
     ErrorEvent,
     PreparedTurn,
     SessionEvent,
+    SuggestActionsEvent,
     ToolEndEvent,
     ToolStartEvent,
 )
@@ -53,6 +54,10 @@ class _EventStream:
                                 "summary": event.summary})
                 elif isinstance(event, CitationsEvent):
                     yield _sse({"type": "citations", "citations": event.citations})
+                elif isinstance(event, SuggestActionsEvent):
+                    yield _sse({"type": "suggest_actions",
+                                "source_message_id": event.source_message_id,
+                                "options": event.options})
                 elif isinstance(event, DoneEvent):
                     yield "data: [DONE]\n\n"
                 elif isinstance(event, ErrorEvent):

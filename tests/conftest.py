@@ -70,6 +70,13 @@ class FakeStreamModel:
         self._bound = [t.name for t in tools]
         return self
 
+    # 裁决适配(Task 13):图的 classify_intent 节点走 ainvoke;返回罐头业务意图
+    # (订单/无需知识 → business 直进 main_agent),不消耗 astream 脚本、不记
+    # received——让 test_chat_api 既有 SSE 协议用例的脚本全数留给 main_agent。
+    async def ainvoke(self, messages, config=None, **kwargs):
+        from langchain_core.messages import AIMessage
+        return AIMessage(content='{"intent":"订单","needs_knowledge":false}')
+
     async def astream(self, messages):
         self.received.append(messages)
         self.received_tools.append(getattr(self, "_bound", None))
@@ -89,3 +96,69 @@ class FakeStreamModel:
             else:
                 yield FakeChunk(item)
             await asyncio.sleep(0)
+
+
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+
+from app.chains.tool_chat_chain import finalize_tool_calls, merge_tool_call_chunks
+
+
+class ScriptedChatModel(BaseChatModel):
+    """脚本化假模型(真 Runnable → LangChain 回调链完整,图 messages 流可用)。
+    scripts: 每段是一次调用的脚本,元素:
+      str → 文本 delta;("tool", [tool_call_chunks]) → 工具调用;
+      ("finish", reason) → finish_reason;("usage", dict) → usage_metadata;
+      Exception → 抛错。bind_tools 记录工具名并返回自身。"""
+
+    scripts: list
+    bound: list | None = None
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def bind_tools(self, tools, **kwargs):
+        self.bound = [t.name for t in tools]
+        return self
+
+    def _next_script(self) -> list:
+        return list(self.scripts.pop(0)) if self.scripts else ["(空)"]
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        text, calls, usage = "", [], None
+        for item in self._next_script():
+            if isinstance(item, Exception):
+                raise item
+            if isinstance(item, str):
+                text += item
+            elif item[0] == "tool":
+                acc: dict[int, dict] = {}
+                merge_tool_call_chunks(acc, item[1])
+                parsed, _ = finalize_tool_calls(acc)
+                calls.extend(parsed)
+            elif item[0] == "usage":
+                usage = item[1]
+        msg = AIMessage(content=text, tool_calls=calls)
+        if usage:
+            msg.usage_metadata = usage
+        return ChatResult(generations=[ChatGeneration(message=msg)])
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        # 回调(on_llm_new_token)由 BaseChatModel.astream 包装层负责,这里只 yield
+        for item in self._next_script():
+            if isinstance(item, Exception):
+                raise item
+            if isinstance(item, str):
+                chunk = AIMessageChunk(content=item)
+            elif item[0] == "tool":
+                chunk = AIMessageChunk(content="", tool_call_chunks=item[1])
+            elif item[0] == "finish":
+                chunk = AIMessageChunk(content="",
+                                       response_metadata={"finish_reason": item[1]})
+            elif item[0] == "usage":
+                chunk = AIMessageChunk(content="", usage_metadata=item[1])
+            else:
+                continue
+            yield ChatGenerationChunk(message=chunk)

@@ -10,9 +10,13 @@ from langchain_core.messages import SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from app.config import Settings
 from app.db import check_ch04_tables, make_engine, make_session_factory, ping
+from app.graph.builder import build_chat_graph
+from app.graph.nodes import GraphDeps
 from app.jobs.runner import JobRunner
 from app.knowledge.embedding import build_embeddings
 from app.knowledge.milvus_store import MilvusKnowledgeStore
@@ -98,6 +102,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
             api_key=settings.openai_api_key,
             base_url=settings.openai_base_url,
             max_tokens=settings.max_output_tokens,
+            stream_usage=True,
         )
     owns_runtime = runtime is None
     if runtime is None:
@@ -114,12 +119,21 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
         raise RuntimeError("extraction few-shot prompt alone exhausts the input token budget")
 
     service = ChatService(runtime.store, model, settings, SERVICE_SYSTEM_PROMPT,
-                          runtime.toolset_factory, session_factory=runtime.session_factory)
+                          session_factory=runtime.session_factory)
+    deps = GraphDeps(model=model, settings=settings, retriever=runtime.retriever,
+                     store=runtime.store, system_prompt=SERVICE_SYSTEM_PROMPT)
+    if not owns_runtime:  # 测试/嵌入路径:内存 checkpointer 即刻可用
+        service.set_graph(build_chat_graph(deps, InMemorySaver()))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        yield
-        await app.state.job_runner.close()   # 先收评估子进程
+        if owns_runtime:  # 生产:SQLite checkpointer 由 lifespan 托管,启停对称
+            async with AsyncSqliteSaver.from_conn_string(settings.checkpoint_db_path) as cp:
+                service.set_graph(build_chat_graph(deps, cp))
+                yield
+        else:
+            yield
+        await app.state.job_runner.close()
         if owns_runtime and runtime.retriever is not None:
             runtime.retriever.close()
 

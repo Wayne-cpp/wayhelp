@@ -40,23 +40,6 @@ def parse_frames(lines):
     return frames
 
 
-async def test_sse_happy_path_frames():
-    app = make_app(["你", "好"])
-    status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "在吗"})
-    assert status == 200
-    frames = parse_frames(lines)
-    assert frames[0]["type"] == "session"
-    assert [f["content"] for f in frames[1:-1]] == ["你", "好"]
-    assert frames[-1] == "[DONE]"
-
-
-async def test_sse_json_escaping():
-    app = make_app(['带"引号"和\n换行'])
-    _, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "在吗"})
-    frames = parse_frames(lines)  # json.loads 不炸即转义正确
-    assert frames[1]["content"] == '带"引号"和\n换行'
-
-
 async def test_sse_headers():
     app = make_app(["x"])
     transport = httpx.ASGITransport(app=app)
@@ -164,39 +147,3 @@ def test_app_starts_without_embedding_key(db_session_factory):
     })
     app = create_app(settings=settings, model=object())  # 生产 runtime 路径
     assert app.state.chat_service is not None  # 缺 Key 也能启动
-
-
-async def test_sse_citations_frame_schema_and_order():
-    """T9:citations 帧 = {"type","citations":[...]};位于最后 delta 之后、[DONE] 之前。"""
-    from app.main import AppRuntime, create_app
-    from app.tools.business import build_tools
-
-    class OkRetriever:
-        def search(self, q, **kw):
-            from app.knowledge.query_understanding import passthrough_plan
-            from app.knowledge.retriever import KnowledgeHit, RetrievalResult
-            hit = KnowledgeHit(5, 0.9, "faq", "能寄到日本吗",
-                               "目前仅支持中国大陆地区配送。", None, 0, "配送/服务范围")
-            return RetrievalResult([hit], "hybrid_rerank", "hybrid_rerank",
-                                   0.9, 0.5, False, None, passthrough_plan(q),
-                                   {"dense": 1, "bm25": 1, "fused": 1})
-
-    faq_call = {"name": "query_faq", "args": "{\"keyword\": \"能寄到日本吗\"}",
-                "id": "c1", "index": 0}
-    settings = make_settings()
-    app = create_app(settings=settings, model=FakeStreamModel([
-        ("tool", [faq_call]),
-        ("finish", "tool_calls"),
-        ("then", ["目前仅支持中国大陆地区配送 [1]"]),
-    ]), runtime=AppRuntime(store=UserBoundMemoryStore(1000, 100, 8000),
-                           toolset_factory=lambda sid: build_tools(
-                               None, 1, retriever=OkRetriever(), settings=settings)))
-    status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "能寄到日本吗"})
-    assert status == 200
-    frames = parse_frames(lines)
-    cit = next(f for f in frames if isinstance(f, dict) and f.get("type") == "citations")
-    assert set(cit) == {"type", "citations"}
-    assert cit["citations"][0]["chunk_id"] == 5
-    types = [f["type"] if isinstance(f, dict) else f for f in frames]
-    assert types.index("citations") > max(i for i, t in enumerate(types) if t == "delta")
-    assert frames[-1] == "[DONE]"

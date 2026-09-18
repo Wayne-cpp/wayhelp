@@ -1,28 +1,57 @@
+"""SSE 帧协议契约(Task 13 重写):经 LangGraph 图驱动,ScriptedChatModel 触发。
+
+query_faq 用例已随工具退出聊天而删除;硬闸门/citations 场景从 query_faq 路径
+迁到预检索路径(经 runtime.retriever 注假检索器)。test_chat_api 迁来的
+帧序/JSON 转义契约也落在本文件(FakeStreamModel 非 Runnable 不发电回调,
+无法再驱动 messages 流)。
+"""
 import httpx
 
-from app.main import create_app
-from app.prompts.service import SERVICE_SYSTEM_PROMPT
-from tests.conftest import (
-    TEST_USER_ID,
-    FakeStreamModel,
-    UserBoundMemoryStore,
-    make_runtime,
-    make_settings,
-)
+from app.main import AppRuntime, create_app
+from app.prompts.service import REFUSAL_ANSWER, SERVICE_SYSTEM_PROMPT
+from tests.conftest import TEST_USER_ID, ScriptedChatModel, UserBoundMemoryStore, make_settings
 from tests.test_chat_api import parse_frames, post_stream
 
-TOOL_CHUNKS = [
-    {"name": "query_order", "args": "{\"order_id\": \"1001\"}", "id": "call_1", "index": 0},
-]
+BUSINESS = ['{"intent":"订单","needs_knowledge":false}']
+KNOWLEDGE = ['{"intent":"售后","needs_knowledge":true}']
+COMPLAINT = ['{"intent":"投诉","needs_knowledge":false}']
+
+ORDER_CALL = [{"name": "query_order", "args": "{\"order_id\": \"1001\"}",
+               "id": "call_1", "index": 0}]
 
 
-def make_app(script):
-    return create_app(settings=make_settings(), model=FakeStreamModel(script),
-                      runtime=make_runtime())
+def make_app(scripts, retriever=None):
+    """scripts:每次模型调用一段,第一段必为分类输出,其后归 main_agent。"""
+    return create_app(
+        settings=make_settings(),
+        model=ScriptedChatModel(scripts=[list(s) for s in scripts]),
+        runtime=AppRuntime(store=UserBoundMemoryStore(1000, 100, 8000),
+                           toolset_factory=lambda sid: [], retriever=retriever))
 
+
+# ---- SSE 帧序协议(自 test_chat_api 迁入) ----
+
+async def test_sse_frame_sequence_session_deltas_done():
+    app = make_app([BUSINESS, ["你", "好"]])
+    status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "在吗"})
+    assert status == 200
+    frames = parse_frames(lines)
+    assert frames[0]["type"] == "session"
+    assert [f["content"] for f in frames[1:-1]] == ["你", "好"]
+    assert frames[-1] == "[DONE]"
+
+
+async def test_sse_json_escaping():
+    app = make_app([BUSINESS, ['带"引号"和\n换行']])
+    _, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "在吗"})
+    frames = parse_frames(lines)  # json.loads 不炸即转义正确
+    assert frames[1]["content"] == '带"引号"和\n换行'
+
+
+# ---- 工具帧 ----
 
 async def test_tool_frames_over_sse():
-    app = make_app([("tool", TOOL_CHUNKS), ("then", ["答", "复"])])
+    app = make_app([BUSINESS, [("tool", ORDER_CALL)], ["答", "复"]])
     payload = {"user_id": TEST_USER_ID, "message": "查订单"}
     status, lines = await post_stream(app, payload)
     assert status == 200
@@ -37,25 +66,39 @@ async def test_tool_frames_over_sse():
 
 
 async def test_tool_end_summary_capped_80():
-    from langchain_core.tools import tool as lc_tool
-
-    @lc_tool
-    def verbose(x: str) -> str:
-        """超长返回"""
-        return "长" * 500
-
-    app = create_app(settings=make_settings(), model=FakeStreamModel(
-        [("tool", [{"name": "verbose", "args": "{\"x\": \"1\"}", "id": "c1", "index": 0}]),
-         ("then", ["答"])]
-    ), runtime=make_runtime(tools=[verbose]))
+    logistics_call = [{"name": "query_logistics", "args": "{\"order_id\": \"1001\"}",
+                       "id": "call_1", "index": 0}]
+    app = make_app([BUSINESS, [("tool", logistics_call)], ["答"]])
     _, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "hi"})
     frames = parse_frames(lines)
     end = next(f for f in frames if isinstance(f, dict) and f.get("type") == "tool_end")
-    assert len(end["summary"]) <= 80
+    assert len(end["summary"]) == 80  # query_logistics 的 mock JSON 远超 80,必被截断
 
+
+# ---- suggest_actions 帧(投诉固定回复) ----
+
+async def test_suggest_actions_frame_over_sse():
+    app = make_app([COMPLAINT])
+    status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "我要投诉"})
+    assert status == 200
+    frames = parse_frames(lines)
+    types = [f["type"] if isinstance(f, dict) else f for f in frames]
+    sugg = next(f for f in frames if isinstance(f, dict)
+                and f.get("type") == "suggest_actions")
+    assert set(sugg) == {"type", "source_message_id", "options"}
+    assert sugg["source_message_id"]  # 绑定产生本轮 user 消息
+    assert [o["action"] for o in sugg["options"]] == ["transfer_human", "create_ticket"]
+    assert sugg["options"][1]["ticket_type"] == "投诉"
+    # 顺序:最后一个 delta 之后、[DONE] 之前(log 提交成功后才发)
+    assert types.index("suggest_actions") > max(
+        i for i, t in enumerate(types) if t == "delta")
+    assert frames[-1] == "[DONE]"
+
+
+# ---- 请求校验(与流无关,原样保留) ----
 
 async def test_invalid_user_id_422():
-    app = make_app(["x"])
+    app = make_app([BUSINESS])
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         resp = await client.post("/v1/chat/stream",
@@ -64,7 +107,7 @@ async def test_invalid_user_id_422():
 
 
 async def test_user_mismatch_404():
-    app = make_app(["答"])
+    app = make_app([BUSINESS])
     _, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "hi"})
     sid = parse_frames(lines)[0]["session_id"]
     transport = httpx.ASGITransport(app=app)
@@ -76,7 +119,7 @@ async def test_user_mismatch_404():
 
 
 async def test_bad_session_id_form_422():
-    app = make_app(["x"])
+    app = make_app([BUSINESS])
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         resp = await client.post("/v1/chat/stream", json={
@@ -89,11 +132,7 @@ def test_system_prompt_rule_demo_data_honesty():
     assert "不得承诺" in SERVICE_SYSTEM_PROMPT
 
 
-# ---- T9:citations 帧 / 硬闸门拒答(SSE 层) ----
-
-FAQ_CALL = {"name": "query_faq", "args": "{\"keyword\": \"能寄到日本吗\"}",
-            "id": "c1", "index": 0}
-
+# ---- 预检索路径:硬闸门拒答 / citations(自 query_faq 路径迁来) ----
 
 class _OkRetriever:
     """一条高置信命中(chunk_id=5)。"""
@@ -118,24 +157,9 @@ class _LowConfRetriever:
                                True, None, passthrough_plan(q), {"dense": 0, "bm25": 0})
 
 
-def _faq_app(retriever, script):
-    from app.main import AppRuntime, create_app
-    from app.tools.business import build_tools
-
-    settings = make_settings()
-    return create_app(settings=settings, model=FakeStreamModel(script),
-                      runtime=AppRuntime(store=UserBoundMemoryStore(1000, 100, 8000),
-                                         toolset_factory=lambda sid: build_tools(
-                                             None, 1, retriever=retriever,
-                                             settings=settings)))
-
-
 async def test_citations_frame_over_sse():
-    app = _faq_app(_OkRetriever(), [
-        ("tool", [FAQ_CALL]),
-        ("finish", "tool_calls"),
-        ("then", ["目前仅支持中国大陆地区配送 [1]"]),
-    ])
+    app = make_app([KNOWLEDGE, ["目前仅支持中国大陆地区配送 [1]"]],
+                   retriever=_OkRetriever())
     status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "能寄到日本吗"})
     assert status == 200
     frames = parse_frames(lines)
@@ -149,13 +173,7 @@ async def test_citations_frame_over_sse():
 
 
 async def test_hard_gate_refusal_frame_over_sse():
-    from app.prompts.service import REFUSAL_ANSWER
-
-    app = _faq_app(_LowConfRetriever(), [
-        ("tool", [FAQ_CALL]),
-        ("finish", "tool_calls"),
-        ("then", ["不应被调用"]),
-    ])
+    app = make_app([KNOWLEDGE, ["不应被调用"]], retriever=_LowConfRetriever())
     status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "能寄到日本吗"})
     assert status == 200
     frames = parse_frames(lines)

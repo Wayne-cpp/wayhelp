@@ -1,48 +1,69 @@
+"""图驱动版 ChatService 契约测试(Task 13 重写)。
+
+退役:旧「两次调用」编排专属契约(调用次数钉、落库剥离第二轮 tool_calls、
+empty_response 帧、query_faq 场景)。SSE 帧协议契约见 test_chat_api_tools;
+锁释放/aclose 的 HTTP 层契约见 test_chat_api 既有用例。
+"""
 import asyncio
 import json
 import logging
+import uuid
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
+from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import Field
 
 from app.errors import MessageTooLongError, SessionNotFoundError
+from app.graph.builder import build_chat_graph
+from app.graph.nodes import GraphDeps
+from app.prompts.service import (
+    AGENT_BUDGET_ANSWER,
+    CHITCHAT_REPLY,
+    COMPLAINT_REPLY,
+    KB_UNAVAILABLE_ANSWER,
+    REFUSAL_ANSWER,
+)
 from app.services.chat_service import (
     ChatService,
+    CitationsEvent,
     DeltaEvent,
     DoneEvent,
     ErrorEvent,
     SessionEvent,
     SessionLockRegistry,
+    SuggestActionsEvent,
 )
 from app.sessions import InMemorySessionStore
-from tests.conftest import (
-    TEST_USER_ID,
-    FakeChunk,
-    FakeStreamModel,
-    UserBoundMemoryStore,
-    make_settings,
-)
+from tests.conftest import TEST_USER_ID, ScriptedChatModel, make_settings
 
 SYSTEM = "你是电商售后客服小蜜。"
 
+# 分类段脚本(经 ainvoke 消耗);其后每段归 main_agent 的一次 astream
+BUSINESS = ['{"intent":"订单","needs_knowledge":false}']
+KNOWLEDGE = ['{"intent":"售后","needs_knowledge":true}']
+CHITCHAT = ['{"intent":"闲聊","needs_knowledge":false}']
 
-def make_service(script, **settings_over):
+
+def make_service(scripts, retriever=None, store=None, **settings_over):
     settings = make_settings(**settings_over)
-    store = InMemorySessionStore(
-        settings.max_sessions, settings.max_messages_per_session, settings.max_message_chars
-    )
-    model = FakeStreamModel(script)
-    return ChatService(store, model, settings, SYSTEM), store, model
+    store = store or InMemorySessionStore(
+        settings.max_sessions, settings.max_messages_per_session, settings.max_message_chars)
+    model = ScriptedChatModel(scripts=[list(s) for s in scripts])
+    service = ChatService(store, model, settings, SYSTEM)
+    deps = GraphDeps(model=model, settings=settings, retriever=retriever,
+                     store=store, system_prompt=SYSTEM)
+    service.set_graph(build_chat_graph(deps, InMemorySaver()))
+    return service, store, model
 
 
-async def collect(service, turn):
-    return [e async for e in service.stream(turn)]
-
+# ---- prepare:长度闸 / token 预算早闸 / 会话解析 ----
 
 async def test_happy_path_commits_turn():
-    service, store, model = make_service(["你好", ",我是", "小蜜"])
-    turn = await service.prepare(TEST_USER_ID, None,"你好")
-    events = await collect(service, turn)
+    service, store, _ = make_service([BUSINESS, ["你好", ",我是", "小蜜"]])
+    turn = await service.prepare(TEST_USER_ID, None, "你好")
+    events = [e async for e in service.stream(turn)]
     assert isinstance(events[0], SessionEvent)
     deltas = [e.content for e in events if isinstance(e, DeltaEvent)]
     assert deltas == ["你好", ",我是", "小蜜"]
@@ -53,33 +74,41 @@ async def test_happy_path_commits_turn():
 
 
 async def test_prepare_reuse_existing_session():
-    service, store, _ = make_service(["答"])
-    turn = await service.prepare(TEST_USER_ID, None,"第一轮")
-    await collect(service, turn)
+    service, store, _ = make_service([BUSINESS, ["答"], BUSINESS, ["答二"]])
+    turn = await service.prepare(TEST_USER_ID, None, "第一轮")
+    [e async for e in service.stream(turn)]
     sid = turn.session_id
     turn2 = await service.prepare(TEST_USER_ID, sid, "第二轮")
-    await collect(service, turn2)
+    [e async for e in service.stream(turn2)]
     assert [m.role for m in await store.snapshot(sid)] == ["user", "assistant"] * 2
 
 
 async def test_prepare_unknown_session_404():
-    service, _, _ = make_service([])
-    import uuid
-
+    service, _, _ = make_service([BUSINESS])
     with pytest.raises(SessionNotFoundError):
         await service.prepare(TEST_USER_ID, str(uuid.uuid4()), "hi")
 
 
 async def test_overlong_input_no_session_created():
-    service, store, _ = make_service([], max_message_chars=10)
+    service, store, _ = make_service([BUSINESS], max_message_chars=10)
     with pytest.raises(MessageTooLongError):
-        await service.prepare(TEST_USER_ID, None,"这" * 20)
+        await service.prepare(TEST_USER_ID, None, "这" * 20)
     assert store._sessions == {}
 
 
+async def test_input_token_budget_gate_in_prepare():
+    """check_input_budget 早闸:系统提示 + 当前输入超预算时,建会话前即拒绝。"""
+    service, store, _ = make_service([BUSINESS], max_input_tokens=5)
+    with pytest.raises(MessageTooLongError):
+        await service.prepare(TEST_USER_ID, None, "一段肯定远超五个 token 的输入文本")
+    assert store._sessions == {}
+
+
+# ---- 锁:注册表语义与图驱动的释放 ----
+
 async def test_release_turn_idempotent():
-    service, _, _ = make_service([])
-    turn = await service.prepare(TEST_USER_ID, None,"hi")
+    service, _, _ = make_service([BUSINESS])
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
     assert turn.lock_key in service._locks._locks  # 持锁期间 registry 保有该 session 条目
     service.release_turn(turn)
     assert turn.lock_key not in service._locks._locks
@@ -88,7 +117,7 @@ async def test_release_turn_idempotent():
 
 
 async def test_acquire_cancelled_while_waiting_rolls_back_user_count():
-    """M2:等待锁的协程被取消,_users 计数必须回滚,不得残留。"""
+    """等待锁的协程被取消,_users 计数必须回滚,不得残留。"""
     reg = SessionLockRegistry()
     await reg.acquire("s1")  # 持有者
     waiter = asyncio.create_task(reg.acquire("s1"))
@@ -99,22 +128,15 @@ async def test_acquire_cancelled_while_waiting_rolls_back_user_count():
         await waiter
     assert reg._users["s1"] == 1  # 回滚等待者的计数,不影响持有者
     reg.release("s1")
-    assert "s1" not in reg._users and "s1" not in reg._locks  # release 语义不变
+    assert "s1" not in reg._users and "s1" not in reg._locks
 
 
-async def test_current_input_enters_prompt_exactly_once():
-    service, _, model = make_service(["ok"])
-    turn = await service.prepare(TEST_USER_ID, None,"独一无二的问题")
-    await collect(service, turn)
-    sent = model.received[0]
-    humans = [m for m in sent if isinstance(m, HumanMessage)]
-    assert sum(1 for m in humans if m.content == "独一无二的问题") == 1
+# ---- 上游错误帧(分类段 / agent 段)与脱敏 ----
 
-
-async def test_upstream_error_no_commit_lock_released():
-    service, store, _ = make_service(["部分", RuntimeError("boom")])
-    turn = await service.prepare(TEST_USER_ID, None,"hi")
-    events = await collect(service, turn)
+async def test_classify_upstream_error_no_commit_lock_released():
+    service, store, _ = make_service([[RuntimeError("boom")]])
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
+    events = [e async for e in service.stream(turn)]
     err = [e for e in events if isinstance(e, ErrorEvent)]
     assert err and err[0].code == "upstream_error"
     assert not any(isinstance(e, DoneEvent) for e in events)
@@ -122,84 +144,105 @@ async def test_upstream_error_no_commit_lock_released():
     assert turn.lock_key not in service._locks._locks
 
 
+async def test_agent_upstream_error_after_partial_delta():
+    service, store, _ = make_service([BUSINESS, ["部分", RuntimeError("boom")]])
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
+    events = [e async for e in service.stream(turn)]
+    deltas = [e.content for e in events if isinstance(e, DeltaEvent)]
+    assert deltas == ["部分"]
+    assert [e.code for e in events if isinstance(e, ErrorEvent)] == ["upstream_error"]
+    assert not any(isinstance(e, DoneEvent) for e in events)
+    assert await store.snapshot(turn.session_id) == []
+    assert turn.lock_key not in service._locks._locks
+
+
 async def test_upstream_error_log_sanitized(caplog):
-    service, _, _ = make_service(["部分", RuntimeError("boom")])
-    turn = await service.prepare(TEST_USER_ID, None,"hi")
-    with caplog.at_level(logging.WARNING, logger="app.services.chat_service"):
-        await collect(service, turn)
+    service, _, _ = make_service([[RuntimeError("boom")]])
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
+    with caplog.at_level(logging.WARNING, logger="wayhelp.graph"):
+        [e async for e in service.stream(turn)]
     joined = "\n".join(r.getMessage() for r in caplog.records)
     assert "upstream error" in joined
     assert "RuntimeError" in joined
     assert "boom" not in joined
 
 
-async def test_toolset_factory_failure_releases_lock():
-    """M3:工具装配(toolset_factory/registry/bind_tools/astream)抛异常时,
-    锁必须随 finally 释放,不得永久持锁。"""
-    settings = make_settings()
-    store = InMemorySessionStore(10, 10, 100)
+async def test_bind_tools_failure_internal_error_lock_released():
+    """节点内装配异常(非 TurnAbort)→ 图异常 → internal_error 帧,锁必须释放。"""
 
-    def boom(sid):
-        raise RuntimeError("toolset boom")
-
-    service = ChatService(store, FakeStreamModel(["答"]), settings, SYSTEM,
-                          toolset_factory=boom)
-    turn = await service.prepare(TEST_USER_ID, None, "hi")
-    with pytest.raises(RuntimeError):
-        await collect(service, turn)
-    assert turn.lock_key not in service._locks._locks
-
-
-async def test_bind_tools_failure_releases_lock():
-    from langchain_core.tools import tool as lc_tool
-
-    @lc_tool
-    def query_order(order_id: str) -> str:
-        """查订单"""
-        return "ok"
-
-    class BindBoomModel(FakeStreamModel):
-        def bind_tools(self, tools):
+    class BindBoomModel(ScriptedChatModel):
+        def bind_tools(self, tools, **kwargs):
             raise RuntimeError("bind boom")
 
     settings = make_settings()
     store = InMemorySessionStore(10, 10, 100)
-    service = ChatService(store, BindBoomModel(["答"]), settings, SYSTEM,
-                          toolset_factory=lambda sid: [query_order])
+    model = BindBoomModel(scripts=[BUSINESS, ["答"]])
+    service = ChatService(store, model, settings, SYSTEM)
+    deps = GraphDeps(model=model, settings=settings, retriever=None,
+                     store=store, system_prompt=SYSTEM)
+    service.set_graph(build_chat_graph(deps, InMemorySaver()))
     turn = await service.prepare(TEST_USER_ID, None, "hi")
-    with pytest.raises(RuntimeError):
-        await collect(service, turn)
+    events = [e async for e in service.stream(turn)]
+    assert [e.code for e in events if isinstance(e, ErrorEvent)] == ["internal_error"]
+    assert await store.snapshot(turn.session_id) == []
     assert turn.lock_key not in service._locks._locks
 
 
+# ---- 长度与预算护栏(agent 段语义) ----
+
 async def test_output_too_long_cancels_no_commit():
-    service, store, _ = make_service(["太" * 30, "多" * 30, "还" * 30], max_message_chars=50)
-    turn = await service.prepare(TEST_USER_ID, None,"hi")
-    events = await collect(service, turn)
+    service, store, _ = make_service(
+        [BUSINESS, ["太" * 30, "多" * 30, "还" * 30]], max_message_chars=50)
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
+    events = [e async for e in service.stream(turn)]
     codes = [e.code for e in events if isinstance(e, ErrorEvent)]
     assert codes == ["output_too_long"]
     assert await store.snapshot(turn.session_id) == []
 
 
 async def test_finish_reason_length_is_failure():
-    service, store, _ = make_service(["被截断的回答", ("finish", "length")])
-    turn = await service.prepare(TEST_USER_ID, None,"hi")
-    events = await collect(service, turn)
+    service, store, _ = make_service([BUSINESS, ["被截断的回答", ("finish", "length")]])
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
+    events = [e async for e in service.stream(turn)]
     assert any(isinstance(e, ErrorEvent) and e.code == "output_too_long" for e in events)
     assert await store.snapshot(turn.session_id) == []
 
 
-async def test_empty_response_is_failure():
-    service, store, _ = make_service(["", "  "])
-    turn = await service.prepare(TEST_USER_ID, None,"hi")
-    events = await collect(service, turn)
-    assert any(isinstance(e, ErrorEvent) and e.code == "empty_response" for e in events)
-    assert await store.snapshot(turn.session_id) == []
+async def test_agent_budget_answer_delta():
+    """max_agent_tokens=1:首轮预留即超,一次模型调用都不发起,兜底话术照常提交。"""
+    service, store, model = make_service([BUSINESS, ["不应被调用"]], max_agent_tokens=1)
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
+    events = [e async for e in service.stream(turn)]
+    deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
+    assert deltas == AGENT_BUDGET_ANSWER
+    assert isinstance(events[-1], DoneEvent)
+    assert len(model.scripts) == 1  # agent 段脚本未消耗
+    assert [m.content for m in await store.snapshot(turn.session_id)] == [
+        "hi", AGENT_BUDGET_ANSWER]
 
+
+# ---- 工具往返与落库 envelope ----
+
+async def test_stored_tool_envelope_keeps_real_error_code():
+    """落库 tool 行 envelope 的 error_code 必须是 executor 的真实码
+    (unknown_tool / invalid_args),不得一律写 tool_error。"""
+    ghost = {"name": "ghost_tool", "args": "{\"x\": \"1\"}", "id": "call_1", "index": 0}
+    bad = {"name": "query_order", "args": "{\"order_id\": {}}", "id": "call_2", "index": 1}
+    service, store, _ = make_service([BUSINESS, [("tool", [ghost, bad])], ["最终答复"]])
+    turn = await service.prepare(TEST_USER_ID, None, "两个工具调用")
+    events = [e async for e in service.stream(turn)]
+    assert any(isinstance(e, DoneEvent) for e in events)  # 工具失败不阻断本轮
+    tool_rows = [m for m in await store.snapshot(turn.session_id) if m.role == "tool"]
+    assert len(tool_rows) == 2
+    codes = {m.tool_call_id: json.loads(m.content)["error_code"] for m in tool_rows}
+    assert codes == {"call_1": "unknown_tool", "call_2": "invalid_args"}
+
+
+# ---- 提交与取消 ----
 
 async def test_done_send_fail_keeps_full_turn():
-    service, store, _ = make_service(["完整回答"])
-    turn = await service.prepare(TEST_USER_ID, None,"hi")
+    service, store, _ = make_service([BUSINESS, ["完整回答"]])
+    turn = await service.prepare(TEST_USER_ID, None, "hi")
     agen = service.stream(turn)
     async for event in agen:
         if isinstance(event, DoneEvent):
@@ -209,17 +252,41 @@ async def test_done_send_fail_keeps_full_turn():
     assert turn.lock_key not in service._locks._locks
 
 
+class GatedScriptedModel(ScriptedChatModel):
+    """agent 段 astream:先出一个 token,挂起等 gate,再出收尾 token。
+    langchain-core 1.6.2 的 ainvoke 会走覆写后的 _astream 聚合,故按首条消息
+    区分调用方:HumanMessage=分类节点(照常弹脚本),SystemMessage=main_agent。"""
+
+    gate: object = None
+    received: list = Field(default_factory=list)
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        from langchain_core.messages import HumanMessage
+        if isinstance(messages[0], HumanMessage):
+            async for chunk in super()._astream(
+                    messages, stop=stop, run_manager=run_manager, **kwargs):
+                yield chunk
+            return
+        self.received.append(messages)
+        yield ChatGenerationChunk(message=AIMessageChunk(content="开始"))
+        await self.gate.wait()
+        yield ChatGenerationChunk(message=AIMessageChunk(content="结束"))
+
+
 async def test_cancel_before_commit_no_partial_turn():
     gate = asyncio.Event()
     settings = make_settings()
     store = InMemorySessionStore(10, 10, 100)
-    model = GatedModel(gate)
+    model = GatedScriptedModel(scripts=[BUSINESS], gate=gate)
     service = ChatService(store, model, settings, SYSTEM)
+    deps = GraphDeps(model=model, settings=settings, retriever=None,
+                     store=store, system_prompt=SYSTEM)
+    service.set_graph(build_chat_graph(deps, InMemorySaver()))
 
     holder = {}
 
     async def run():
-        turn = await service.prepare(TEST_USER_ID, None,"hi")
+        turn = await service.prepare(TEST_USER_ID, None, "hi")
         holder["turn"] = turn
         async for _ in service.stream(turn):
             pass
@@ -235,78 +302,6 @@ async def test_cancel_before_commit_no_partial_turn():
     assert turn.lock_key not in service._locks._locks
 
 
-async def test_tool_context_too_long_when_dropping_human_would_fit():
-    """预算卡在「含当前 human 超限 / 不含当前 human 达标」窗口:必须发 tool_context_too_long,
-    不得丢掉当前 human 后在没有用户问题的上下文里静默第二次调用(review I1 调用点 off-by-one)。"""
-    from langchain_core.tools import tool as lc_tool
-
-    @lc_tool
-    def query_order(order_id: str) -> str:
-        """查订单"""
-        return "长" * 400
-
-    # count_tokens_approximately: [sys,human,ai,tool]=151 > 147 >= [sys,ai,tool]=144
-    settings = make_settings(max_input_tokens=147)
-    store = InMemorySessionStore(10, 10, 100)
-    model = FakeStreamModel([
-        ("tool", [{"name": "query_order", "args": "{\"order_id\": \"1001\"}",
-                   "id": "call_1", "index": 0}]),
-        ("then", ["最终答复"]),
-    ])
-    service = ChatService(store, model, settings, SYSTEM,
-                          toolset_factory=lambda sid: [query_order])
-    turn = await service.prepare(TEST_USER_ID, None, "查订单 1001 的物流")
-    events = await collect(service, turn)
-    codes = [e.code for e in events if isinstance(e, ErrorEvent)]
-    assert codes == ["tool_context_too_long"]
-    assert len(model.received) == 1  # 第二次调用不得发生(旧写法会删当前 human 后继续)
-    assert await store.snapshot(turn.session_id) == []
-
-
-async def test_stored_tool_envelope_keeps_real_error_code():
-    """M1:落库 tool 行 envelope 的 error_code 必须是 executor 的真实码
-    (unknown_tool / invalid_args),不得一律写 tool_error。"""
-    from langchain_core.tools import tool as lc_tool
-
-    @lc_tool
-    def strict_tool(n: int) -> str:
-        """严格参数"""
-        return str(n)
-
-    settings = make_settings()
-    store = InMemorySessionStore(10, 10, 100)
-    model = FakeStreamModel([
-        ("tool", [
-            {"name": "ghost_tool", "args": "{\"x\": \"1\"}", "id": "call_1", "index": 0},
-            {"name": "strict_tool", "args": "{\"n\": \"不是数字\"}", "id": "call_2", "index": 1},
-        ]),
-        ("then", ["最终答复"]),
-    ])
-    service = ChatService(store, model, settings, SYSTEM,
-                          toolset_factory=lambda sid: [strict_tool])
-    turn = await service.prepare(TEST_USER_ID, None, "两个工具调用")
-    events = await collect(service, turn)
-    assert any(isinstance(e, DoneEvent) for e in events)  # 工具失败不阻断本轮
-    tool_rows = [m for m in await store.snapshot(turn.session_id) if m.role == "tool"]
-    assert len(tool_rows) == 2
-    codes = {m.tool_call_id: json.loads(m.content)["error_code"] for m in tool_rows}
-    assert codes == {"call_1": "unknown_tool", "call_2": "invalid_args"}
-
-
-class GatedModel(FakeStreamModel):
-    """每次 astream 在首尾 delta 之间等待 gate;"finish" 后计数。"""
-
-    def __init__(self, gate: asyncio.Event):
-        super().__init__([])
-        self.gate = gate
-
-    async def astream(self, messages):
-        self.received.append(messages)
-        yield FakeChunk("开始")
-        await self.gate.wait()
-        yield FakeChunk("结束")
-
-
 async def _run_full(service, session_id, message):
     turn = await service.prepare(TEST_USER_ID, session_id, message)
     events = [e async for e in service.stream(turn)]
@@ -317,8 +312,11 @@ async def test_same_session_serialized():
     gate = asyncio.Event()
     settings = make_settings()
     store = InMemorySessionStore(10, 10, 100)
-    model = GatedModel(gate)
+    model = GatedScriptedModel(scripts=[BUSINESS, BUSINESS], gate=gate)
     service = ChatService(store, model, settings, SYSTEM)
+    deps = GraphDeps(model=model, settings=settings, retriever=None,
+                     store=store, system_prompt=SYSTEM)
+    service.set_graph(build_chat_graph(deps, InMemorySaver()))
 
     task1 = asyncio.create_task(_run_full(service, None, "一"))
     await asyncio.sleep(0.05)
@@ -331,15 +329,19 @@ async def test_same_session_serialized():
     (events1, sid1), (events2, sid2) = await asyncio.gather(task1, task2)
     assert sid1 == sid2
     assert len(model.received) == 2
-    assert [m.content for m in await store.snapshot(sid1)] == ["一", "开始结束", "二", "开始结束"]
+    assert [m.content for m in await store.snapshot(sid1)] == [
+        "一", "开始结束", "二", "开始结束"]
 
 
 async def test_different_sessions_concurrent():
     gate = asyncio.Event()
     settings = make_settings()
     store = InMemorySessionStore(10, 10, 100)
-    model = GatedModel(gate)
+    model = GatedScriptedModel(scripts=[BUSINESS, BUSINESS], gate=gate)
     service = ChatService(store, model, settings, SYSTEM)
+    deps = GraphDeps(model=model, settings=settings, retriever=None,
+                     store=store, system_prompt=SYSTEM)
+    service.set_graph(build_chat_graph(deps, InMemorySaver()))
 
     task1 = asyncio.create_task(_run_full(service, None, "甲"))
     task2 = asyncio.create_task(_run_full(service, None, "乙"))
@@ -352,11 +354,32 @@ async def test_different_sessions_concurrent():
     assert [m.content for m in await store.snapshot(sid2)] == ["乙", "开始结束"]
 
 
-# ---- T9:检索硬闸门 / 自评拒答 / citations 帧 ----
+# ---- 固定回复节点与 suggest_actions ----
 
-FAQ_CALL = {"name": "query_faq", "args": "{\"keyword\": \"能寄到日本吗\"}",
-            "id": "c1", "index": 0}
+async def test_chitchat_zero_model_calls():
+    service, store, model = make_service([CHITCHAT])
+    turn = await service.prepare(TEST_USER_ID, None, "你好")
+    events = [e async for e in service.stream(turn)]
+    deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
+    assert deltas == CHITCHAT_REPLY
+    assert len(model.scripts) == 0  # 分类段已消耗,固定回复零模型调用
+    assert isinstance(events[-1], DoneEvent)
 
+
+async def test_complaint_fixed_reply_and_suggest_actions_event():
+    service, store, _ = make_service([['{"intent":"投诉","needs_knowledge":false}']])
+    turn = await service.prepare(TEST_USER_ID, None, "服务太差,我要投诉")
+    events = [e async for e in service.stream(turn)]
+    deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
+    assert deltas == COMPLAINT_REPLY
+    sugg = next(e for e in events if isinstance(e, SuggestActionsEvent))
+    assert sugg.source_message_id  # log 提交后回传的本轮 user 消息 id
+    assert [o["action"] for o in sugg.options] == ["transfer_human", "create_ticket"]
+    assert sugg.options[1]["ticket_type"] == "投诉"
+    assert isinstance(events[-1], DoneEvent)
+
+
+# ---- T9 语义(经预检索路径):硬闸门 / 自评拒答 / citations / 故障不入池 ----
 
 def _faq_hit():
     from app.knowledge.retriever import KnowledgeHit
@@ -385,34 +408,16 @@ class OkRetriever:
                                {"dense": 1, "bm25": 1, "fused": 1})
 
 
-def make_faq_service(retriever, script):
-    from app.tools.business import build_tools
-
-    settings = make_settings()
-    store = UserBoundMemoryStore(1000, 100, 8000)
-
-    def factory(sid):
-        return build_tools(None, 1, retriever=retriever, settings=settings)
-
-    model = FakeStreamModel(script)
-    return ChatService(store, model, settings, SYSTEM, factory), store, model
-
-
-async def test_hard_gate_refusal_skips_second_call():
-    from app.prompts.service import REFUSAL_ANSWER
-    from app.services.chat_service import CitationsEvent
-
-    svc, store, model = make_faq_service(LowConfRetriever(), [
-        ("tool", [FAQ_CALL]),
-        ("finish", "tool_calls"),
-        ("then", ["不应被调用"]),
-    ])
-    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
-    events = [e async for e in svc.stream(turn)]
+async def test_hard_gate_refusal_skips_agent():
+    service, store, model = make_service(
+        [KNOWLEDGE, ["不应被调用"]], retriever=LowConfRetriever())
+    turn = await service.prepare(TEST_USER_ID, None, "能寄到日本吗")
+    events = [e async for e in service.stream(turn)]
     deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
     assert deltas == REFUSAL_ANSWER
-    assert len(model.received) == 1                  # 第二次模型调用未发生
+    assert len(model.scripts) == 1                  # 硬闸门不发起模型调用
     assert not any(isinstance(e, CitationsEvent) for e in events)  # 拒答不推引用帧
+    assert isinstance(events[-1], DoneEvent)
     rec = store.low_confidence[0]
     assert rec.source == "retrieval_low_conf"
     for key in ("requested_strategy", "effective_strategy", "top1", "threshold", "note"):
@@ -421,19 +426,13 @@ async def test_hard_gate_refusal_skips_second_call():
 
 
 async def test_self_check_refusal_pools_self_check():
-    from app.prompts.service import REFUSAL_ANSWER
-    from app.services.chat_service import CitationsEvent
-
-    svc, store, model = make_faq_service(OkRetriever(), [
-        ("tool", [FAQ_CALL]),
-        ("finish", "tool_calls"),
-        ("then", [REFUSAL_ANSWER]),   # 检索 ok,模型第二次调用精确输出拒答话术
-    ])
-    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
-    events = [e async for e in svc.stream(turn)]
+    service, store, model = make_service(
+        [KNOWLEDGE, [REFUSAL_ANSWER]], retriever=OkRetriever())
+    turn = await service.prepare(TEST_USER_ID, None, "能寄到日本吗")
+    events = [e async for e in service.stream(turn)]
     deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
     assert deltas == REFUSAL_ANSWER
-    assert len(model.received) == 2                   # 自评路径仍走第二次调用
+    assert len(model.scripts) == 0                  # 自评路径走模型(脚本已消耗)
     assert not any(isinstance(e, CitationsEvent) for e in events)
     rec = store.low_confidence[0]
     assert rec.source == "self_check"
@@ -441,65 +440,35 @@ async def test_self_check_refusal_pools_self_check():
 
 
 async def test_citations_event_pushed_with_evidence():
-    from app.services.chat_service import CitationsEvent
-    from app.tool_envelope import unwrap, unwrap_metadata
-
-    svc, store, model = make_faq_service(OkRetriever(), [
-        ("tool", [FAQ_CALL]),
-        ("finish", "tool_calls"),
-        ("then", ["目前仅支持中国大陆地区配送 [1]"]),
-    ])
-    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
-    events = [e async for e in svc.stream(turn)]
+    service, store, _ = make_service(
+        [KNOWLEDGE, ["目前仅支持中国大陆地区配送 [1]"]], retriever=OkRetriever())
+    turn = await service.prepare(TEST_USER_ID, None, "能寄到日本吗")
+    events = [e async for e in service.stream(turn)]
     cit = next(e for e in events if isinstance(e, CitationsEvent))
     assert cit.citations[0]["ref_no"] == 1 and cit.citations[0]["chunk_id"] == 5
-    # 顺序:citations 在最后一个 delta 之后、Done 之前
+    # 顺序:citations 在最后一个 delta 之后、Done 之前(log 提交成功后才发)
     types = [type(e).__name__ for e in events]
     assert types.index("CitationsEvent") < types.index("DoneEvent")
     assert types.index("CitationsEvent") > max(
         i for i, t in enumerate(types) if t == "DeltaEvent")
-    assert store.low_confidence == []                 # 正常作答不入池
-    # 三处同一份列表:citations 帧 = query_faq 出参 evidence = envelope v2 metadata
-    tool_row = next(m for m in await store.snapshot(turn.session_id) if m.role == "tool")
-    body, ok = unwrap(tool_row.content)
-    assert ok and json.loads(body)["evidence"] == cit.citations
-    md = unwrap_metadata(tool_row.content)
-    assert md["citations"] == cit.citations
-    assert md["retrieval"]["confidence_score"] == 0.9
-    assert md["retrieval"]["effective_strategy"] == "hybrid_rerank"
+    assert store.low_confidence == []               # 正常作答不入池
 
 
-async def test_tool_error_not_pooled():
+async def test_kb_unavailable_not_pooled():
     from app.knowledge.query_understanding import passthrough_plan
     from app.knowledge.retriever import NOTE_REBUILDING, RetrievalResult
-    from app.services.chat_service import CitationsEvent
 
     class RebuildingRetriever:
         def search(self, q, **kw):
             return RetrievalResult([], "hybrid_rerank", "hybrid_rerank", None, 0.5,
                                    True, NOTE_REBUILDING, passthrough_plan(q), {})
 
-    svc, store, model = make_faq_service(RebuildingRetriever(), [
-        ("tool", [FAQ_CALL]),
-        ("finish", "tool_calls"),
-        ("then", ["知识库正在维护,请稍后再试"]),
-    ])
-    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
-    events = [e async for e in svc.stream(turn)]
+    service, store, model = make_service(
+        [KNOWLEDGE, ["不应被调用"]], retriever=RebuildingRetriever())
+    turn = await service.prepare(TEST_USER_ID, None, "能寄到日本吗")
+    events = [e async for e in service.stream(turn)]
     deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
-    assert deltas == "知识库正在维护,请稍后再试"     # 系统故障走第二次模型如实说明
-    assert len(model.received) == 2
+    assert deltas == KB_UNAVAILABLE_ANSWER          # 系统故障固定话术,不入 Agent
+    assert len(model.scripts) == 1
     assert not any(isinstance(e, CitationsEvent) for e in events)
-    assert store.low_confidence == []                 # 系统故障不入池
-
-
-async def test_query_faq_twice_in_one_turn_rejected():
-    chunks = [
-        {"name": "query_faq", "args": "{\"keyword\": \"a\"}", "id": "c1", "index": 0},
-        {"name": "query_faq", "args": "{\"keyword\": \"b\"}", "id": "c2", "index": 1},
-    ]
-    svc, store, model = make_faq_service(OkRetriever(), [("tool", chunks)])
-    turn = await svc.prepare(TEST_USER_ID, None, "能寄到日本吗")
-    events = [e async for e in svc.stream(turn)]
-    assert events[-1].code == "invalid_tool_call"      # query_faq 每轮最多一次
-    assert await store.snapshot(turn.session_id) == []
+    assert store.low_confidence == []               # 系统故障不入池
