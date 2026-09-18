@@ -63,3 +63,14 @@ def test_chat_page_citations_and_feedback():
     assert "cite-pop" in html and "data-n" in html
     assert "feedback" in html and "已反馈" in html and 'localStorage' in html
     assert "👍" in html and "👎" in html
+
+
+def test_chat_page_action_buttons_logic():
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent
+            / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    for needle in ("suggest_actions", "source_message_id",
+                   "转人工", "建工单",
+                   "已转接人工客服", "您好，我是客服小猫，请问有什么可以帮您的",
+                   "/v1/chat/action", "action-bar", "ticket_type"):
+        assert needle in html
