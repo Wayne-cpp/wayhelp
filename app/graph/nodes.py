@@ -206,3 +206,93 @@ def build_fixed_nodes() -> dict:
                 "node_trace": [*state["node_trace"], {"node": "chitchat_reply"}]}
 
     return {"complaint_reply": complaint_reply, "chitchat_reply": chitchat_reply}
+
+
+import asyncio
+import contextlib
+
+from langchain_core.messages import ToolMessage
+
+from app.graph.events import ev_citations, ev_suggest_actions
+from app.prompts.service import AGENT_BUDGET_ANSWER
+from app.sessions import LowConfidenceRecord, StoredMessage
+from app.tool_envelope import wrap
+
+
+def _to_stored(turn_messages, settings) -> list[StoredMessage]:
+    """本轮消息 → 落库行;临时 SystemMessage 不落库;ToolMessage 打 envelope。"""
+    out: list[StoredMessage] = []
+    for m in turn_messages:
+        if isinstance(m, HumanMessage):
+            out.append(StoredMessage("user", m.content))
+        elif isinstance(m, AIMessage):
+            out.append(StoredMessage("assistant", m.content or None,
+                                     tool_calls=m.tool_calls or None))
+        elif isinstance(m, ToolMessage):
+            ok = m.status != "error"
+            out.append(StoredMessage(
+                "tool",
+                wrap(m.content, ok,
+                     None if ok else m.additional_kwargs.get("error_code", "tool_error"),
+                     settings.max_tool_result_chars),
+                tool_call_id=m.tool_call_id))
+    return out
+
+
+def _build_low_conf(state, cid: int | None) -> LowConfidenceRecord | None:
+    if state["low_conf_source"] == "retrieval_low_conf":
+        return LowConfidenceRecord(
+            raw_question=state["raw_query"], source="retrieval_low_conf",
+            reason=json.dumps(state["low_conf_reason"], ensure_ascii=False),
+            conversation_id=cid)
+    if (state["retrieval_status"] == "ok"
+            and state["final_text"].strip() == REFUSAL_ANSWER):
+        refs = [{"ref_no": e["ref_no"], "chunk_id": e["chunk_id"]}
+                for e in state["evidence"]]
+        return LowConfidenceRecord(
+            raw_question=state["raw_query"], source="self_check",
+            reason=json.dumps({"evidence_refs": refs}, ensure_ascii=False),
+            conversation_id=cid)
+    return None
+
+
+def _should_cite(state) -> bool:
+    if state["route"] != "knowledge" or state["retrieval_status"] != "ok":
+        return False
+    if not state["evidence"]:
+        return False
+    final = state["final_text"].strip()
+    if final in (REFUSAL_ANSWER, AGENT_BUDGET_ANSWER):
+        return False
+    return re.search(r"\[\d{1,2}\]", final) is not None
+
+
+def build_log_node(deps: GraphDeps):
+    async def log_turn(state, config):
+        writer = get_stream_writer()
+        sid = config["configurable"]["thread_id"]
+        stored = _to_stored(state["turn_messages"], deps.settings)
+        cid = int(sid) if sid.isdecimal() else None
+        low_conf = _build_low_conf(state, cid)
+        commit_task = asyncio.ensure_future(
+            deps.store.commit_turn(sid, stored, low_confidence=low_conf))
+        try:
+            result = await asyncio.shield(commit_task)  # 取消时等事务落地
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await commit_task
+            raise
+        # 提交成功后才发 citations / suggest_actions(失败不得发按钮或成功终帧)
+        if _should_cite(state):
+            writer(ev_citations(state["evidence"]))
+        if state["suggested_actions"]:
+            writer(ev_suggest_actions(result.source_message_id,
+                                      state["suggested_actions"]))
+        logger.info("node=log session=%s route=%s steps=%s tokens=%s accounting=%s",
+                    sid, state.get("route"), state.get("agent_steps"),
+                    state.get("agent_tokens"), state.get("token_accounting"))
+        return {"messages": state["turn_messages"],
+                "source_message_id": result.source_message_id,
+                "node_trace": [*state["node_trace"], {"node": "log"}]}
+
+    return log_turn

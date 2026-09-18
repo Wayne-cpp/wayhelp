@@ -212,3 +212,92 @@ async def test_chitchat_reply_no_model_no_actions():
     out = await _fixed_graph("chitchat_reply").ainvoke(new_turn_state("你好"))
     assert out["final_text"] == CHITCHAT_REPLY
     assert out["suggested_actions"] == []
+
+
+from app.graph.nodes import build_log_node
+from app.prompts.service import AGENT_BUDGET_ANSWER
+from app.sessions import InMemorySessionStore
+
+
+def _log_deps(store):
+    return GraphDeps(model=None, settings=make_settings(), retriever=None, store=store)
+
+
+def _config(sid):
+    return {"configurable": {"thread_id": sid}}
+
+
+def _log_graph(store):
+    """log 节点首行取 writer,裸调在 langgraph 1.2.11 抛 RuntimeError——
+    按 Task 8 裁决 A 经编译图驱动(nodes.py 实现不加防护),断言语义与 plan 一致。"""
+    g = StateGraph(ChatGraphState)
+    g.add_node("log", build_log_node(_log_deps(store)))
+    g.add_edge(START, "log")
+    g.add_edge("log", END)
+    return g.compile()
+
+
+async def test_log_commits_and_returns_source_message_id():
+    store = InMemorySessionStore(10, 100, 8000)
+    sid = await store.create("u")
+    st = new_turn_state("你好")
+    st.update({"final_text": "您好", "route": "chitchat"})
+    st["turn_messages"].append(AIMessage(content="您好"))
+    out = await _log_graph(store).ainvoke(st, config=_config(sid))
+    assert out["source_message_id"]  # commit 成功后才返回
+    assert out["messages"] == st["turn_messages"]  # 此刻才追加跨轮历史
+    snap = await store.snapshot(sid)
+    assert [m.role for m in snap] == ["user", "assistant"]
+
+
+async def test_log_pools_retrieval_low_conf():
+    store = InMemorySessionStore(10, 100, 8000)
+    sid = await store.create("u")
+    st = new_turn_state("库外问题")
+    st.update({"final_text": REFUSAL_ANSWER, "route": "knowledge",
+               "retrieval_status": "low_confidence",
+               "low_conf_source": "retrieval_low_conf",
+               "low_conf_reason": {"note": "知识库尚未建立", "top1": None}})
+    st["turn_messages"].append(AIMessage(content=REFUSAL_ANSWER))
+    await _log_graph(store).ainvoke(st, config=_config(sid))
+    assert len(store.low_confidence) == 1
+    assert store.low_confidence[0].source == "retrieval_low_conf"
+    assert store.low_confidence[0].raw_question == "库外问题"
+
+
+async def test_log_pools_self_check_when_ok_but_refusal():
+    store = InMemorySessionStore(10, 100, 8000)
+    sid = await store.create("u")
+    st = new_turn_state("偏门问题")
+    st.update({"final_text": REFUSAL_ANSWER, "route": "knowledge",
+               "retrieval_status": "ok",
+               "evidence": [{"ref_no": 1, "chunk_id": 7, "section_path": "s",
+                             "question": "q", "answer": "a", "category": "c"}]})
+    st["turn_messages"].append(AIMessage(content=REFUSAL_ANSWER))
+    await _log_graph(store).ainvoke(st, config=_config(sid))
+    assert store.low_confidence[0].source == "self_check"
+    assert "chunk_id" in store.low_confidence[0].reason
+
+
+async def test_log_does_not_pool_unavailable_or_budget():
+    store = InMemorySessionStore(10, 100, 8000)
+    sid = await store.create("u")
+    g = _log_graph(store)
+    for status, text in (("unavailable", KB_UNAVAILABLE_ANSWER),
+                         ("ok", AGENT_BUDGET_ANSWER)):
+        st = new_turn_state("q")
+        st.update({"final_text": text, "route": "knowledge",
+                   "retrieval_status": status})
+        st["turn_messages"].append(AIMessage(content=text))
+        await g.ainvoke(st, config=_config(sid))
+    assert store.low_confidence == []
+
+
+def test_should_cite_rules():
+    from app.graph.nodes import _should_cite
+    base = {"route": "knowledge", "retrieval_status": "ok",
+            "evidence": [{"ref_no": 1}], "final_text": "7 天无理由[1]"}
+    assert _should_cite(base) is True
+    assert _should_cite({**base, "route": "business"}) is False
+    assert _should_cite({**base, "final_text": REFUSAL_ANSWER}) is False
+    assert _should_cite({**base, "final_text": "没标角标的答复"}) is False
