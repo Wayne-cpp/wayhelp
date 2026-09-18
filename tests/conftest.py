@@ -50,9 +50,10 @@ def make_settings(**overrides) -> Settings:
 
 class FakeChunk:
     def __init__(self, content: str = "", finish_reason: str | None = None,
-                 tool_call_chunks: list[dict] | None = None):
+                 tool_call_chunks: list[dict] | None = None, usage_metadata: dict | None = None):
         self.content = content
         self.tool_call_chunks = tool_call_chunks or []
+        self.usage_metadata = usage_metadata
         self.response_metadata = {} if finish_reason is None else {"finish_reason": finish_reason}
 
 
@@ -81,6 +82,8 @@ class FakeStreamModel:
                 yield FakeChunk("", item[1])
             elif isinstance(item, tuple) and item[0] == "tool":
                 yield FakeChunk("", tool_call_chunks=item[1])
+            elif isinstance(item, tuple) and item[0] == "usage":
+                yield FakeChunk("", usage_metadata=item[1])
             elif isinstance(item, tuple) and item[0] == "then":
                 self._scripts.insert(0, list(item[1]))
             else:

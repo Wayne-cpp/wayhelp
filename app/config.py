@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     knowledge_strategy: Literal["dense", "bm25", "hybrid", "hybrid_rerank"] = "hybrid_rerank"
     query_rewrite_enabled: bool = True
     knowledge_tool_timeout_seconds: float = Field(default=20, gt=0)
+    max_agent_steps: int = Field(default=8, gt=0)      # main_agent 内模型调用次数上限
+    max_agent_tokens: int = Field(default=20000, gt=0)  # 本轮累计 token 预算(usage 或预留估算)
+    checkpoint_db_path: str = "./data/checkpoints.db"
 
     def has_rerank_key(self) -> bool:
         return bool(self.rerank_api_key.strip() or self.embedding_api_key.strip())

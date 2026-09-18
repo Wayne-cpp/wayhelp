@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from app.chains.chat_chain import check_input_budget
 from app.chains.tool_chat_chain import (
     _validate,
+    build_agent_context,
     build_messages_with_tools,
     finalize_tool_calls,
     fit_tool_context,
@@ -210,3 +211,35 @@ def test_fit_drops_oldest_history_turn_keeps_current_human():
         "结果" * 20,
     ]
     assert not any("旧问题" in m.content or "旧回答" in m.content for m in fitted)
+
+
+# ---- build_agent_context(Task 11:ReAct 每步上下文组装/裁剪)----
+
+
+def _group(call_id, name):
+    return [StoredMessage("assistant", None, tool_calls=[
+                {"name": name, "args": {}, "id": call_id, "type": "tool_call"}]),
+            StoredMessage("tool", wrap("结果", True, None, 4000), tool_call_id=call_id)]
+
+
+def test_rebuild_messages_multi_group_roundtrip():
+    stored = ([StoredMessage("user", "q")] + _group("c1", "query_order")
+              + _group("c2", "query_logistics") + [StoredMessage("assistant", "答")])
+    msgs = rebuild_messages(stored)
+    assert [m.type for m in msgs] == ["human", "ai", "tool", "ai", "tool", "ai"]
+    assert msgs[1].tool_calls[0]["id"] == "c1" and msgs[3].tool_calls[0]["id"] == "c2"
+
+
+def test_build_agent_context_protects_current_turn_and_evidence():
+    history = [HumanMessage(content="旧问" + "长" * 200), AIMessage(content="旧答" * 200)]
+    turn = [HumanMessage(content="当前问题")]
+    out = build_agent_context("系统", history, turn, "本轮证据文本", 10_000)
+    assert [m.content for m in out] == ["系统", "旧问" + "长" * 200, "旧答" * 200,
+                                        "本轮证据文本", "当前问题"]
+    # 预算极小:丢历史也要保住 system + evidence + 当前 turn
+    tight = build_agent_context("系统", history, turn, "本轮证据文本", 60)
+    assert tight is not None
+    assert tight[0].content == "系统" and tight[-1].content == "当前问题"
+    assert "本轮证据文本" in [m.content for m in tight]
+    # 历史丢光仍放不下 → None(调用方发 tool_context_too_long)
+    assert build_agent_context("系统" * 500, [], turn, "证据" * 500, 10) is None

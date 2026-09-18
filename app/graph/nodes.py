@@ -24,6 +24,7 @@ class GraphDeps:
     settings: Settings
     retriever: Any   # KnowledgeRetriever | None(测试可注假检索器)
     store: Any       # SessionStore 协议(log 节点用;本任务可为 None)
+    system_prompt: str = ""  # Task 13 装配传 SERVICE_SYSTEM_PROMPT
 
 
 def parse_intent_output(text: str) -> tuple[str, bool] | None:

@@ -154,3 +154,20 @@ def fit_tool_context(messages: list[BaseMessage], max_input_tokens: int,
         del result[drop_at:nxt]
         protected_from -= nxt - drop_at
     return result
+
+
+def build_agent_context(system_prompt: str, history: list[BaseMessage],
+                        turn_messages: list[BaseMessage], evidence_text: str | None,
+                        max_input_tokens: int) -> list[BaseMessage] | None:
+    """组装并裁剪一次 ReAct 模型调用的上下文。
+    布局:[system, ...历史完整 turn..., evidence?, ...本轮 turn_messages...];
+    裁剪只允许丢最旧的完整历史 turn(fit_tool_context 的区间语义),
+    system/evidence/当前 turn 受保护。返回 None = 历史丢光仍超限(调用方发 tool_context_too_long)。"""
+    evidence = [SystemMessage(content=evidence_text)] if evidence_text else []
+    base = [SystemMessage(content=system_prompt), *history, *evidence, *turn_messages]
+    protected_from = len(base) - len(turn_messages) - len(evidence)
+    if not history:
+        # 无历史可丢:直接判定
+        from langchain_core.messages.utils import count_tokens_approximately
+        return base if count_tokens_approximately(base) <= max_input_tokens else None
+    return fit_tool_context(base, max_input_tokens, protected_from=protected_from)
