@@ -14,7 +14,7 @@ from app.chains.tool_chat_chain import (
     merge_tool_call_chunks,
 )
 from app.config import Settings
-from app.errors import MessageTooLongError, SessionNotFoundError
+from app.errors import AppError, MessageTooLongError, SessionNotFoundError
 from app.prompts.service import REFUSAL_ANSWER
 from app.sessions import LowConfidenceRecord, SessionStore, StoredMessage
 from app.tool_envelope import wrap
@@ -113,12 +113,14 @@ class PreparedTurn:
 
 class ChatService:
     def __init__(self, store: SessionStore, model: Any, settings: Settings,
-                 system_prompt: str, toolset_factory: Callable[[str], list] | None = None):
+                 system_prompt: str, toolset_factory: Callable[[str], list] | None = None,
+                 session_factory=None):
         self._store = store
         self._model = model
         self._settings = settings
         self._system_prompt = system_prompt
         self._toolset_factory = toolset_factory
+        self._session_factory = session_factory
         self._locks = SessionLockRegistry()
 
     async def prepare(self, user_id: str, session_id: str | None, message: str) -> PreparedTurn:
@@ -352,3 +354,36 @@ class ChatService:
         if sum(1 for c in calls if c["name"] == "query_faq") > 1:
             return False  # query_faq 每轮最多一次(完整问题一次传入)
         return True
+
+    async def create_ticket_from_action(self, user_id: str, session_id: str,
+                                        source_message_id: str, ticket_type: str) -> str:
+        if self._session_factory is None:
+            raise AppError("action_unavailable")
+        task = asyncio.ensure_future(asyncio.to_thread(
+            self._create_ticket_sync, user_id, session_id, source_message_id, ticket_type))
+        try:
+            return await asyncio.shield(task)  # 写操作:取消时等事务落地再放行
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await task
+            raise
+
+    def _create_ticket_sync(self, user_id, session_id, source_message_id, ticket_type) -> str:
+        from app.models import Conversation, Message
+        from app.store_db import _as_db_id
+        from app.tools.business import write_ticket
+        cid = _as_db_id(session_id)
+        mid = _as_db_id(source_message_id)
+        if cid is None or mid is None:
+            raise SessionNotFoundError("session not found")
+        with self._session_factory() as s:  # 同一 Session 完成归属/消息查询与写入
+            conv = s.get(Conversation, cid)
+            if conv is None or conv.user_id != user_id:
+                raise SessionNotFoundError("session not found")
+            msg = s.get(Message, mid)
+            if msg is None or msg.conversation_id != cid or msg.role != "user":
+                raise SessionNotFoundError("session not found")  # 404 不泄露其他会话内容
+            ticket_no = write_ticket(s, cid, msg.content or "用户通过快捷操作请求建单",
+                                     ticket_type)
+            s.commit()  # 失败整体回滚;不改 conv.status
+            return ticket_no

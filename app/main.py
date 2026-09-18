@@ -114,7 +114,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
         raise RuntimeError("extraction few-shot prompt alone exhausts the input token budget")
 
     service = ChatService(runtime.store, model, settings, SERVICE_SYSTEM_PROMPT,
-                          runtime.toolset_factory)
+                          runtime.toolset_factory, session_factory=runtime.session_factory)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

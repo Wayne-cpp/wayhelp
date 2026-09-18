@@ -35,6 +35,22 @@ def _require_non_blank(v: str) -> str:
 _SESSION_ID_RE = re.compile(r"^([1-9]\d{0,18}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
 
 
+def _validate_uuid(v: str) -> str:
+    try:
+        uuid.UUID(v)
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("user_id must be a canonical UUID string")
+    return v
+
+
+def _validate_session_id(v: str | None) -> str | None:
+    if v is None:
+        return v
+    if not _SESSION_ID_RE.match(v):
+        raise ValueError("session_id must be a decimal id or canonical UUID string")
+    return v
+
+
 class ChatStreamRequest(BaseModel):
     user_id: str
     session_id: str | None = None
@@ -43,25 +59,45 @@ class ChatStreamRequest(BaseModel):
     @field_validator("user_id")
     @classmethod
     def _user_id_must_be_uuid(cls, v: str) -> str:
-        try:
-            uuid.UUID(v)
-        except (ValueError, AttributeError, TypeError):
-            raise ValueError("user_id must be a canonical UUID string")
-        return v
+        return _validate_uuid(v)
 
     @field_validator("session_id")
     @classmethod
     def _session_id_form(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        if not _SESSION_ID_RE.match(v):
-            raise ValueError("session_id must be a decimal id or canonical UUID string")
-        return v
+        return _validate_session_id(v)
 
     @field_validator("message")
     @classmethod
     def _message_not_blank(cls, v: str) -> str:
         return _require_non_blank(v)
+
+
+_SOURCE_MSG_ID_RE = re.compile(r"^[1-9]\d{0,18}$")
+
+
+class ChatActionRequest(BaseModel):
+    user_id: str
+    session_id: str
+    source_message_id: str
+    action: Literal["create_ticket"]
+    ticket_type: Literal["售后", "投诉", "咨询"]
+
+    @field_validator("user_id")
+    @classmethod
+    def _user_id(cls, v):  # 与 ChatStreamRequest 同一校验
+        return _validate_uuid(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _session_id(cls, v):
+        return _validate_session_id(v)
+
+    @field_validator("source_message_id")
+    @classmethod
+    def _source_msg_id(cls, v: str) -> str:
+        if not _SOURCE_MSG_ID_RE.match(v):
+            raise ValueError("source_message_id must be a decimal id string")
+        return v
 
 
 class ExtractRequest(BaseModel):

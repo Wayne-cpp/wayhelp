@@ -4,7 +4,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from app.schemas import ChatStreamRequest
+from app.schemas import ChatActionRequest, ChatStreamRequest
 from app.services.chat_service import (
     ChatService,
     CitationsEvent,
@@ -87,3 +87,11 @@ async def chat_stream(body: ChatStreamRequest, request: Request) -> StreamingRes
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/v1/chat/action")
+async def chat_action(body: ChatActionRequest, request: Request):
+    service: ChatService = request.app.state.chat_service
+    ticket_no = await service.create_ticket_from_action(
+        body.user_id, body.session_id, body.source_message_id, body.ticket_type)
+    return {"ticket_no": ticket_no, "status": "待处理"}
