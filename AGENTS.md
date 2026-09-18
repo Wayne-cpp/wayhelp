@@ -1,7 +1,7 @@
 # AGENTS.md — wayhelp
 
 ## 定位
-电商智能客服演示项目:FastAPI + SSE 流式聊天,LangChain 工具调用,Milvus Lite 四策略混合检索(dense / bm25 / hybrid / hybrid_rerank)+ 硅基流动重排,deepseek 生成与裁判。分工:MySQL 是账本(知识块/会话/台账),Milvus 是货架(向量)。
+电商智能客服演示项目:FastAPI + SSE 流式聊天,LangGraph Workflow 图编排聊天主链路(意图分流 → 强制检索 → 置信度闸 → 手写 ReAct 主力 Agent),Milvus Lite 四策略混合检索(dense / bm25 / hybrid / hybrid_rerank)+ 硅基流动重排,deepseek 生成与裁判。分工:MySQL 是账本(知识块/会话/台账),Milvus 是货架(向量),SQLite(checkpoints.db)是图工作记忆。
 
 ## 怎么跑
 - `uv sync`;`cp .env.example .env` 填 OPENAI_* 与 EMBEDDING_API_KEY
