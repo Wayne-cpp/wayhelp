@@ -108,6 +108,15 @@ class TurnToolset:
         return self.tools[index]
 
 
+def write_ticket(db_session, conversation_id: int, description: str, ticket_type: str) -> str:
+    """纯写库:只 INSERT tickets 行并 flush;不开 Session、不 commit/rollback,事务归调用者。"""
+    ticket_no = "T" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + secrets.token_hex(6)
+    db_session.add(Ticket(ticket_no=ticket_no, conversation_id=conversation_id,
+                          description=description, ticket_type=ticket_type))
+    db_session.flush()
+    return ticket_no
+
+
 def build_tools(session_factory, conversation_id: int, retriever=None,
                 settings=None) -> TurnToolset:
     """每轮请求构造绑定该会话的工具实例;conversation_id 经闭包注入,不对模型暴露。"""
@@ -149,13 +158,11 @@ def build_tools(session_factory, conversation_id: int, retriever=None,
         ticket_type: Literal["售后", "投诉", "咨询"],
     ) -> str:
         """创建人工工单并转接人工客服。参数 description 为问题描述,ticket_type 只能是 售后/投诉/咨询。"""
-        ticket_no = "T" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + secrets.token_hex(6)
         with session_factory() as s:
             conv = s.get(Conversation, conversation_id)
             if conv is None:
                 raise ValueError("conversation not found")
-            s.add(Ticket(ticket_no=ticket_no, conversation_id=conversation_id,
-                         description=description, ticket_type=ticket_type))
+            ticket_no = write_ticket(s, conversation_id, description, ticket_type)
             conv.status = "已转人工"
             s.commit()  # 工单与会话状态同事务,同成同败
         return _json({"ticket_no": ticket_no, "status": "待处理"})

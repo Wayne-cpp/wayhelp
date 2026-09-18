@@ -132,3 +132,51 @@ def test_turn_toolset_satisfies_legacy_list_contract():
     assert {t.name for t in reg.tools} == {"query_order", "query_product",
                                            "query_logistics", "query_faq", "create_ticket"}
     assert not TurnToolset([], RetrievalTrace())   # make_runtime(tools=[]) 空工具集路径
+
+
+def test_write_ticket_inserts_row_without_commit(db_session_factory):
+    from app.tools.business import write_ticket
+    from app.models import Conversation, Ticket
+    with db_session_factory() as s:
+        conv = Conversation(user_id="u1")
+        s.add(conv)
+        s.flush()
+        ticket_no = write_ticket(s, conv.id, "测试描述", "投诉")
+        s.commit()
+    assert ticket_no.startswith("T")
+    with db_session_factory() as s:
+        row = s.get(Ticket, ticket_no)
+        assert row.description == "测试描述" and row.status == "待处理"
+        assert s.get(Conversation, conv.id).status == "进行中"  # helper 不碰会话状态
+
+
+def test_write_ticket_rollback_leaves_nothing(db_session_factory):
+    from app.tools.business import write_ticket
+    from app.models import Conversation, Ticket
+    import pytest
+    with pytest.raises(Exception), db_session_factory() as s:
+        conv = Conversation(user_id="u1")
+        s.add(conv)
+        s.flush()
+        write_ticket(s, conv.id, "x", "售后")
+        raise RuntimeError("boom")  # 上下文管理器回滚
+    with db_session_factory() as s:
+        assert s.query(Ticket).count() == 0
+
+
+def test_create_ticket_keeps_compat_behavior(db_session_factory):
+    # 旧工具:工单 + conv.status=已转人工 同事务
+    from app.tools.business import build_tools
+    from app.models import Conversation
+    with db_session_factory() as s:
+        conv = Conversation(user_id="u1")
+        s.add(conv)
+        s.commit()
+        cid = conv.id
+    ts = build_tools(db_session_factory, cid)
+    out = ts.tools_by_name["create_ticket"].invoke(
+        {"description": "要投诉", "ticket_type": "投诉"})
+    import json
+    assert json.loads(out)["ticket_no"].startswith("T")
+    with db_session_factory() as s:
+        assert s.get(Conversation, cid).status == "已转人工"
