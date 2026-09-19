@@ -215,3 +215,68 @@ def test_recreate_cycle(tmp_path):
         assert [i for i, _ in s.search_dense([0, 1, 0, 0], 1)] == [2]
     finally:
         s.close()
+
+
+def test_cli_concurrent_first_access_builds_single_client(monkeypatch):
+    """R2(ch06):_cli() 惰性初始化的并发契约——双检锁。构造慢(桩注入延迟)+
+    屏障对齐并发首调,无锁时各线程各建 client,有锁时全线程共享同一实例。"""
+    import threading
+    import time
+
+    import app.knowledge.milvus_store as mod
+
+    constructed = []
+
+    class _SlowCli:
+        def __init__(self, uri):
+            time.sleep(0.05)  # 拉宽竞态窗口(真实 MilvusClient 构造是 C++ IO)
+            constructed.append(uri)
+
+    monkeypatch.setattr(mod, "_load_milvus_client", lambda: _SlowCli)
+    s = MilvusKnowledgeStore("unused.db", dim=4)
+    barrier = threading.Barrier(4)
+    got: list[object] = []
+    lock = threading.Lock()
+
+    def hit():
+        barrier.wait(timeout=10)
+        cli = s._cli()
+        with lock:
+            got.append(cli)
+
+    threads = [threading.Thread(target=hit) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert not any(t.is_alive() for t in threads)
+    assert len(constructed) == 1            # 只构造一次
+    assert all(g is got[0] for g in got)    # 全线程拿到同一实例
+
+
+def test_concurrent_first_access_no_flock_conflict(tmp_path):
+    """R2(ch06)实弹回归:refund_policy 多查询 asyncio.to_thread 并行(spec §6.4)
+    撞进程首次 milvus 访问时,若 _cli() 无锁,两线程各建 MilvusClient → 同进程
+    双 open file description 的 flock 互斥 → DataDirLockedError(Task 12 probe
+    剧本1 T2 实锤的最小复现形态)。并发首调 has_collection() 必须全部无异常。"""
+    import threading
+
+    s = MilvusKnowledgeStore(str(tmp_path / "race.db"), dim=4)
+    barrier = threading.Barrier(4)
+    errors: list[BaseException] = []
+
+    def hit():
+        try:
+            barrier.wait(timeout=10)
+            s.has_collection()
+        except BaseException as exc:  # noqa: BLE001——竞态证据要原样收集
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hit) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert not any(t.is_alive() for t in threads)
+    assert errors == []
+    s.close()

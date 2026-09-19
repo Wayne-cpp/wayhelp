@@ -2,6 +2,7 @@
 BM25 由 Milvus 原生 Function 生成 sparse 列,原文权威源在 MySQL。"""
 
 import os
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -58,11 +59,17 @@ class MilvusKnowledgeStore:
         self._uri = uri
         self._dim = dim
         self._client: "MilvusClient | None" = None
+        self._client_lock = threading.Lock()
         self._loaded = False
 
     def _cli(self) -> "MilvusClient":
+        """双检锁:refund_policy 多查询 asyncio.to_thread 并行(ch06 spec §6.4)
+        撞进程首次访问时,无锁会各建 MilvusClient,同进程双 flock 冲突 →
+        DataDirLockedError 整轮不可用(R2)。"""
         if self._client is None:
-            self._client = _load_milvus_client()(uri=self._uri)
+            with self._client_lock:
+                if self._client is None:
+                    self._client = _load_milvus_client()(uri=self._uri)
         return self._client
 
     def _ensure_loaded(self) -> None:
