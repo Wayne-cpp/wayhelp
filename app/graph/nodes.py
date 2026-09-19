@@ -14,6 +14,8 @@ from app.graph.errors import TurnAbortError
 from app.graph.events import ev_error
 from app.graph.state import INTENTS, ROUTE_TABLE
 from app.prompts.intent import INTENT_PROMPT
+from app.prompts.understand import UNDERSTAND_PROMPT
+from app.services import orders
 
 logger = logging.getLogger("wayhelp.graph")
 
@@ -99,12 +101,75 @@ def route_by_intent(state) -> str:
     return state["route"]
 
 
+def _history_turns(messages, max_turns: int) -> list:
+    """按 HumanMessage 切轮,取最近 max_turns 个完整轮(轮末须有后续消息;末尾未成轮不切)。"""
+    turns: list[list] = []
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            turns.append([m])
+        elif turns:
+            turns[-1].append(m)
+    return [t for t in turns if len(t) >= 2][-max_turns:]
+
+
+def _render_history(turns) -> str:
+    lines: list[str] = []
+    for t in turns:
+        for m in t:
+            if isinstance(m, HumanMessage):
+                lines.append(f"用户:{m.content}")
+            elif isinstance(m, AIMessage) and m.content:
+                lines.append(f"助手:{m.content}")
+    return "\n".join(lines)
+
+
 def build_front_nodes(deps: GraphDeps) -> dict:
-    async def resolve_reference(state):
-        # 最简版:原样透传(正式指代消解是后续章节的事)
-        logger.info("node=resolve_reference query=%r", state["raw_query"][:50])
-        return {"resolved_query": state["raw_query"],
-                "node_trace": [*state["node_trace"], {"node": "resolve_reference"}]}
+    async def understand_query(state, config):
+        trace = [*state["node_trace"], {"node": "understand_query"}]
+        user_id = (config.get("configurable") or {}).get("user_id", "")
+        active = state.get("active_order")
+        active_summary = None
+        if active:
+            o = orders.get_order(user_id, active["order_id"])
+            if o is None:
+                logger.info("node=understand_query active_order 失效清空: %s", active["order_id"])
+                active = None
+            else:
+                active_summary = orders.order_summary(o)
+        turns = _history_turns(state.get("messages") or [],
+                               deps.settings.understand_history_turns)
+        if not turns and active_summary is None:
+            return {"resolved_query": state["raw_query"], "active_order": active,
+                    "node_trace": trace}
+        block_parts = []
+        if turns:
+            block_parts.append("对话历史:\n" + _render_history(turns))
+        if active_summary:
+            block_parts.append("已确认会话订单:" + active_summary)
+        prompt = (UNDERSTAND_PROMPT
+                  .replace("{history_block}", "\n".join(block_parts))
+                  .replace("{query}", state["raw_query"]))
+        try:
+            resp = await deps.model.ainvoke([HumanMessage(content=prompt)])
+            text = resp.content if isinstance(resp.content, str) else ""
+            parsed = parse_understand_output(text)
+            if parsed is None:
+                raise ValueError("parse_understand_output")
+            resolved = parsed.strip() or state["raw_query"]  # 空串 = 透传
+            # 订单号来源校验:输出中的订单号必须可追溯到原文或已校验 active_order(spec §6.1)
+            out_ids = set(orders.find_order_ids(resolved))
+            src_ids = set(orders.find_order_ids(state["raw_query"]))
+            if active:
+                src_ids.add(active["order_id"])
+            if not out_ids <= src_ids:
+                raise ValueError("hallucinated order id")
+        except Exception as exc:
+            logger.warning("node=understand_query 降级透传: %s", type(exc).__name__)
+            return {"resolved_query": state["raw_query"], "understanding_degraded": True,
+                    "active_order": active,
+                    "node_trace": [*trace[:-1], {"node": "understand_query", "degraded": True}]}
+        logger.info("node=understand_query resolved=%r", resolved[:60])
+        return {"resolved_query": resolved, "active_order": active, "node_trace": trace}
 
     async def classify_intent(state):
         writer = get_stream_writer()
@@ -130,7 +195,7 @@ def build_front_nodes(deps: GraphDeps) -> dict:
                                {"node": "classify_intent", "intent": intent,
                                 "confidence": confidence, "route": route}]}
 
-    return {"resolve_reference": resolve_reference, "classify_intent": classify_intent}
+    return {"understand_query": understand_query, "classify_intent": classify_intent}
 
 
 import asyncio

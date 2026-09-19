@@ -136,6 +136,7 @@ async def test_a3_complaint_two_independent_buttons_and_old_button_binds_origina
         db_session_factory):
     app = _make_app(
         [['{"intent":"投诉","confidence":0.95}'],
+         ['{"resolved_query": ""}'],                # 第二轮 understand 罐头透传(有历史)
          ['{"intent":"订单","confidence":0.9}'],
          ["订单状态良好。"]],
         db_sf=db_session_factory)
@@ -241,6 +242,7 @@ async def test_a7_state_reset_between_turns():
     rt = _FakeRetriever(_result(low=True, hits=[], score=0.01))
     app = _make_app(
         [['{"intent":"退款退货","confidence":0.9}'],   # 第一轮:低置信被拒
+         ['{"resolved_query": ""}'],                # 第二轮 understand 罐头透传(有历史)
          ['{"intent":"闲聊","confidence":0.9}'],      # 第二轮:闲聊
          ],
         retriever=rt)

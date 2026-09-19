@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     max_agent_steps: int = Field(default=8, gt=0)      # main_agent 内模型调用次数上限
     max_agent_tokens: int = Field(default=20000, gt=0)  # 本轮累计 token 预算(usage 或预留估算)
     checkpoint_db_path: str = "./data/checkpoints.db"
+    understand_history_turns: int = Field(default=6, gt=0)  # 指代消解输入的最近完整轮数
 
     def has_rerank_key(self) -> bool:
         return bool(self.rerank_api_key.strip() or self.embedding_api_key.strip())

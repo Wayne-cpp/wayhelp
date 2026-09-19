@@ -74,7 +74,9 @@ async def test_happy_path_commits_turn():
 
 
 async def test_prepare_reuse_existing_session():
-    service, store, _ = make_service([BUSINESS, ["答"], BUSINESS, ["答二"]])
+    service, store, _ = make_service([BUSINESS, ["答"],
+                                       ['{"resolved_query": ""}'],  # 第二轮 understand 透传
+                                       BUSINESS, ["答二"]])
     turn = await service.prepare(TEST_USER_ID, None, "第一轮")
     [e async for e in service.stream(turn)]
     sid = turn.session_id
@@ -312,7 +314,8 @@ async def test_same_session_serialized():
     gate = asyncio.Event()
     settings = make_settings()
     store = InMemorySessionStore(10, 10, 100)
-    model = GatedScriptedModel(scripts=[BUSINESS, BUSINESS], gate=gate)
+    model = GatedScriptedModel(scripts=[BUSINESS, ['{"resolved_query": ""}'], BUSINESS],
+                               gate=gate)  # 第二轮开头 understand 罐头透传(有历史)
     service = ChatService(store, model, settings, SYSTEM)
     deps = GraphDeps(model=model, settings=settings, retriever=None,
                      store=store, system_prompt=SYSTEM)

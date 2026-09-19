@@ -27,10 +27,11 @@ async def test_sqlite_checkpoint_survives_reopen(tmp_path):
             ScriptedChatModel(scripts=[['{"intent":"闲聊","needs_knowledge":false}']]),
             store), cp)
         await graph.ainvoke(new_turn_state("你好"), cfg)
-    # 关闭后重开同一文件
+    # 关闭后重开同一文件(第二轮有历史,开头多一段 understand 透传罐头)
     async with AsyncSqliteSaver.from_conn_string(db) as cp2:
         graph2 = build_chat_graph(_deps(
-            ScriptedChatModel(scripts=[['{"intent":"闲聊","needs_knowledge":false}']]),
+            ScriptedChatModel(scripts=[['{"resolved_query": ""}'],
+                                       ['{"intent":"闲聊","needs_knowledge":false}']]),
             store), cp2)
         out = await graph2.ainvoke(new_turn_state("在吗"), cfg)
         texts = [m.content for m in out["messages"]]

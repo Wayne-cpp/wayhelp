@@ -5,7 +5,7 @@ import json
 import logging
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes import (
@@ -13,7 +13,7 @@ from app.graph.nodes import (
     parse_refund_scope_output, parse_understand_output,
 )
 from app.graph.state import ChatGraphState, new_turn_state
-from tests.conftest import make_settings
+from tests.conftest import TEST_USER_ID, make_settings
 
 
 class _ClassifyModel:
@@ -28,21 +28,15 @@ class _ClassifyModel:
         return AIMessage(content=self._text)
 
 
-def _nodes(model_text):
-    deps = GraphDeps(model=_ClassifyModel(model_text), settings=make_settings(),
-                     retriever=None, store=None)
-    return build_front_nodes(deps)
-
-
 def _graph(model):
-    """前段两节点串成最小图:START → resolve_reference → classify_intent → END。"""
+    """前段两节点串成最小图:START → understand_query → classify_intent → END。"""
     nodes = build_front_nodes(GraphDeps(model=model, settings=make_settings(),
                                         retriever=None, store=None))
     g = StateGraph(ChatGraphState)
-    g.add_node("resolve_reference", nodes["resolve_reference"])
+    g.add_node("understand_query", nodes["understand_query"])
     g.add_node("classify_intent", nodes["classify_intent"])
-    g.add_edge(START, "resolve_reference")
-    g.add_edge("resolve_reference", "classify_intent")
+    g.add_edge(START, "understand_query")
+    g.add_edge("understand_query", "classify_intent")
     g.add_edge("classify_intent", END)
     return g.compile()
 
@@ -124,10 +118,104 @@ async def test_classify_model_exception_aborts_with_upstream_error():
         await _graph(_Boom()).ainvoke(new_turn_state("q"))
 
 
-async def test_resolve_reference_passthrough():
-    nodes = _nodes("{}")
-    out = await nodes["resolve_reference"](new_turn_state("原样 透传"))
-    assert out["resolved_query"] == "原样 透传"
+# ── ch06 Task 3:understand_query 指代消解节点 ──
+
+class _UnderstandModel:
+    """按调用返回脚本文本的 ainvoke 桩;记录收到的 prompt。"""
+
+    def __init__(self, texts):
+        self._texts = list(texts)
+        self.prompts = []
+
+    async def ainvoke(self, messages):
+        self.prompts.append(messages[-1].content)
+        return AIMessage(content=self._texts.pop(0))
+
+
+def _understand_graph(model):
+    nodes = build_front_nodes(GraphDeps(model=model, settings=make_settings(),
+                                        retriever=None, store=None))
+    g = StateGraph(ChatGraphState)
+    g.add_node("understand_query", nodes["understand_query"])
+    g.add_edge(START, "understand_query")
+    g.add_edge("understand_query", END)
+    return g.compile()
+
+
+def _cfg(user_id=TEST_USER_ID):
+    return {"configurable": {"thread_id": "1", "user_id": user_id}}
+
+
+async def test_understand_first_turn_skips_llm():
+    model = _UnderstandModel([])
+    out = await _understand_graph(model).ainvoke(new_turn_state("你好"), config=_cfg())
+    assert out["resolved_query"] == "你好"
+    assert model.prompts == []  # 首轮零成本
+
+
+async def test_understand_resolves_coreference_with_history():
+    model = _UnderstandModel(['{"resolved_query": "保温杯能退吗"}'])
+    st = new_turn_state("它能退吗")
+    st["messages"] = [HumanMessage(content="我想买保温杯"),
+                      AIMessage(content="可以的,保温杯 89 元。")]
+    out = await _understand_graph(model).ainvoke(st, config=_cfg())
+    assert out["resolved_query"] == "保温杯能退吗"
+    assert out["understanding_degraded"] is False
+
+
+async def test_understand_passthrough_marker_and_blank():
+    model = _UnderstandModel(['{"resolved_query": ""}'])
+    st = new_turn_state("订单 1111-1001 到哪了")
+    st["messages"] = [HumanMessage(content="你好"), AIMessage(content="您好!")]
+    out = await _understand_graph(model).ainvoke(st, config=_cfg())
+    assert out["resolved_query"] == "订单 1111-1001 到哪了"  # 空串 = 透传
+
+
+async def test_understand_parse_failure_and_model_error_degrade():
+    for bad in ("一坨废话", None):
+        model = _UnderstandModel([bad] if bad else [])
+        if bad is None:
+            class _Boom:
+                async def ainvoke(self, m):
+                    raise ConnectionError("x")
+            model = _Boom()
+        st = new_turn_state("它呢")
+        st["messages"] = [HumanMessage(content="前一句"), AIMessage(content="答")]
+        out = await _understand_graph(model).ainvoke(st, config=_cfg())
+        assert out["resolved_query"] == "它呢" and out["understanding_degraded"] is True
+
+
+async def test_understand_rejects_hallucinated_order_id():
+    model = _UnderstandModel(['{"resolved_query": "订单 1111-1002 能退吗"}'])
+    st = new_turn_state("它能退吗")  # 原文与 active_order 都没有 1111-1002
+    st["messages"] = [HumanMessage(content="看看保温杯"), AIMessage(content="好的")]
+    out = await _understand_graph(model).ainvoke(st, config=_cfg())
+    assert out["resolved_query"] == "它能退吗" and out["understanding_degraded"] is True
+
+
+async def test_understand_uses_validated_active_order_and_clears_stale():
+    model = _UnderstandModel(['{"resolved_query": "订单 1111-1001 能退吗"}'])
+    st = new_turn_state("这单能退吗")
+    st["messages"] = [HumanMessage(content="选了订单"), AIMessage(content="好的")]
+    st["active_order"] = {"order_id": "1111-1001", "source_message_id": "3"}
+    out = await _understand_graph(model).ainvoke(st, config=_cfg())
+    assert out["resolved_query"] == "订单 1111-1001 能退吗"
+    assert out["active_order"]["order_id"] == "1111-1001"
+    # 失效 active_order(不属于该用户)被清空
+    st2 = new_turn_state("这单能退吗")
+    st2["active_order"] = {"order_id": "9999-1001", "source_message_id": "1"}
+    out2 = await _understand_graph(model).ainvoke(st2, config=_cfg())
+    assert out2["active_order"] is None
+
+
+def test_history_turns_cuts_complete_turns():
+    from app.graph.nodes import _history_turns
+    msgs = [HumanMessage(content="u1"), AIMessage(content="a1"),
+            HumanMessage(content="u2"), AIMessage(content="a2"),
+            HumanMessage(content="u3")]
+    turns = _history_turns(msgs, 6)
+    assert [t[0].content for t in turns] == ["u1", "u2"]  # 末尾未成轮不切
+    assert [t[0].content for t in _history_turns(msgs, 1)] == ["u2"]
 
 
 from app.knowledge.retriever import (

@@ -16,7 +16,7 @@ def build_chat_graph(deps: GraphDeps, checkpointer):
     knowledge = build_knowledge_nodes(deps)
     fixed = build_fixed_nodes()
 
-    g.add_node("resolve_reference", front["resolve_reference"])
+    g.add_node("understand_query", front["understand_query"])
     g.add_node("classify_intent", front["classify_intent"])
     g.add_node("retrieve", knowledge["retrieve"])
     g.add_node("confidence_gate", knowledge["confidence_gate"])
@@ -27,8 +27,8 @@ def build_chat_graph(deps: GraphDeps, checkpointer):
     g.add_node("main_agent", build_agent_node(deps))
     g.add_node("log", build_log_node(deps))
 
-    g.add_edge(START, "resolve_reference")
-    g.add_edge("resolve_reference", "classify_intent")
+    g.add_edge(START, "understand_query")
+    g.add_edge("understand_query", "classify_intent")
     g.add_conditional_edges(
         "classify_intent", route_by_intent,
         {"business": "main_agent",
