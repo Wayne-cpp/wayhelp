@@ -104,3 +104,71 @@ async def test_action_422_on_bad_params(db_session_factory):
             "user_id": "not-a-uuid", "session_id": "1", "source_message_id": "abc",
             "action": "create_ticket", "ticket_type": "投诉"})
         assert resp.status_code == 422
+
+
+# ── ch06 Task 9:create_refund 动作(spec §9.2;身份字段全部播种有效,422 只能来自动作契约)──
+
+
+async def test_create_refund_happy_path(db_session_factory):
+    sid, mid = _seed_conversation(db_session_factory)
+    app = _make_app(db_session_factory)
+    async with await _client(app) as client:
+        resp = await client.post("/v1/chat/action", json={
+            "user_id": TEST_USER_ID, "session_id": sid, "source_message_id": mid,
+            "action": "create_refund", "order_id": "1111-1001",
+            "refund_reason": "七天无理由"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ticket_no"].startswith("T") and body["status"] == "待处理"
+
+    def _check():
+        with db_session_factory() as s:
+            t = s.get(Ticket, body["ticket_no"])
+            assert t.ticket_type == "售后"
+            assert t.description == "退款单:订单 1111-1001,原因:七天无理由"
+            assert t.status == "待处理"
+            assert s.get(Conversation, int(sid)).status == "进行中"  # 不改 conv.status
+    await asyncio.to_thread(_check)
+
+
+@pytest.mark.parametrize("over", [
+    ({"action": "create_refund", "order_id": "1111-1001"}),                  # 缺原因
+    ({"action": "create_refund", "refund_reason": "七天无理由"}),             # 缺订单
+    ({"action": "create_refund", "order_id": "1111-1001",
+      "refund_reason": "心情不好"}),                                         # 非法类目
+    ({"action": "create_refund", "order_id": "1111-1001", "refund_reason": "七天无理由",
+      "ticket_type": "投诉"}),                                               # ticket_type 冲突
+    ({"action": "create_ticket"}),                                           # 旧动作缺 ticket_type
+])
+async def test_action_contract_validation(over, db_session_factory):
+    sid, mid = _seed_conversation(db_session_factory)
+    app = _make_app(db_session_factory)
+    async with await _client(app) as client:
+        resp = await client.post("/v1/chat/action", json={
+            "user_id": TEST_USER_ID, "session_id": sid, "source_message_id": mid,
+            **over})
+        assert resp.status_code == 422
+
+
+async def test_create_refund_cross_user_order_404(db_session_factory):
+    """订单属他人(get_order 用户范围查不到)→ 统一 404,不泄露订单是否存在。"""
+    sid, mid = _seed_conversation(db_session_factory)
+    app = _make_app(db_session_factory)
+    async with await _client(app) as client:
+        resp = await client.post("/v1/chat/action", json={
+            "user_id": TEST_USER_ID, "session_id": sid, "source_message_id": mid,
+            "action": "create_refund", "order_id": "2222-1001",
+            "refund_reason": "七天无理由"})
+        assert resp.status_code == 404
+
+
+async def test_create_ticket_legacy_request_untouched(db_session_factory):
+    """原请求(无退款字段)保持兼容(spec §9.2)。"""
+    sid, mid = _seed_conversation(db_session_factory)
+    app = _make_app(db_session_factory)
+    async with await _client(app) as client:
+        resp = await client.post("/v1/chat/action", json={
+            "user_id": TEST_USER_ID, "session_id": sid, "source_message_id": mid,
+            "action": "create_ticket", "ticket_type": "售后"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "待处理"

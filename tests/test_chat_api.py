@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -13,6 +14,14 @@ from tests.conftest import (
     make_settings,
 )
 from tests.dbfixtures import db_engine, db_session_factory  # noqa: F401  (fixture 注册,依赖需一并导入)
+from tests.test_ch05_acceptance import (
+    _FakeRetriever,
+    _client,
+    _make_app,
+    _result,
+    _turn,
+    _types,
+)
 
 
 def make_app(script, **over):
@@ -147,3 +156,74 @@ def test_app_starts_without_embedding_key(db_session_factory):
     })
     app = create_app(settings=settings, model=object())  # 生产 runtime 路径
     assert app.state.chat_service is not None  # 缺 Key 也能启动
+
+
+# ── ch06 Task 9:resume 404/409/并发测试矩阵(spec §9.1;端点代码 Task 7 已落地,此处补钉)──
+
+OTHER_USER = "22222222-2222-2222-2222-222222222222"
+
+# 挂起构造复用 test_refund_flow:轮1 classify(首轮 understand 跳过)→ scope → 挂起;
+# resume 轮:refund_prepare 重跑(零模型)→ expand → main_agent 收尾
+_SUSPEND_SCRIPTS = [
+    ['{"intent":"退款退货","confidence":0.9}'],
+    ['{"mode":"order_specific"}'],
+    ['{"queries":[]}'],
+    ["订单 1111-1001 在 7 天无理由期内,可以退。"],
+]
+
+
+async def test_resume_404_and_409_matrix(db_session_factory):
+    app = _make_app(list(_SUSPEND_SCRIPTS), retriever=_FakeRetriever(_result()),
+                    db_sf=db_session_factory)
+    async with await _client(app) as client:
+        frames, sid = await _turn(client, "这个能退吗")
+        assert _types(frames) == ["session", "order_selector", "[DONE]"]
+        sel = frames[1]
+        # 归属错误 → 404(统一响应,不泄露详情)
+        r = await client.post("/v1/chat/resume", json={
+            "user_id": OTHER_USER, "session_id": sid,
+            "interrupt_id": sel["interrupt_id"], "order_id": "1111-1001"})
+        assert r.status_code == 404
+        assert r.json()["error"]["code"] == "session_not_found"
+        # interrupt_id 不匹配 → 409
+        r = await client.post("/v1/chat/resume", json={
+            "user_id": TEST_USER_ID, "session_id": sid,
+            "interrupt_id": "deadbeef", "order_id": "1111-1001"})
+        assert r.status_code == 409
+        # 订单不在卡片候选 → 409
+        r = await client.post("/v1/chat/resume", json={
+            "user_id": TEST_USER_ID, "session_id": sid,
+            "interrupt_id": sel["interrupt_id"], "order_id": "1111-9999"})
+        assert r.status_code == 409
+        # 正确 resume → 200;旧卡立即失效(重放 → 409)
+        r = await client.post("/v1/chat/resume", json={
+            "user_id": TEST_USER_ID, "session_id": sid,
+            "interrupt_id": sel["interrupt_id"], "order_id": "1111-1001"})
+        assert r.status_code == 200
+        r = await client.post("/v1/chat/resume", json={
+            "user_id": TEST_USER_ID, "session_id": sid,
+            "interrupt_id": sel["interrupt_id"], "order_id": "1111-1001"})
+        assert r.status_code == 409
+
+
+async def test_concurrent_resume_only_one_wins(db_session_factory):
+    """并发 resume 同一挂起实例:只有一个消费成功,另一个在锁内重新校验后 409(spec §9.1)。"""
+    # resume 轮已落库 → 后续新轮从 understand 罐头开始(闲聊固定话术无模型调用)
+    scripts = _SUSPEND_SCRIPTS + [
+        ['{"resolved_query": ""}'],
+        ['{"intent":"闲聊","confidence":0.95}'],
+    ]
+    app = _make_app(scripts, retriever=_FakeRetriever(_result()),
+                    db_sf=db_session_factory)
+    async with await _client(app) as client:
+        frames, sid = await _turn(client, "这个能退吗")
+        sel = frames[1]
+        body = {"user_id": TEST_USER_ID, "session_id": sid,
+                "interrupt_id": sel["interrupt_id"], "order_id": "1111-1001"}
+        r1, r2 = await asyncio.gather(
+            client.post("/v1/chat/resume", json=body),
+            client.post("/v1/chat/resume", json=body))
+        assert sorted([r1.status_code, r2.status_code]) == [200, 409]
+        # 锁已释放:后续新消息可正常进入
+        frames2, _ = await _turn(client, "你好", sid)
+        assert "[DONE]" in _types(frames2)

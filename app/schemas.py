@@ -3,7 +3,7 @@ import uuid
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Intent(str, Enum):
@@ -92,13 +92,19 @@ class ChatResumeRequest(BaseModel):
 
 _SOURCE_MSG_ID_RE = re.compile(r"^[1-9]\d{0,18}$")
 
+# ch06 spec §9.2:退款原因固定六类目
+RefundReason = Literal["质量问题", "商品破损", "发错货", "未收到货",
+                       "拍错或多拍", "七天无理由"]
+
 
 class ChatActionRequest(BaseModel):
     user_id: str
     session_id: str
     source_message_id: str
-    action: Literal["create_ticket"]
-    ticket_type: Literal["售后", "投诉", "咨询"]
+    action: Literal["create_ticket", "create_refund"]
+    ticket_type: Literal["售后", "投诉", "咨询"] | None = None
+    order_id: str | None = Field(default=None, min_length=1, max_length=64)
+    refund_reason: RefundReason | None = None
 
     @field_validator("user_id")
     @classmethod
@@ -116,6 +122,20 @@ class ChatActionRequest(BaseModel):
         if not _SOURCE_MSG_ID_RE.match(v):
             raise ValueError("source_message_id must be a decimal id string")
         return v
+
+    @model_validator(mode="after")
+    def _action_contract(self):
+        if self.action == "create_ticket":
+            if self.ticket_type is None:
+                raise ValueError("create_ticket requires ticket_type")
+            if self.order_id is not None or self.refund_reason is not None:
+                raise ValueError("create_ticket does not take refund fields")
+        else:
+            if self.order_id is None or self.refund_reason is None:
+                raise ValueError("create_refund requires order_id and refund_reason")
+            if self.ticket_type is not None and self.ticket_type != "售后":
+                raise ValueError("create_refund ticket_type must be 售后 or omitted")
+        return self
 
 
 class ExtractRequest(BaseModel):

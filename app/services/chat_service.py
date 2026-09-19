@@ -289,3 +289,42 @@ class ChatService:
                                      ticket_type)
             s.commit()  # 失败整体回滚;不改 conv.status
             return ticket_no
+
+    async def create_refund_from_action(self, user_id, session_id, source_message_id,
+                                        order_id, refund_reason) -> str:
+        """ch06(spec §9.2):退款建单,与 create_ticket 同 shield 模式(取消时等写事务落地)。"""
+        if self._session_factory is None:
+            raise AppError("action_unavailable")
+        task = asyncio.ensure_future(asyncio.to_thread(
+            self._create_refund_sync, user_id, session_id, source_message_id,
+            order_id, refund_reason))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await task
+            raise
+
+    def _create_refund_sync(self, user_id, session_id, source_message_id,
+                            order_id, refund_reason) -> str:
+        from app.models import Conversation, Message
+        from app.services.orders import get_order
+        from app.store_db import _as_db_id
+        from app.tools.business import write_ticket
+        cid = _as_db_id(session_id)
+        mid = _as_db_id(source_message_id)
+        if cid is None or mid is None:
+            raise SessionNotFoundError("session not found")
+        with self._session_factory() as s:
+            conv = s.get(Conversation, cid)
+            if conv is None or conv.user_id != user_id:
+                raise SessionNotFoundError("session not found")
+            msg = s.get(Message, mid)
+            if msg is None or msg.conversation_id != cid or msg.role != "user":
+                raise SessionNotFoundError("session not found")
+            if get_order(user_id, order_id) is None:  # 订单归属独立校验,不信前端回填
+                raise SessionNotFoundError("session not found")
+            ticket_no = write_ticket(s, cid,
+                                     f"退款单:订单 {order_id},原因:{refund_reason}", "售后")
+            s.commit()  # 失败整体回滚;不改 conv.status
+            return ticket_no

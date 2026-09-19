@@ -115,6 +115,11 @@ async def chat_resume(body: ChatResumeRequest, request: Request) -> StreamingRes
 @router.post("/v1/chat/action")
 async def chat_action(body: ChatActionRequest, request: Request):
     service: ChatService = request.app.state.chat_service
-    ticket_no = await service.create_ticket_from_action(
-        body.user_id, body.session_id, body.source_message_id, body.ticket_type)
+    if body.action == "create_refund":  # ch06 spec §9.2:按 action 分发双契约
+        ticket_no = await service.create_refund_from_action(
+            body.user_id, body.session_id, body.source_message_id,
+            body.order_id, body.refund_reason)
+    else:
+        ticket_no = await service.create_ticket_from_action(
+            body.user_id, body.session_id, body.source_message_id, body.ticket_type)
     return {"ticket_no": ticket_no, "status": "待处理"}
