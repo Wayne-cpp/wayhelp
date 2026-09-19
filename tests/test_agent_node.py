@@ -277,6 +277,39 @@ async def test_suggest_refund_requires_order_context():
         {"action": "refund_form", "label": "申请退款", "order_id": "1111-1001"}]
 
 
+async def test_suggest_options_rejects_forged_order_id_and_unknown_keys():
+    # order_context 合法,唯一非法点是模型擅传 order_id:错误 ToolMessage,整组不出按钮(spec §6.6)
+    st = new_turn_state("这个订单能退吗")
+    st.update({"resolved_query": "这个订单能退吗", "route": "business",
+               "order_context": {"order_id": "1111-1001", "product": "保温杯",
+                                 "status": "已完成", "amount": 89.0,
+                                 "created_at": "2026-09-16T12:00:00",
+                                 "delivered_at": "2026-09-17T12:00:00",
+                                 "returnable_note": "普通商品,在 7 天无理由退货期内",
+                                 "queried_at": "2026-09-19T12:00:00"}})
+    model = FakeStreamModel([
+        ("tool", [{"index": 0, "name": "suggest_options", "id": "s1",
+                   "args": '{"options":["申请退款"],"order_id":"9999-1001"}'}]),
+        ("then", ["好的。"]),
+    ])
+    out = await _agent_graph(GraphDeps(model=model, settings=make_settings(),
+                                       retriever=None, store=None)).ainvoke(st, config=_cfg())
+    tool_msgs = [m for m in out["turn_messages"] if m.type == "tool"]
+    assert tool_msgs[0].status == "error"
+    assert out["suggested_actions"] == []
+    # 其他未知键同样拒绝:参数白名单只有 {options, ticket_type}
+    model2 = FakeStreamModel([
+        ("tool", [{"index": 0, "name": "suggest_options", "id": "s1",
+                   "args": '{"options":["转人工"],"foo":"bar"}'}]),
+        ("then", ["好的。"]),
+    ])
+    out2 = await _agent_graph(GraphDeps(model=model2, settings=make_settings(),
+                                        retriever=None, store=None)).ainvoke(st, config=_cfg())
+    tool_msgs2 = [m for m in out2["turn_messages"] if m.type == "tool"]
+    assert tool_msgs2[0].status == "error"
+    assert out2["suggested_actions"] == []
+
+
 async def test_order_context_from_tool_only_when_user_mentioned():
     st = new_turn_state("帮我查订单 1111-1001")
     st.update({"resolved_query": "帮我查订单 1111-1001", "route": "business"})

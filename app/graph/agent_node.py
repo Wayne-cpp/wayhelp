@@ -46,8 +46,11 @@ def _handle_suggest_options(call: dict,
                             order_context: dict | None) -> tuple[ToolMessage, list[dict] | None]:
     """校验伪工具参数;合法 → (成功 ToolMessage, actions),非法 → (错误 ToolMessage, None)。
     「申请退款」要求本轮已有归属校验过的 order_context,订单号由服务端绑定(spec §6.6)。"""
+    args_in = call.get("args") or {}
+    if set(args_in) - {"options", "ticket_type"}:  # 模型擅传订单号等未知键(spec §6.6)
+        return _suggest_err(call, "工具参数不合法"), None
     try:
-        suggest_options.args_schema(**(call.get("args") or {}))
+        suggest_options.args_schema(**args_in)
     except ValidationError:
         return _suggest_err(call, "工具参数不合法"), None
     args = call["args"]
