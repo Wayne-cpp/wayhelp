@@ -180,3 +180,83 @@ def test_create_ticket_keeps_compat_behavior(db_session_factory):
     assert json.loads(out)["ticket_no"].startswith("T")
     with db_session_factory() as s:
         assert s.get(Conversation, cid).status == "已转人工"
+
+
+# ─── ch06 图专用只读工具 build_graph_tools(Task 5)──────────────────────────
+
+from app.tools.business import build_graph_tools
+from tests.conftest import TEST_USER_ID
+
+OTHER_USER = "22222222-2222-2222-2222-222222222222"
+
+
+def _toolset(user_id=TEST_USER_ID, retriever=None, with_faq=True):
+    return build_graph_tools(user_id, "原始问题", retriever, make_settings(),
+                             with_faq=with_faq)
+
+
+def test_query_order_ownership():
+    ts = _toolset()
+    qo = ts.tools_by_name["query_order"] if hasattr(ts, "tools_by_name") else {t.name: t for t in ts.tools}["query_order"]
+    import json
+    ok = json.loads(qo.invoke({"order_id": "1111-1001"}))
+    assert ok["order_id"] == "1111-1001" and ok["status"] == "已完成" and ok["product"] == "保温杯"
+    assert ts.order_snapshots[-1]["order_id"] == "1111-1001"  # 成功才记快照
+    err = json.loads(qo.invoke({"order_id": "2222-1001"}))     # 他人订单
+    assert "error" in err and "error" not in ok
+    err2 = json.loads(qo.invoke({"order_id": "1111-9999"}))    # 不存在
+    assert "error" in err2
+
+
+def test_query_logistics_deterministic_and_consistent():
+    ts = _toolset()
+    import json
+    ql = {t.name: t for t in ts.tools}["query_logistics"]
+    a = json.loads(ql.invoke({"order_id": "1111-1001"}))
+    b = json.loads(ql.invoke({"order_id": "1111-1001"}))
+    assert a == b                          # 确定性
+    assert a["traces"][-1]["description"] == "已签收"   # 已完成订单含签收
+    transit = json.loads(ql.invoke({"order_id": "1111-1004"}))  # 在途
+    assert transit["traces"][-1]["description"] != "已签收"
+    assert "error" in json.loads(ql.invoke({"order_id": "2222-1001"}))
+
+
+def test_query_faq_uses_full_resolved_query_and_caches():
+    from tests.test_ch05_acceptance import _FakeRetriever, _result
+    rt = _FakeRetriever(_result())
+    ts = build_graph_tools(TEST_USER_ID, "退货运费谁承担", rt, make_settings())
+    qf = {t.name: t for t in ts.tools}["query_faq"]
+    import json
+    r1 = json.loads(qf.invoke({}))
+    assert rt.calls == ["退货运费谁承担"]      # 完整 resolved_query,无参数
+    assert r1["low_confidence"] is False and r1["evidence"]
+    assert ts.faq_trace.status == "ok" and ts.faq_trace.evidence == r1["evidence"]
+    r2 = json.loads(qf.invoke({}))
+    assert r2 == r1 and len(rt.calls) == 1     # 同轮缓存,不重复检索
+
+
+def test_query_faq_low_confidence_and_maintenance():
+    from tests.test_ch05_acceptance import _FakeRetriever, _result
+    from app.knowledge.retriever import NOTE_REBUILDING
+    import json
+    ts = build_graph_tools(TEST_USER_ID, "q",
+                           _FakeRetriever(_result(low=True, hits=[], score=0.01)),
+                           make_settings())
+    r = json.loads({t.name: t for t in ts.tools}["query_faq"].invoke({}))
+    assert r["evidence"] == [] and r["low_confidence"] is True   # 不给候选正文
+    assert ts.faq_trace.status == "low_confidence"
+    ts2 = build_graph_tools(TEST_USER_ID, "q",
+                            _FakeRetriever(_result(note=NOTE_REBUILDING, low=True,
+                                                   hits=[], score=None)),
+                            make_settings())
+    json.loads({t.name: t for t in ts2.tools}["query_faq"].invoke({}))
+    assert ts2.faq_trace.status == "unavailable" and ts2.faq_trace.error_code == "kb_rebuilding"
+
+
+def test_without_faq_and_registry_names():
+    ts = _toolset(with_faq=False)
+    names = [t.name for t in ts.tools]
+    assert names == ["query_order", "query_product", "query_logistics"]
+    ts2 = _toolset()
+    assert "query_faq" in [t.name for t in ts2.tools]
+    assert "create_ticket" not in [t.name for t in ts2.tools]  # 写工具永不在册

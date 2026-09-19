@@ -105,6 +105,7 @@ class PreparedTurn:
     user_text: str
     lock_key: str
     released: bool = False
+    user_id: str = ""
 
 
 class ChatService:
@@ -132,7 +133,7 @@ class ChatService:
             if not await self._store.exists(sid, user_id):
                 raise SessionNotFoundError("session not found")
         await self._locks.acquire(sid)
-        return PreparedTurn(sid, message, sid)
+        return PreparedTurn(sid, message, sid, user_id=user_id)
 
     def release_turn(self, turn: PreparedTurn) -> None:
         if turn.released:
@@ -146,7 +147,8 @@ class ChatService:
                 yield ErrorEvent("internal_error", "服务未就绪")
                 return
             yield SessionEvent(turn.session_id)
-            config = {"configurable": {"thread_id": turn.session_id}}
+            config = {"configurable": {"thread_id": turn.session_id,
+                                       "user_id": turn.user_id}}
             try:
                 async for mode, payload in self._graph.astream(
                         new_turn_state(turn.user_text), config,

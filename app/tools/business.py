@@ -169,3 +169,130 @@ def build_tools(session_factory, conversation_id: int, retriever=None,
 
     return TurnToolset([query_order, query_product, query_logistics, query_faq,
                         create_ticket], trace)
+
+
+# ── ch06 图专用只读工具(不复用上文 build_tools:它捆绑 create_ticket 写工具)──
+
+from dataclasses import asdict
+
+from app.services import orders as _orders
+
+
+@dataclass
+class FaqRetrievalTrace:
+    """图专用 query_faq 的单轮显式 interface;首轮调用写一次,后续走缓存。"""
+    calls: int = 0
+    status: str = "not_called"   # ok | low_confidence | unavailable | tool_error
+    result: RetrievalResult | None = None
+    evidence: list[dict] | None = None
+    error_code: str | None = None
+    _cached: str | None = None
+
+
+@dataclass
+class GraphToolset:
+    tools: list
+    faq_trace: FaqRetrievalTrace
+    order_snapshots: list[dict]   # 成功 query_order/query_logistics 的订单快照(调用序)
+
+    @property
+    def tools_by_name(self) -> dict:
+        return {t.name: t for t in self.tools}
+
+
+def _deterministic_logistics(order) -> dict:
+    """与订单状态自洽的固定物流:已完成含「已签收」,在途不含。"""
+    seed = int(order.order_id.replace("-", "")[-4:])
+    company = _COMPANIES[seed % len(_COMPANIES)]
+    tracking_no = "SF" + f"{seed:010d}"[-10:]
+    created = datetime.fromisoformat(order.created_at)
+    steps = ["已揽收", "到达转运中心"]
+    if order.status == "已完成":
+        steps += ["派件中", "已签收"]
+    elif order.status == "已发货":
+        steps += ["运输中"]
+    else:
+        steps = ["待揽收"]
+    traces = [{"time": (created + timedelta(hours=8 * (i + 1))).isoformat(timespec="seconds"),
+               "description": s} for i, s in enumerate(steps)]
+    if order.status == "已完成" and order.delivered_at:
+        traces[-1]["time"] = order.delivered_at
+    return {"order_id": order.order_id, "company": company,
+            "tracking_no": tracking_no, "traces": traces}
+
+
+def build_graph_tools(user_id: str, resolved_query: str, retriever, settings,
+                      with_faq: bool = True) -> GraphToolset:
+    """每轮每 main_agent 调用构造:订单/物流绑定归属用户(模型只传 order_id),
+    query_faq 无模型参数(以本轮完整 resolved_query 检索)。闭包不跨调用共享。"""
+    faq_trace = FaqRetrievalTrace()
+    snapshots: list[dict] = []
+
+    @tool
+    def query_order(order_id: OrderId) -> str:
+        """查询订单信息。参数 order_id 为订单号。返回订单状态、金额、商品名、下单时间。"""
+        o = _orders.get_order(user_id, order_id)
+        if o is None:
+            return _json({"error": "订单不存在或不属于当前用户"})
+        snapshots.append(asdict(o))
+        return _json({"order_id": o.order_id, "status": o.status, "amount": o.amount,
+                      "product": o.product, "created_at": o.created_at,
+                      "delivered_at": o.delivered_at})
+
+    @tool
+    def query_logistics(order_id: OrderId) -> str:
+        """查询订单物流。参数 order_id 为订单号。返回物流公司、运单号与物流节点列表。"""
+        o = _orders.get_order(user_id, order_id)
+        if o is None:
+            return _json({"error": "订单不存在或不属于当前用户"})
+        snapshots.append(asdict(o))
+        return _json(_deterministic_logistics(o))
+
+    tools: list = [query_order, query_product, query_logistics]
+
+    if with_faq:
+        @tool
+        def query_faq() -> str:
+            """检索知识库,获取政策/流程/规格/常见问题资料。无需参数,以用户本轮完整
+            问题检索。返回检索策略、低置信标记与证据列表。同轮重复调用返回同一结果。"""
+            faq_trace.calls += 1
+            if faq_trace.calls > 1 and faq_trace._cached is not None:
+                return faq_trace._cached
+            if retriever is None:
+                faq_trace.status = "unavailable"
+                faq_trace.error_code = "kb_unconfigured"
+                faq_trace._cached = _json({"evidence": [], "note": "知识检索未配置",
+                                           "low_confidence": False,
+                                           "effective_strategy": None})
+                return faq_trace._cached
+            result = retriever.search(resolved_query, scope=None)
+            if result.note in (NOTE_REBUILDING, NOTE_REBUILD_REQUIRED, NOTE_UNCONFIGURED):
+                faq_trace.status = "unavailable"
+                faq_trace.error_code = (
+                    "kb_rebuilding" if result.note == NOTE_REBUILDING
+                    else "kb_rebuild_required" if result.note == NOTE_REBUILD_REQUIRED
+                    else "kb_unconfigured")
+                faq_trace._cached = _json({"evidence": [], "note": result.note,
+                                           "low_confidence": False,
+                                           "effective_strategy": result.effective_strategy})
+                return faq_trace._cached
+            faq_trace.result = result
+            if result.low_confidence:
+                faq_trace.status = "low_confidence"
+                faq_trace._cached = _json({"evidence": [], "note": result.note,
+                                           "low_confidence": True,
+                                           "effective_strategy": result.effective_strategy})
+                return faq_trace._cached
+            evidence = [e.to_dict() for e in assemble_evidence(
+                result.hits, max_items=settings.rerank_top_n,
+                budget_chars=settings.max_tool_result_chars, overhead_chars=200)]
+            faq_trace.status = "ok"
+            faq_trace.evidence = evidence
+            faq_trace._cached = _json({"effective_strategy": result.effective_strategy,
+                                       "low_confidence": False, "note": result.note,
+                                       "evidence": evidence})
+            return faq_trace._cached
+
+        tools.append(query_faq)
+
+    return GraphToolset(tools, faq_trace, snapshots)
