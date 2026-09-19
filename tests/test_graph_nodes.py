@@ -701,11 +701,31 @@ async def test_log_does_not_pool_unavailable_or_budget():
     assert store.low_confidence == []
 
 
-def test_should_cite_rules():
+def test_should_cite_rules_ch06():
     from app.graph.nodes import _should_cite
-    base = {"route": "knowledge", "retrieval_status": "ok",
+    base = {"route": "business", "retrieval_status": "ok",
             "evidence": [{"ref_no": 1}], "final_text": "7 天无理由[1]"}
-    assert _should_cite(base) is True
-    assert _should_cite({**base, "route": "business"}) is False
+    assert _should_cite(base) is True                    # business 工具检索也可引用
+    assert _should_cite({**base, "route": "refund"}) is True
     assert _should_cite({**base, "final_text": REFUSAL_ANSWER}) is False
-    assert _should_cite({**base, "final_text": "没标角标的答复"}) is False
+    assert _should_cite({**base, "final_text": KB_UNAVAILABLE_ANSWER}) is False
+    assert _should_cite({**base, "final_text": "没标角标"}) is False
+    assert _should_cite({**base, "retrieval_status": "low_confidence"}) is False
+
+
+async def test_log_updates_active_order_only_with_order_context():
+    store = InMemorySessionStore(10, 100, 8000)
+    sid = await store.create("u")
+    st = new_turn_state("这单能退吗")
+    st.update({"final_text": "可以退。", "route": "refund",
+               "order_context": {"order_id": "1111-1001"}})
+    st["turn_messages"].append(AIMessage(content="可以退。"))
+    out = await _log_graph(store).ainvoke(st, config=_config(sid))
+    assert out["active_order"] == {"order_id": "1111-1001",
+                                   "source_message_id": out["source_message_id"]}
+    # 无 order_context 的轮次不建立焦点
+    st2 = new_turn_state("你好")
+    st2.update({"final_text": "您好", "route": "chitchat"})
+    st2["turn_messages"].append(AIMessage(content="您好"))
+    out2 = await _log_graph(store).ainvoke(st2, config=_config(sid))
+    assert "active_order" not in out2 or out2.get("active_order") is None

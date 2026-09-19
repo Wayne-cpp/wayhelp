@@ -523,14 +523,10 @@ def _build_low_conf(state, cid: int | None) -> LowConfidenceRecord | None:
 
 
 def _should_cite(state) -> bool:
-    # ch06 Task 2 临时桥:refund 暂借旧 retrieve 链(语义同旧 knowledge 出口),
-    # 引用判定随路径放行;Task 8 将去掉 route 限定(business 工具检索也可引用)。
-    if state["route"] not in ("knowledge", "refund") or state["retrieval_status"] != "ok":
-        return False
-    if not state["evidence"]:
+    if state["retrieval_status"] != "ok" or not state["evidence"]:
         return False
     final = state["final_text"].strip()
-    if final in (REFUSAL_ANSWER, AGENT_BUDGET_ANSWER):
+    if final in (REFUSAL_ANSWER, AGENT_BUDGET_ANSWER, KB_UNAVAILABLE_ANSWER):
         return False
     return re.search(r"\[\d{1,2}\]", final) is not None
 
@@ -561,8 +557,13 @@ def build_log_node(deps: GraphDeps):
                     state.get("route"), state.get("retrieval_status"),
                     state.get("agent_steps"), state.get("agent_tokens"),
                     state.get("token_accounting"))
-        return {"messages": state["turn_messages"],
-                "source_message_id": result.source_message_id,
-                "node_trace": [*state["node_trace"], {"node": "log"}]}
+        out = {"messages": state["turn_messages"],
+               "source_message_id": result.source_message_id,
+               "node_trace": [*state["node_trace"], {"node": "log"}]}
+        oc = state.get("order_context")
+        if oc:  # 仅已完成轮建立/替换同 thread 订单焦点(spec §10)
+            out["active_order"] = {"order_id": oc["order_id"],
+                                   "source_message_id": result.source_message_id}
+        return out
 
     return log_turn

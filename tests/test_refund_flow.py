@@ -62,6 +62,12 @@ async def test_missing_order_suspends_then_resume_completes_single_turn():
         sug = [f for f in frames2 if isinstance(f, dict) and f["type"] == "suggest_actions"]
         assert sug and sug[0]["options"][0]["action"] == "refund_form"
         assert sug[0]["options"][0]["order_id"] == "1111-1001"
+        # 完成轮建立跨轮订单焦点:绑定所选订单与本轮用户消息(spec §10)
+        snap = await app.state.chat_service._graph.aget_state(
+            {"configurable": {"thread_id": sid, "user_id": TEST_USER_ID}})
+        assert snap.values["active_order"] == {
+            "order_id": "1111-1001",
+            "source_message_id": snap.values["source_message_id"]}
         # 旧卡重放 → 409(已完成图无 pending)
         resp2 = await client.post("/v1/chat/resume", json={
             "user_id": TEST_USER_ID, "session_id": sid,
