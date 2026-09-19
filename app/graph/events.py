@@ -25,5 +25,10 @@ def ev_suggest_actions(source_message_id: str, options: list[dict]) -> dict:
             "options": options}
 
 
+def ev_order_selector(interrupt_id: str, orders: list[dict]) -> dict:
+    """ch06(spec §8):挂起后由驱动层构造,绑定运行时分配的 interrupt ID。"""
+    return {"kind": "order_selector", "interrupt_id": interrupt_id, "orders": orders}
+
+
 def ev_error(code: str, message: str) -> dict:
     return {"kind": "error", "code": code, "message": message}

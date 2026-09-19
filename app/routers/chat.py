@@ -11,6 +11,7 @@ from app.services.chat_service import (
     DeltaEvent,
     DoneEvent,
     ErrorEvent,
+    OrderSelectorEvent,
     PreparedTurn,
     SessionEvent,
     SuggestActionsEvent,
@@ -58,6 +59,10 @@ class _EventStream:
                     yield _sse({"type": "suggest_actions",
                                 "source_message_id": event.source_message_id,
                                 "options": event.options})
+                elif isinstance(event, OrderSelectorEvent):
+                    yield _sse({"type": "order_selector",
+                                "interrupt_id": event.interrupt_id,
+                                "orders": event.orders})
                 elif isinstance(event, DoneEvent):
                     yield "data: [DONE]\n\n"
                 elif isinstance(event, ErrorEvent):

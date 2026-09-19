@@ -14,6 +14,7 @@ from app.graph.errors import TurnAbortError
 from app.graph.events import ev_error
 from app.graph.state import INTENTS, ROUTE_TABLE
 from app.prompts.intent import INTENT_PROMPT
+from app.prompts.refund import REFUND_SCOPE_PROMPT
 from app.prompts.understand import UNDERSTAND_PROMPT
 from app.services import orders
 
@@ -195,11 +196,163 @@ def build_front_nodes(deps: GraphDeps) -> dict:
                                {"node": "classify_intent", "intent": intent,
                                 "confidence": confidence, "route": route}]}
 
-    return {"understand_query": understand_query, "classify_intent": classify_intent}
+    async def refund_scope(state):
+        prompt = REFUND_SCOPE_PROMPT.replace("{query}", state["resolved_query"])
+        trace = [*state["node_trace"], {"node": "refund_scope"}]
+        try:
+            resp = await deps.model.ainvoke([HumanMessage(content=prompt)])
+            text = resp.content if isinstance(resp.content, str) else ""
+            mode = parse_refund_scope_output(text)
+            if mode is None:
+                logger.warning("node=refund_scope 解析失败降级 clarify: %r", text[:120])
+                mode = "clarify"
+        except Exception as exc:
+            logger.warning("node=refund_scope 模型异常降级 clarify: %s", type(exc).__name__)
+            mode = "clarify"
+        logger.info("node=refund_scope mode=%s", mode)
+        return {"refund_mode": mode,
+                "node_trace": [*trace[:-1], {"node": "refund_scope", "mode": mode}]}
+
+    return {"understand_query": understand_query, "classify_intent": classify_intent,
+            "refund_scope": refund_scope}
+
+
+# ── ch06 Task 7:refund 子流程(refund_prepare 挂起 / refund_policy 扩写统一重排)──
+
+import time
+
+from langgraph.types import interrupt
+
+from app.prompts.expand import EXPAND_PROMPT
+
+
+def route_refund_mode(state) -> str:
+    return state["refund_mode"]
+
+
+def route_after_prepare(state) -> str:
+    return "refund_policy" if state.get("order_context") else "other_fallback"
+
+
+def build_refund_nodes(deps: GraphDeps) -> dict:
+    async def refund_prepare(state, config):
+        user_id = (config.get("configurable") or {}).get("user_id", "")
+        trace = [*state["node_trace"], {"node": "refund_prepare"}]
+        valid = []
+        for oid in orders.find_order_ids(state["resolved_query"]):
+            o = orders.get_order(user_id, oid)
+            if o is not None:
+                valid.append(o)
+        if len(valid) == 1:  # 唯一候选且属于该用户 → 直通(spec §6.3)
+            logger.info("node=refund_prepare direct order=%s", valid[0].order_id)
+            return {"order_context": asdict(valid[0]), "node_trace": trace}
+        candidates = orders.list_orders(user_id)
+        if not candidates:
+            logger.warning("node=refund_prepare 无可选订单,转 other_fallback")
+            return {"order_context": None, "node_trace": trace}
+        # 挂起:帧由驱动层在图结束后按 pending interrupt 发射,节点不发 SSE
+        selected = interrupt({"type": "order_selector",
+                              "orders": [orders.order_brief(o) for o in candidates]})
+        oid = (selected or {}).get("order_id", "")
+        o = orders.get_order(user_id, oid)  # resume 重跑后的防御性校验
+        if o is None:
+            logger.warning("node=refund_prepare resume 校验失败: %r", oid)
+            return {"order_context": None, "node_trace": trace}
+        logger.info("node=refund_prepare resumed order=%s", o.order_id)
+        return {"order_context": asdict(o), "node_trace": trace}
+
+    async def refund_policy(state):
+        settings = deps.settings
+        trace = [*state["node_trace"], {"node": "refund_policy"}]
+        if deps.retriever is None:
+            return {"retrieval_status": "unavailable",
+                    "retrieval_error_code": "kb_unconfigured", "node_trace": trace}
+        oc = state.get("order_context")
+        base_query = state["resolved_query"]
+        if oc:  # 附加订单事实仅用于检索;raw_query 落库口径不变(spec §6.4)
+            base_query = (f"{state['resolved_query']}"
+                          f"(商品:{oc['product']},{oc['returnable_note']},状态:{oc['status']})")
+        queries = [base_query]
+        expand_note = None
+        if (oc and settings.refund_expand_enabled
+                and settings.knowledge_strategy == "hybrid_rerank"):
+            prompt = (EXPAND_PROMPT
+                      .replace("{order_summary}", orders.order_summary(oc))
+                      .replace("{query}", state["resolved_query"]))
+            try:
+                resp = await deps.model.ainvoke([HumanMessage(content=prompt)])
+                text = resp.content if isinstance(resp.content, str) else ""
+                extra = parse_expand_output(text)
+                if extra is None:
+                    raise ValueError("parse_expand_output")
+                for q in extra:
+                    if q not in queries and len(queries) < 4:
+                        queries.append(q)
+            except Exception as exc:
+                logger.warning("node=refund_policy 扩写降级单查询: %s", type(exc).__name__)
+                expand_note = f"expand_degraded:{type(exc).__name__}"
+        timeout = settings.knowledge_tool_timeout_seconds
+        deadline = time.monotonic() + timeout
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*[asyncio.to_thread(deps.retriever.search, q,
+                                                   scope=None, deadline=deadline)
+                                 for q in queries]),
+                timeout=timeout)
+        except Exception as exc:
+            logger.warning("node=refund_policy 检索不可用: %s", type(exc).__name__)
+            return {"retrieval_status": "unavailable",
+                    "retrieval_error_code": "kb_unavailable",
+                    "expanded_queries": queries, "node_trace": trace}
+        for r in results:  # 维护态:任一查询命中维护 note 即整轮不可用(spec §6.4)
+            if _STATE_NOTE_CODES.get(r.note) is not None:
+                out = state_fields_for_result(r)
+                out.update({"expanded_queries": queries, "node_trace": trace})
+                return out
+        base = results[0]
+        result = base
+        if len(queries) > 1 and settings.knowledge_strategy == "hybrid_rerank":
+            candidates, seen = [], set()
+            for r in results:  # 只按 chunk_id 合并候选,不比较/混合各查询分数(D10)
+                for h in r.hits:
+                    if h.chunk_id not in seen:
+                        seen.add(h.chunk_id)
+                        candidates.append(h)
+            candidates = candidates[: 4 * settings.rerank_top_n]
+            unified = None
+            if candidates:
+                try:
+                    unified = await asyncio.wait_for(
+                        asyncio.to_thread(deps.retriever.rerank_candidates,
+                                          base_query, candidates, deadline),
+                        timeout=max(deadline - time.monotonic(), 0.001))
+                except Exception as exc:
+                    logger.warning("node=refund_policy 统一重排失败: %s", type(exc).__name__)
+                    unified = None
+            if unified is not None:
+                result = unified
+            else:
+                note = ";".join(x for x in
+                                (base.note, expand_note or "unified_rerank_failed") if x)
+                result = replace(base, note=note or None)  # 回退 base 完整策略/分数/阈值
+        elif expand_note:
+            result = replace(base, note=";".join(x for x in (base.note, expand_note) if x) or None)
+        out = state_fields_for_result(result)
+        out["expanded_queries"] = queries
+        if out["retrieval_status"] == "low_confidence":
+            out.update(low_conf_fields(out["retrieval_result"]))
+        elif out["retrieval_status"] == "ok":
+            out["evidence"] = evidence_dicts_from_snapshot(out["retrieval_result"], settings)
+        out["node_trace"] = trace
+        logger.info("node=refund_policy status=%s queries=%d", out["retrieval_status"], len(queries))
+        return out
+
+    return {"refund_prepare": refund_prepare, "refund_policy": refund_policy,
+            "route_refund_mode": route_refund_mode, "route_after_prepare": route_after_prepare}
 
 
 import asyncio
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 
 from app.knowledge.retriever import (
     NOTE_REBUILDING, NOTE_REBUILD_REQUIRED, NOTE_UNCONFIGURED,
@@ -262,43 +415,13 @@ def low_conf_fields(snap: dict) -> dict:
                 "note": snap["note"]}}
 
 
+def route_after_gate(state) -> str:
+    return "main_agent" if state["retrieval_status"] == "ok" else "gate_fallback"
+
+
 def build_knowledge_nodes(deps: GraphDeps) -> dict:
-    async def retrieve(state):
-        logger.info("node=retrieve query=%r", state["resolved_query"][:50])
-        trace = [*state["node_trace"], {"node": "retrieve"}]
-        if deps.retriever is None:
-            return {"retrieval_status": "unavailable",
-                    "retrieval_error_code": "kb_unconfigured", "node_trace": trace}
-        try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(deps.retriever.search, state["resolved_query"]),
-                timeout=deps.settings.knowledge_tool_timeout_seconds)  # 总等待上限,本层不重试
-        except Exception as exc:  # 超时与检索异常同归 unavailable
-            logger.warning("node=retrieve unavailable: %s", type(exc).__name__)
-            return {"retrieval_status": "unavailable",
-                    "retrieval_error_code": "kb_unavailable", "node_trace": trace}
-        fields = state_fields_for_result(result)
-        # 配置/维护态优先于低置信判定;NOTE_NOT_BUILT 等其余 note 参与低置信判定
-        if "retrieval_error_code" not in fields:
-            logger.info("node=retrieve done status=%s score=%s",
-                        fields["retrieval_status"], result.confidence_score)
-        return {**fields, "node_trace": trace}
-
-    async def confidence_gate(state):
-        status = state["retrieval_status"]
-        logger.info("node=confidence_gate status=%s", status)  # spec §6.3:节点进出打 INFO 日志
-        trace = [*state["node_trace"], {"node": "confidence_gate", "status": status}]
-        if status == "low_confidence":
-            logger.info("node=confidence_gate blocked low_confidence")
-            return {**low_conf_fields(state["retrieval_result"]), "node_trace": trace}
-        if status == "ok":
-            evidence = evidence_dicts_from_snapshot(state["retrieval_result"],
-                                                    deps.settings)
-            return {"evidence": evidence, "node_trace": trace}
-        return {"node_trace": trace}  # unavailable:直接落 fallback
-
-    def route_after_gate(state) -> str:
-        return "main_agent" if state["retrieval_status"] == "ok" else "gate_fallback"
+    # ch06 Task 7:retrieve/confidence_gate 节点删除(语义并入 refund_policy);
+    # gate_fallback 与 helpers 保留,route_after_gate 提为模块级供 builder import。
 
     async def gate_fallback(state):
         writer = get_stream_writer()
@@ -310,8 +433,7 @@ def build_knowledge_nodes(deps: GraphDeps) -> dict:
                 "turn_messages": [*state["turn_messages"], AIMessage(content=text)],
                 "node_trace": [*state["node_trace"], {"node": "gate_fallback"}]}
 
-    return {"retrieve": retrieve, "confidence_gate": confidence_gate,
-            "gate_fallback": gate_fallback, "route_after_gate": route_after_gate}
+    return {"gate_fallback": gate_fallback}
 
 
 from app.prompts.service import CHITCHAT_REPLY, COMPLAINT_REPLY, FALLBACK_ANSWER

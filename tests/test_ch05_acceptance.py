@@ -88,16 +88,19 @@ async def _client(app):
 
 
 # ── 验收 1:政策类问题日志可见强制检索节点;纯业务查询不检索 ──
+# ch06 Task 7:refund 走正式子流程,断言从 retrieve/confidence_gate 迁至
+# refund_scope/refund_policy;脚本须插 refund_scope 的 mode 段(general)。
 
 async def test_a1_knowledge_runs_retrieve_and_logs(caplog):
     app = _make_app(
         [['{"intent":"退款退货","confidence":0.9}'],
+         ['{"mode":"general"}'],
          ["7 天无理由退货[1]。"]],
         retriever=_FakeRetriever(_result()))
     async with await _client(app) as client:
         with caplog.at_level(logging.INFO, logger="wayhelp.graph"):
             frames, _ = await _turn(client, "退货政策是什么")
-    assert "node=retrieve" in caplog.text and "node=confidence_gate" in caplog.text
+    assert "node=refund_scope" in caplog.text and "node=refund_policy" in caplog.text
     assert _deltas(frames) == "7 天无理由退货[1]。"
 
 
@@ -112,7 +115,7 @@ async def test_a1_business_skips_retrieve(caplog):
     async with await _client(app) as client:
         with caplog.at_level(logging.INFO, logger="wayhelp.graph"):
             await _turn(client, "订单 1001 的物流到哪了")
-    assert rt.calls == [] and "node=retrieve" not in caplog.text
+    assert rt.calls == [] and "node=refund_policy" not in caplog.text
 
 
 # ── 验收 2:Agent 自调工具作答 ──
@@ -200,8 +203,9 @@ async def test_a5_multi_step_react():
 
 async def test_a6_pooling_rules(db_session_factory):
     from app.models import LowConfidenceQuestion
-    # 维护态:不入池,回 KB_UNAVAILABLE_ANSWER
-    app = _make_app([['{"intent":"售后","confidence":0.9}']],
+    # 维护态:不入池,回 KB_UNAVAILABLE_ANSWER(维修寄修=通用政策问 → mode general)
+    app = _make_app([['{"intent":"售后","confidence":0.9}'],
+                     ['{"mode":"general"}']],
                     retriever=_FakeRetriever(_result(note=NOTE_REBUILDING,
                                                      low=True, hits=[], score=None)),
                     db_sf=db_session_factory)
@@ -210,7 +214,8 @@ async def test_a6_pooling_rules(db_session_factory):
         assert _deltas(frames) == KB_UNAVAILABLE_ANSWER
         assert not any(isinstance(f, dict) and f["type"] == "citations" for f in frames)
     # 零命中:入 retrieval_low_conf
-    app = _make_app([['{"intent":"售后","confidence":0.9}']],
+    app = _make_app([['{"intent":"售后","confidence":0.9}'],
+                     ['{"mode":"general"}']],
                     retriever=_FakeRetriever(_result(note=NOTE_NOT_BUILT,
                                                      low=True, hits=[], score=None)),
                     db_sf=db_session_factory)
@@ -219,6 +224,7 @@ async def test_a6_pooling_rules(db_session_factory):
         assert _deltas(frames) == REFUSAL_ANSWER
     # 高分但模型自评拒答:入 self_check
     app = _make_app([['{"intent":"退款退货","confidence":0.9}'],
+                     ['{"mode":"general"}'],
                      [REFUSAL_ANSWER]],
                     retriever=_FakeRetriever(_result()), db_sf=db_session_factory)
     async with await _client(app) as client:
@@ -242,6 +248,7 @@ async def test_a7_state_reset_between_turns():
     rt = _FakeRetriever(_result(low=True, hits=[], score=0.01))
     app = _make_app(
         [['{"intent":"退款退货","confidence":0.9}'],   # 第一轮:低置信被拒
+         ['{"mode":"general"}'],                    # refund_scope(火星特产无个案订单)
          ['{"resolved_query": ""}'],                # 第二轮 understand 罐头透传(有历史)
          ['{"intent":"闲聊","confidence":0.9}'],      # 第二轮:闲聊
          ],

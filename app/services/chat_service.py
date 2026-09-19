@@ -64,8 +64,15 @@ class SuggestActionsEvent:
     options: list[dict]
 
 
+@dataclass(frozen=True)
+class OrderSelectorEvent:
+    """ch06(spec §8):图挂起后绑定 interrupt ID 的订单选择器帧。"""
+    interrupt_id: str
+    orders: list[dict]
+
+
 ChatEvent = Union[SessionEvent, DeltaEvent, ToolStartEvent, ToolEndEvent, DoneEvent,
-                  ErrorEvent, CitationsEvent, SuggestActionsEvent]
+                  ErrorEvent, CitationsEvent, SuggestActionsEvent, OrderSelectorEvent]
 
 
 class SessionLockRegistry:
@@ -104,8 +111,8 @@ class PreparedTurn:
     session_id: str
     user_text: str
     lock_key: str
-    released: bool = False
     user_id: str = ""
+    released: bool = False
 
 
 class ChatService:
@@ -178,9 +185,22 @@ class ChatService:
                 logger.exception("chat graph error")
                 yield ErrorEvent("internal_error", "服务内部错误")
                 return
+            async for event in self._pending_selector_events(config):
+                yield event
             yield DoneEvent()
         finally:
             self.release_turn(turn)
+
+    async def _pending_selector_events(self, config) -> AsyncIterator[ChatEvent]:
+        """图挂起(仍在会话锁内):读 pending interrupt,发绑定其 ID 的订单选择器(spec §8)。"""
+        st = await self._graph.aget_state(config)
+        for task in st.tasks:
+            for intr in task.interrupts:
+                value = getattr(intr, "value", None) or {}
+                if value.get("type") == "order_selector":
+                    yield OrderSelectorEvent(interrupt_id=intr.id,
+                                             orders=value.get("orders") or [])
+                    return
 
     @staticmethod
     def _translate_custom(payload) -> ChatEvent | None:

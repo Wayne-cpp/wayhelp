@@ -9,8 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes import (
-    GraphDeps, build_front_nodes, parse_expand_output, parse_intent_output,
-    parse_refund_scope_output, parse_understand_output,
+    GraphDeps, build_front_nodes, build_refund_nodes, parse_expand_output,
+    parse_intent_output, parse_refund_scope_output, parse_understand_output,
 )
 from app.graph.state import ChatGraphState, new_turn_state
 from tests.conftest import TEST_USER_ID, make_settings
@@ -251,46 +251,289 @@ def _knodes(result=None, exc=None):
     return build_knowledge_nodes(deps)
 
 
-async def test_retrieve_ok_snapshot_serializable():
-    import json as _json
+# ── ch06 Task 7:refund 子流程三节点(refund_scope / refund_prepare / refund_policy)──
+# 旧 retrieve/confidence_gate 用例按计划迁移为 refund_policy 用例(单查询路径状态映射等价):
+# 维护 note→unavailable、低置信→low_conf_fields、ok→evidence。
+
+def _kh(cid, score=0.9):
     from app.knowledge.retriever import KnowledgeHit
-    hit = KnowledgeHit(chunk_id=7, score=0.9, category="policy", questions="q",
-                       answer="a", source_doc="d.md", chunk_index=0, section_path="退货")
-    nodes = _knodes(result=_result(hits=[hit]))
+    return KnowledgeHit(chunk_id=cid, score=score, category="policy", questions="q",
+                        answer="a", source_doc="d.md", chunk_index=0, section_path="退货")
+
+
+def _scope_graph(model):
+    nodes = build_front_nodes(GraphDeps(model=model, settings=make_settings(),
+                                        retriever=None, store=None))
+    g = StateGraph(ChatGraphState)
+    g.add_node("refund_scope", nodes["refund_scope"])
+    g.add_edge(START, "refund_scope")
+    g.add_edge("refund_scope", END)
+    return g.compile()
+
+
+@pytest.mark.parametrize("text,mode", [
+    ('{"mode":"general"}', "general"),
+    ('{"mode":"order_specific"}', "order_specific"),
+    ('{"mode":"clarify"}', "clarify"),
+    ('{"mode":"unknown"}', "clarify"),   # 枚举外降级
+    ("废话", "clarify"),                 # 解析失败降级
+])
+async def test_refund_scope_modes_and_degradation(text, mode):
+    st = new_turn_state("如何申请退款")
+    st["resolved_query"] = "如何申请退款"
+    out = await _scope_graph(_ClassifyModel(text)).ainvoke(st)
+    assert out["refund_mode"] == mode
+
+
+async def test_refund_scope_model_error_degrades_to_clarify():
+    class _Boom:
+        async def ainvoke(self, m):
+            raise ConnectionError("x")
+    st = new_turn_state("q"); st["resolved_query"] = "q"
+    out = await _scope_graph(_Boom()).ainvoke(st)
+    assert out["refund_mode"] == "clarify"
+
+
+def _prepare_graph():
+    """refund_prepare 含 interrupt(),必须经带 checkpointer 的编译图驱动。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+    nodes = build_refund_nodes(GraphDeps(model=None, settings=make_settings(),
+                                         retriever=None, store=None))
+    g = StateGraph(ChatGraphState)
+    g.add_node("refund_prepare", nodes["refund_prepare"])
+    g.add_edge(START, "refund_prepare")
+    g.add_edge("refund_prepare", END)
+    return g.compile(checkpointer=InMemorySaver())
+
+
+async def test_refund_prepare_direct_with_valid_order():
+    g = _prepare_graph()
+    st = new_turn_state("订单 1111-1001 能退吗")
+    st["resolved_query"] = "订单 1111-1001 能退吗"
+    out = await g.ainvoke(st, config=_cfg())  # 直达 END,无 interrupt
+    assert out["order_context"]["order_id"] == "1111-1001"
+    assert out["order_context"]["product"] == "保温杯"
+
+
+async def test_refund_prepare_interrupts_and_resumes():
+    from langgraph.types import Command
+    g = _prepare_graph()
+    cfg = {"configurable": {"thread_id": "t1", "user_id": TEST_USER_ID}}
+    st = new_turn_state("这个能退吗")
+    st["resolved_query"] = "这个能退吗"
+    await g.ainvoke(st, config=cfg)  # 挂起
+    snap = await g.aget_state(cfg)
+    intrs = [i for t in snap.tasks for i in t.interrupts]
+    assert len(intrs) == 1 and intrs[0].value["type"] == "order_selector"
+    assert [o["order_id"] for o in intrs[0].value["orders"]] == \
+        ["1111-1001", "1111-1002", "1111-1003", "1111-1004"]
+    out = await g.ainvoke(Command(resume={intrs[0].id: {"order_id": "1111-1002"}}),
+                          config=cfg)
+    assert out["order_context"]["order_id"] == "1111-1002"
+
+
+async def test_refund_prepare_multi_candidates_and_cross_user_interrupt():
+    g = _prepare_graph()
+    cfg = {"configurable": {"thread_id": "t2", "user_id": TEST_USER_ID}}
+    st = new_turn_state("1111-1001 和 1111-1002 哪个能退")
+    st["resolved_query"] = "1111-1001 和 1111-1002 哪个能退"
+    await g.ainvoke(st, config=cfg)  # 多候选 → 挂起
+    snap = await g.aget_state(cfg)
+    assert any(i for t in snap.tasks for i in t.interrupts)
+    # 他人订单号:原文显式但无归属 → 不直通,挂起
+    cfg2 = {"configurable": {"thread_id": "t3", "user_id": TEST_USER_ID}}
+    st2 = new_turn_state("2222-1001 能退吗")
+    st2["resolved_query"] = "2222-1001 能退吗"
+    await g.ainvoke(st2, config=cfg2)
+    snap2 = await g.aget_state(cfg2)
+    assert any(i for t in snap2.tasks for i in t.interrupts)
+
+
+def _rnodes(model=None, result=None, exc=None, retriever=None, **settings_over):
+    r = retriever if retriever is not None else _FakeRetriever(result, exc)
+    deps = GraphDeps(model=model, settings=make_settings(**settings_over),
+                     retriever=r, store=None)
+    return build_refund_nodes(deps)
+
+
+class _ExpandModel:
+    """按调用序返回脚本文本的 ainvoke 桩(扩写);记录 prompt。"""
+
+    def __init__(self, texts):
+        self._texts = list(texts)
+        self.prompts = []
+
+    async def ainvoke(self, messages):
+        self.prompts.append(messages[-1].content)
+        return AIMessage(content=self._texts.pop(0))
+
+
+class _RankRetriever:
+    """search 按调用序循环返回预设结果;rerank_candidates 记录调用,可返回统一结果/None/抛错。"""
+
+    def __init__(self, results, rerank="unset", rerank_exc=None):
+        self._results = list(results)
+        self._n = 0
+        self.search_queries = []
+        self.rerank_calls = []
+        self._rerank, self._rerank_exc = rerank, rerank_exc
+
+    def search(self, query, **kw):
+        self.search_queries.append(query)
+        r = self._results[self._n % len(self._results)]
+        self._n += 1
+        return r
+
+    def rerank_candidates(self, query, hits, deadline=None):
+        self.rerank_calls.append((query, [h.chunk_id for h in hits]))
+        if self._rerank_exc:
+            raise self._rerank_exc
+        if self._rerank is None:
+            return None
+        assert self._rerank != "unset"
+        return self._rerank
+
+
+def _st_order(query="这个能退吗", order_id="1111-1001"):
+    from dataclasses import asdict
+    from app.services.orders import get_order
+    st = new_turn_state(query)
+    st["resolved_query"] = query
+    st["order_context"] = asdict(get_order(TEST_USER_ID, order_id))
+    return st
+
+
+async def test_refund_policy_ok_snapshot_serializable_with_evidence():
+    import json as _json
+    nodes = _rnodes(result=_result(hits=[_kh(7)]))
     st = new_turn_state("退货政策")
     st["resolved_query"] = "退货政策"
-    out = await nodes["retrieve"](st)
+    out = await nodes["refund_policy"](st)
     assert out["retrieval_status"] == "ok"
     _json.dumps(out["retrieval_result"])  # 快照必须可序列化(进 checkpoint)
     assert out["retrieval_result"]["hits"][0]["chunk_id"] == 7
+    assert out["evidence"][0]["chunk_id"] == 7          # ok → evidence(gate 合并语义)
+    assert out["expanded_queries"] == ["退货政策"]      # 单查询也记录实际执行列表
 
 
-async def test_retrieve_unavailable_states_not_pooled():
+async def test_refund_policy_unavailable_states_not_pooled():
     for note, code in ((NOTE_UNCONFIGURED, "kb_unconfigured"),
                        (NOTE_REBUILDING, "kb_rebuilding")):
-        nodes = _knodes(result=_result(note=note, low=True, score=None))
+        nodes = _rnodes(result=_result(note=note, low=True, score=None))
         st = new_turn_state("q"); st["resolved_query"] = "q"
-        out = await nodes["retrieve"](st)
+        out = await nodes["refund_policy"](st)
         assert out["retrieval_status"] == "unavailable"
         assert out["retrieval_error_code"] == code  # 即使 low_confidence=True 也不算知识缺口
+        assert "low_conf_source" not in out
 
 
-async def test_retrieve_exception_is_unavailable():
-    nodes = _knodes(exc=TimeoutError("timeout"))
+async def test_refund_policy_exception_is_unavailable():
+    nodes = _rnodes(exc=TimeoutError("timeout"))
     st = new_turn_state("q"); st["resolved_query"] = "q"
-    out = await nodes["retrieve"](st)
+    out = await nodes["refund_policy"](st)
     assert out["retrieval_status"] == "unavailable"
     assert out["retrieval_error_code"] == "kb_unavailable"
+    assert out["expanded_queries"] == ["q"]
 
 
-async def test_gate_low_confidence_marks_pool_fields():
-    nodes = _knodes(result=_result(note=NOTE_NOT_BUILT, low=True, score=None))
+async def test_refund_policy_retriever_none_unconfigured():
+    deps = GraphDeps(model=None, settings=make_settings(), retriever=None, store=None)
+    nodes = build_refund_nodes(deps)
     st = new_turn_state("q"); st["resolved_query"] = "q"
-    st.update(await nodes["retrieve"](st))
-    out = await nodes["confidence_gate"](st)
+    out = await nodes["refund_policy"](st)
+    assert out["retrieval_status"] == "unavailable"
+    assert out["retrieval_error_code"] == "kb_unconfigured"
+
+
+async def test_refund_policy_low_confidence_marks_pool_fields():
+    from app.graph.nodes import route_after_gate
+    nodes = _rnodes(result=_result(note=NOTE_NOT_BUILT, low=True, score=None))
+    st = new_turn_state("q"); st["resolved_query"] = "q"
+    out = await nodes["refund_policy"](st)
     assert out["low_conf_source"] == "retrieval_low_conf"
     assert out["low_conf_reason"]["note"] == NOTE_NOT_BUILT
-    assert nodes["route_after_gate"]({**st, **out}) == "gate_fallback"
+    assert route_after_gate({**st, **out}) == "gate_fallback"
+
+
+async def test_refund_policy_no_expand_without_order_context():
+    model = _ExpandModel([])  # 若被调用 pop(0) 即 IndexError → 用例炸
+    nodes = _rnodes(model=model, result=_result(hits=[_kh(7)]))
+    st = new_turn_state("如何申请退款")
+    st["resolved_query"] = "如何申请退款"
+    out = await nodes["refund_policy"](st)
+    assert model.prompts == []                       # general 不扩写(spec §6.4)
+    assert out["expanded_queries"] == ["如何申请退款"]
+    assert out["retrieval_status"] == "ok"
+
+
+async def test_refund_policy_no_expand_when_disabled_or_not_rerank():
+    for over in ({"refund_expand_enabled": False},
+                 {"knowledge_strategy": "hybrid"}):
+        model = _ExpandModel([])
+        nodes = _rnodes(model=model, result=_result(hits=[_kh(7)]), **over)
+        out = await nodes["refund_policy"](_st_order())
+        assert model.prompts == []
+        assert len(out["expanded_queries"]) == 1
+
+
+async def test_refund_policy_expands_appends_order_facts_and_reranks_unified():
+    from app.knowledge.retriever import RetrievalResult
+    unified = RetrievalResult(
+        hits=[_kh(8, 0.95), _kh(7, 0.9)], requested_strategy="hybrid_rerank",
+        effective_strategy="hybrid_rerank", confidence_score=0.95,
+        confidence_threshold=0.0553, low_confidence=False, note=None,
+        query_plan=None, leg_counts={"rerank": 1})
+    rt = _RankRetriever(results=[_result(hits=[_kh(7)]),
+                                 _result(hits=[_kh(8), _kh(7)])], rerank=unified)
+    model = _ExpandModel(['{"queries":["退货期限是多久","运费谁承担"]}'])
+    nodes = _rnodes(model=model, retriever=rt)
+    out = await nodes["refund_policy"](_st_order())
+    # base 第一条;订单事实只附加进检索问句(expanded_queries 记实际执行列表)
+    assert len(out["expanded_queries"]) == 3
+    assert out["expanded_queries"][0] == rt.search_queries[0]
+    assert len(rt.search_queries) == 3
+    assert rt.search_queries[0].startswith("这个能退吗")
+    assert "保温杯" in rt.search_queries[0] and "定制" not in rt.search_queries[0]
+    assert rt.rerank_calls[0][1] == [7, 8]   # 只按 chunk_id 去重合并,不比较各查询分数(D10)
+    assert out["retrieval_status"] == "ok"
+    assert out["retrieval_result"]["confidence_score"] == 0.95   # 统一重排结果
+    assert out["evidence"][0]["chunk_id"] == 8
+
+
+async def test_refund_policy_rerank_failure_keeps_base_result():
+    base = _result(hits=[_kh(7)])  # score 0.9 ≥ 阈值
+    rt = _RankRetriever(results=[base], rerank=None)
+    model = _ExpandModel(['{"queries":["退货期限是多久"]}'])
+    nodes = _rnodes(model=model, retriever=rt)
+    out = await nodes["refund_policy"](_st_order())
+    assert out["retrieval_status"] == "ok"
+    assert out["retrieval_result"]["confidence_score"] == 0.9   # base 完整策略/分数/阈值
+    assert out["retrieval_result"]["note"] == "unified_rerank_failed"  # 可观测回退原因
+    assert out["evidence"][0]["chunk_id"] == 7
+
+
+async def test_refund_policy_expand_parse_failure_degrades_single_query():
+    rt = _RankRetriever(results=[_result(hits=[_kh(7)])], rerank="unset")
+    model = _ExpandModel(["废话"])  # 解析失败 → 单查询降级
+    nodes = _rnodes(model=model, retriever=rt)
+    out = await nodes["refund_policy"](_st_order())
+    assert len(rt.search_queries) == 1                       # 只查 base_query
+    assert rt.rerank_calls == []                             # 单查询无统一重排
+    assert out["expanded_queries"] == [rt.search_queries[0]]
+    assert out["retrieval_result"]["note"] == "expand_degraded:ValueError"
+    assert out["retrieval_status"] == "ok"
+
+
+async def test_refund_policy_maintenance_on_any_query_unavailable():
+    ok = _result(hits=[_kh(7)])
+    rebuilding = _result(note=NOTE_REBUILDING, low=True, hits=[], score=None)
+    rt = _RankRetriever(results=[ok, rebuilding])
+    model = _ExpandModel(['{"queries":["第二问"]}'])
+    nodes = _rnodes(model=model, retriever=rt)
+    out = await nodes["refund_policy"](_st_order())
+    assert out["retrieval_status"] == "unavailable"          # 任一查询维护态 → 整轮不可用
+    assert out["retrieval_error_code"] == "kb_rebuilding"
+    assert len(out["expanded_queries"]) == 2
 
 
 def _gate_graph(nodes):

@@ -43,6 +43,7 @@ SYSTEM = "你是电商售后客服小蜜。"
 # 分类段脚本(经 ainvoke 消耗);其后每段归 main_agent 的一次 astream
 BUSINESS = ['{"intent":"订单","needs_knowledge":false}']
 KNOWLEDGE = ['{"intent":"售后","needs_knowledge":true}']
+GEN = ['{"mode":"general"}']  # ch06 Task 7:售后脚本须经 refund_scope(general)进 refund_policy
 CHITCHAT = ['{"intent":"闲聊","needs_knowledge":false}']
 
 
@@ -413,7 +414,7 @@ class OkRetriever:
 
 async def test_hard_gate_refusal_skips_agent():
     service, store, model = make_service(
-        [KNOWLEDGE, ["不应被调用"]], retriever=LowConfRetriever())
+        [KNOWLEDGE, GEN, ["不应被调用"]], retriever=LowConfRetriever())
     turn = await service.prepare(TEST_USER_ID, None, "能寄到日本吗")
     events = [e async for e in service.stream(turn)]
     deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
@@ -430,7 +431,7 @@ async def test_hard_gate_refusal_skips_agent():
 
 async def test_self_check_refusal_pools_self_check():
     service, store, model = make_service(
-        [KNOWLEDGE, [REFUSAL_ANSWER]], retriever=OkRetriever())
+        [KNOWLEDGE, GEN, [REFUSAL_ANSWER]], retriever=OkRetriever())
     turn = await service.prepare(TEST_USER_ID, None, "能寄到日本吗")
     events = [e async for e in service.stream(turn)]
     deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))
@@ -444,7 +445,7 @@ async def test_self_check_refusal_pools_self_check():
 
 async def test_citations_event_pushed_with_evidence():
     service, store, _ = make_service(
-        [KNOWLEDGE, ["目前仅支持中国大陆地区配送 [1]"]], retriever=OkRetriever())
+        [KNOWLEDGE, GEN, ["目前仅支持中国大陆地区配送 [1]"]], retriever=OkRetriever())
     turn = await service.prepare(TEST_USER_ID, None, "能寄到日本吗")
     events = [e async for e in service.stream(turn)]
     cit = next(e for e in events if isinstance(e, CitationsEvent))
@@ -467,7 +468,7 @@ async def test_kb_unavailable_not_pooled():
                                    True, NOTE_REBUILDING, passthrough_plan(q), {})
 
     service, store, model = make_service(
-        [KNOWLEDGE, ["不应被调用"]], retriever=RebuildingRetriever())
+        [KNOWLEDGE, GEN, ["不应被调用"]], retriever=RebuildingRetriever())
     turn = await service.prepare(TEST_USER_ID, None, "能寄到日本吗")
     events = [e async for e in service.stream(turn)]
     deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))

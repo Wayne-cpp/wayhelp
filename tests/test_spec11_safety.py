@@ -23,6 +23,7 @@ USER = TEST_USER_ID
 
 BUSINESS = ['{"intent":"订单","needs_knowledge":false}']
 KNOWLEDGE = ['{"intent":"售后","needs_knowledge":true}']
+GEN = ['{"mode":"general"}']  # ch06 Task 7:售后脚本须经 refund_scope(general)进 refund_policy
 
 
 def _service(model, settings=None, store=None, retriever=None):
@@ -98,7 +99,7 @@ async def test_tool_context_too_long_is_final_frame_no_commit():
 
     settings = make_settings(max_input_tokens=200, max_tool_result_chars=100000)
     store = InMemorySessionStore(10, 10, 100)
-    model = ScriptedChatModel(scripts=[KNOWLEDGE, ["不应发生的回答"]])
+    model = ScriptedChatModel(scripts=[KNOWLEDGE, GEN, ["不应发生的回答"]])
     service, store = _service(model, settings=settings, store=store,
                               retriever=LongAnswerRetriever())
     turn = await service.prepare(TEST_USER_ID, None, "查政策")

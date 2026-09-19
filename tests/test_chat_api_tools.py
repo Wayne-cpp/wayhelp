@@ -14,6 +14,7 @@ from tests.test_chat_api import parse_frames, post_stream
 
 BUSINESS = ['{"intent":"订单","needs_knowledge":false}']
 KNOWLEDGE = ['{"intent":"售后","needs_knowledge":true}']
+GEN = ['{"mode":"general"}']  # ch06 Task 7:售后脚本须经 refund_scope(general)进 refund_policy
 COMPLAINT = ['{"intent":"投诉","needs_knowledge":false}']
 
 ORDER_CALL = [{"name": "query_order", "args": "{\"order_id\": \"1111-1001\"}",
@@ -173,7 +174,7 @@ class _LowConfRetriever:
 
 
 async def test_citations_frame_over_sse():
-    app = make_app([KNOWLEDGE, ["目前仅支持中国大陆地区配送 [1]"]],
+    app = make_app([KNOWLEDGE, GEN, ["目前仅支持中国大陆地区配送 [1]"]],
                    retriever=_OkRetriever())
     status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "能寄到日本吗"})
     assert status == 200
@@ -188,7 +189,7 @@ async def test_citations_frame_over_sse():
 
 
 async def test_hard_gate_refusal_frame_over_sse():
-    app = make_app([KNOWLEDGE, ["不应被调用"]], retriever=_LowConfRetriever())
+    app = make_app([KNOWLEDGE, GEN, ["不应被调用"]], retriever=_LowConfRetriever())
     status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "能寄到日本吗"})
     assert status == 200
     frames = parse_frames(lines)
