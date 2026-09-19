@@ -12,10 +12,10 @@ from app.prompts.service import REFUSAL_ANSWER, SERVICE_SYSTEM_PROMPT
 from tests.conftest import TEST_USER_ID, ScriptedChatModel, UserBoundMemoryStore, make_settings
 from tests.test_chat_api import parse_frames, post_stream
 
-BUSINESS = ['{"intent":"订单","needs_knowledge":false}']
-KNOWLEDGE = ['{"intent":"售后","needs_knowledge":true}']
+BUSINESS = ['{"intent":"订单","confidence":0.9}']
+KNOWLEDGE = ['{"intent":"售后","confidence":0.9}']
 GEN = ['{"mode":"general"}']  # ch06 Task 7:售后脚本须经 refund_scope(general)进 refund_policy
-COMPLAINT = ['{"intent":"投诉","needs_knowledge":false}']
+COMPLAINT = ['{"intent":"投诉","confidence":0.9}']
 
 ORDER_CALL = [{"name": "query_order", "args": "{\"order_id\": \"1111-1001\"}",
                "id": "call_1", "index": 0}]

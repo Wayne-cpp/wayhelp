@@ -25,7 +25,7 @@ def _deps(model):
 
 async def test_graph_compiles_and_routes_chitchat():
     model = ScriptedChatModel(scripts=[[
-        '{"intent":"闲聊","needs_knowledge":false}']])
+        '{"intent":"闲聊","confidence":0.9}']])
     graph = build_chat_graph(_deps(model), InMemorySaver())
     out = await graph.ainvoke(new_turn_state("你好"),
                               {"configurable": {"thread_id": "t1"}})
@@ -38,7 +38,7 @@ async def test_messages_mode_streams_agent_tokens_with_node_metadata():
     """验收 messages 流:ScriptedChatModel 是真 Runnable,回调链完整,
     token 必须带 langgraph_node 元数据从图里流出(分类节点的不许漏出)。"""
     model = ScriptedChatModel(scripts=[
-        ['{"intent":"订单","needs_knowledge":false}'],
+        ['{"intent":"订单","confidence":0.9}'],
         ["订单 1001 ", "已发货。"],
     ])
     graph = build_chat_graph(_deps(model), InMemorySaver())

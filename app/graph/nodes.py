@@ -331,10 +331,12 @@ def build_refund_nodes(deps: GraphDeps) -> dict:
                     unified = None
             if unified is not None:
                 result = unified
-            else:
+            elif candidates:  # 重排真跑过且失败:回退 base 完整策略/分数/阈值+可观测 note
                 note = ";".join(x for x in
                                 (base.note, expand_note or "unified_rerank_failed") if x)
-                result = replace(base, note=note or None)  # 回退 base 完整策略/分数/阈值
+                result = replace(base, note=note or None)
+            else:  # 无新增有效候选:rerank 未运行,直接使用该回退结果,不挂失败 note(spec §6.4)
+                result = base
         elif expand_note:
             result = replace(base, note=";".join(x for x in (base.note, expand_note) if x) or None)
         out = state_fields_for_result(result)

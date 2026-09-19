@@ -512,6 +512,17 @@ async def test_refund_policy_rerank_failure_keeps_base_result():
     assert out["evidence"][0]["chunk_id"] == 7
 
 
+async def test_refund_policy_zero_candidates_skips_rerank_and_note():
+    # FIX B(ch06 评审):零候选 = rerank 从未运行,直接回退 base,不挂失败 note(spec §6.4)
+    rt = _RankRetriever(results=[_result(hits=[])], rerank="unset")
+    model = _ExpandModel(['{"queries":["退货期限是多久"]}'])
+    nodes = _rnodes(model=model, retriever=rt)
+    out = await nodes["refund_policy"](_st_order())
+    assert rt.rerank_calls == []                       # 无候选可排,统一重排未运行
+    assert out["retrieval_result"]["note"] is None     # 未失败不挂 unified_rerank_failed
+    assert out["retrieval_status"] == "ok"             # 直接使用该回退结果(base)
+
+
 async def test_refund_policy_expand_parse_failure_degrades_single_query():
     rt = _RankRetriever(results=[_result(hits=[_kh(7)])], rerank="unset")
     model = _ExpandModel(["废话"])  # 解析失败 → 单查询降级

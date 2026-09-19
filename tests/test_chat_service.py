@@ -41,10 +41,10 @@ from tests.conftest import TEST_USER_ID, ScriptedChatModel, make_settings
 SYSTEM = "你是电商售后客服小蜜。"
 
 # 分类段脚本(经 ainvoke 消耗);其后每段归 main_agent 的一次 astream
-BUSINESS = ['{"intent":"订单","needs_knowledge":false}']
-KNOWLEDGE = ['{"intent":"售后","needs_knowledge":true}']
+BUSINESS = ['{"intent":"订单","confidence":0.9}']
+KNOWLEDGE = ['{"intent":"售后","confidence":0.9}']
 GEN = ['{"mode":"general"}']  # ch06 Task 7:售后脚本须经 refund_scope(general)进 refund_policy
-CHITCHAT = ['{"intent":"闲聊","needs_knowledge":false}']
+CHITCHAT = ['{"intent":"闲聊","confidence":0.9}']
 
 
 def make_service(scripts, retriever=None, store=None, **settings_over):
@@ -371,7 +371,7 @@ async def test_chitchat_zero_model_calls():
 
 
 async def test_complaint_fixed_reply_and_suggest_actions_event():
-    service, store, _ = make_service([['{"intent":"投诉","needs_knowledge":false}']])
+    service, store, _ = make_service([['{"intent":"投诉","confidence":0.9}']])
     turn = await service.prepare(TEST_USER_ID, None, "服务太差,我要投诉")
     events = [e async for e in service.stream(turn)]
     deltas = "".join(e.content for e in events if isinstance(e, DeltaEvent))

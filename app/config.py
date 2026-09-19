@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     max_agent_tokens: int = Field(default=20000, gt=0)  # 本轮累计 token 预算(usage 或预留估算)
     checkpoint_db_path: str = "./data/checkpoints.db"
     understand_history_turns: int = Field(default=6, gt=0)  # 指代消解输入的最近完整轮数
-    intent_model_name: str | None = None       # 意图/理解/扩写模型;None = 复用主模型(D5)
+    intent_model_name: str | None = None       # reserved,未接线(双模型 cascade 明确不在本章范围);None = 复用主模型(D5)
     refund_expand_enabled: bool = True         # order_specific 扩写开关(§6.4)
 
     def has_rerank_key(self) -> bool:
