@@ -74,3 +74,14 @@ def test_chat_page_action_buttons_logic():
                    "已转接人工客服", "您好，我是客服小猫，请问有什么可以帮您的",
                    "/v1/chat/action", "action-bar", "ticket_type"):
         assert needle in html
+
+
+def test_chat_page_order_selector_and_refund_form():
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent
+            / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    # ch06 Task 11:订单选择器卡组 + 退款表单的 needle 钉(Vibe 例外,无 TDD)
+    for needle in ("order_selector", "interrupt_id", "/v1/chat/resume",
+                   "order-card", "已选择订单", "该选择已失效",
+                   "refund_form", "create_refund", "七天无理由", "拍错或多拍"):
+        assert needle in html

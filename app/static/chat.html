@@ -428,6 +428,146 @@
     text-align: center; color: #888; font-size: 12px; margin: 10px 0;
   }
 
+  /* ─── 订单选择器卡组(ch06 spec §12):样式全部消费既有 token ── */
+  .order-cards {
+    display: flex; flex-direction: column;
+    gap: var(--space-2);
+    width: 100%;
+    max-width: 420px;
+  }
+  .order-card {
+    display: flex; flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-3) var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    transition: border-color var(--motion-fast) var(--ease-standard),
+                background var(--motion-fast) var(--ease-standard),
+                box-shadow var(--motion-fast) var(--ease-standard);
+  }
+  .order-card:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 4%, var(--surface));
+  }
+  .order-card:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .order-card:disabled { opacity: 0.55; cursor: not-allowed; }
+  .order-card.picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .order-card-head {
+    display: flex; align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+  .order-card-id {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.03em;
+    color: var(--fg-2);
+    word-break: break-all;
+  }
+  .order-card-amount {
+    flex: none;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .order-card-line { font-size: var(--text-sm); color: var(--fg-2); }
+  .order-card-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.02em;
+    color: var(--muted);
+  }
+
+  /* ─── 退款申请表单层(ch06 spec §12)──────────────────────────── */
+  .refund-mask {
+    position: fixed; inset: 0; z-index: 60;
+    display: grid; place-items: center;
+    padding: var(--space-4);
+    background: color-mix(in oklab, var(--fg) 40%, transparent);
+  }
+  .refund-panel {
+    width: min(420px, 100%);
+    display: flex; flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-5);
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--elev-raised);
+    animation: rise var(--motion-base) var(--ease-standard);
+  }
+  .refund-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 19px;
+    font-weight: 500;
+    line-height: var(--leading-tight);
+    color: var(--fg);
+  }
+  .refund-field {
+    display: flex; flex-direction: column;
+    gap: var(--space-1);
+  }
+  .refund-label { font-size: var(--text-sm); color: var(--muted); }
+  .refund-order {
+    padding: 8px var(--space-3);
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--fg-2);
+    word-break: break-all;
+  }
+  .refund-select {
+    padding: 8px var(--space-2);
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--text-sm);
+  }
+  .refund-select:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .refund-btns {
+    display: flex; justify-content: flex-end;
+    gap: var(--space-2);
+  }
+  .refund-cancel {
+    padding: 7px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-pill);
+    color: var(--fg-2);
+    font-size: var(--text-sm);
+    transition: background var(--motion-fast) var(--ease-standard),
+                border-color var(--motion-fast) var(--ease-standard);
+  }
+  .refund-cancel:hover:not(:disabled) {
+    background: var(--surface-warm);
+    border-color: var(--fg-2);
+  }
+  .refund-submit {
+    padding: 7px 14px;
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-pill);
+    color: var(--accent-on);
+    font-size: var(--text-sm);
+    transition: background var(--motion-fast) var(--ease-standard);
+  }
+  .refund-submit:hover:not(:disabled) { background: var(--accent-hover); }
+  .refund-submit:disabled {
+    background: var(--surface-warm);
+    border-color: var(--surface-warm);
+    color: var(--meta);
+    cursor: not-allowed;
+  }
+
   /* ─── composer ─────────────────────────────────────────────────── */
   .composer {
     padding: var(--space-3) var(--space-5) var(--space-2);
@@ -562,6 +702,8 @@
   var sessionId = null;
   var streaming = false;
   var suggestionsEl = null;
+  var orderGroups = [];   // 页面上未消费的订单卡组;新消息发出即全部失效
+  var refundForm = null;  // 当前打开的退款表单层,同时最多一个
   // 用户上翻阅读历史时,流式输出不再强行拽回底部
   var stickToBottom = true;
   messagesEl.addEventListener("scroll", function () {
@@ -790,6 +932,9 @@
           // 本章纯前端模拟,不接真人系统,不发任何请求
           addSystemHint("已转接人工客服");
           addBubble("assistant", KITTEN_GREETING);
+        } else if (opt.action === "refund_form") {
+          // 打开退款申请表单层;order_id 由服务端按 order_context 绑定(spec §6.6)
+          openRefundForm(captured, opt, btn);
         } else if (opt.action === "create_ticket") {
           fetch("/v1/chat/action", {
             method: "POST",
@@ -813,6 +958,226 @@
     });
     col.appendChild(bar);
     scrollToBottom();
+  }
+
+  /* ─── 订单选择器卡组(ch06 spec §12):捕获式身份 + resume 追加原轮 ── */
+  function disableOrderCards(group) {
+    var cards = group.querySelectorAll(".order-card");
+    for (var i = 0; i < cards.length; i++) cards[i].disabled = true;
+  }
+
+  function expireOrderCards() {
+    // 新消息发出 = 会话前进,页面上未消费旧卡前端先失效(服务端仍全量校验)
+    orderGroups.forEach(disableOrderCards);
+    orderGroups = [];
+  }
+
+  function renderOrderCards(ui, evt) {
+    var group = document.createElement("div");
+    group.className = "order-cards";
+    group.setAttribute("data-od-id", "order-cards");
+    (evt.orders || []).forEach(function (o) {
+      var card = document.createElement("button");
+      card.type = "button";
+      card.className = "order-card";
+      // 捕获生成时身份:resume 不得从全局当前会话猜(spec §12)
+      var captured = { user_id: userId, session_id: sessionId,
+                       interrupt_id: evt.interrupt_id, order_id: o.order_id };
+      var head = document.createElement("div");
+      head.className = "order-card-head";
+      var idSpan = document.createElement("span");
+      idSpan.className = "order-card-id";
+      idSpan.textContent = o.order_id;
+      var amount = document.createElement("span");
+      amount.className = "order-card-amount";
+      amount.textContent = "¥" + Number(o.amount || 0).toFixed(2);
+      head.appendChild(idSpan);
+      head.appendChild(amount);
+      var line = document.createElement("div");
+      line.className = "order-card-line";
+      line.textContent = "商品：" + (o.product || "") + " · 状态：" + (o.status || "");
+      var meta = document.createElement("div");
+      meta.className = "order-card-meta";
+      meta.textContent = "下单 " + (o.created_at || "");
+      card.appendChild(head);
+      card.appendChild(line);
+      card.appendChild(meta);
+      card.addEventListener("click", function () {
+        pickOrder(group, card, captured, ui);
+      });
+      group.appendChild(card);
+    });
+    ui.col.appendChild(group);
+    orderGroups.push(group);
+    scrollToBottom();
+  }
+
+  function pickOrder(group, card, captured, ui) {
+    if (streaming) return;
+    orderGroups = orderGroups.filter(function (g) { return g !== group; });
+    disableOrderCards(group);  // 全组 disable:防双击/换选
+    card.classList.add("picked");
+    addSystemHint("已选择订单 " + captured.order_id);
+    setStreaming(true); // resume 轮同样独占会话,输入区锁定
+    resumeStream(captured, ui);
+  }
+
+  // 点卡 resume:输出追加到原挂起轮的助手区域,不新开用户气泡(spec §12)
+  async function resumeStream(captured, ui) {
+    var row = ui.row, bubble = ui.bubble;
+    row.classList.add("streaming");
+    bubble.style.display = ""; // 还原挂起时藏起的空气泡
+    bubble.innerHTML = '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>';
+    try {
+      var resp = await fetch("/v1/chat/resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(captured) // 恰四字段:user_id/session_id/interrupt_id/order_id
+      });
+      if (resp.status === 409) {
+        // 旧卡/已恢复卡/重复点击:服务端锁内已判定失效
+        bubble.style.display = "none";
+        bubble.textContent = "";
+        addSystemHint("该选择已失效，请重新描述您的问题");
+        return;
+      }
+      if (!resp.ok || !resp.body) {
+        var errText = "";
+        try {
+          var errJson = await resp.json();
+          errText = (errJson.error && errJson.error.message) || "";
+        } catch (e) { /* 非 JSON 响应 */ }
+        throw new Error(errText || ("请求失败（" + resp.status + "）"));
+      }
+      var out = await readChatStream(resp, ui);
+      if (!bubble.textContent) bubble.textContent = "(未收到回复)";
+      if (!row.classList.contains("error")) {
+        if (out.citations && out.citations.length) renderCitations(bubble, out.citations);
+        if (sessionId) addFeedback(ui.col, sessionId, fbReplyIndex++);
+      }
+    } catch (err) {
+      failRow(row, bubble, err.message);
+    } finally {
+      row.classList.remove("streaming");
+      setStreaming(false);
+      scrollToBottom();
+    }
+  }
+
+  /* ─── 退款申请表单层(ch06 spec §12):订单号只读回填,原因固定六类 ── */
+  var REFUND_REASONS = ["质量问题", "商品破损", "发错货", "未收到货", "拍错或多拍", "七天无理由"];
+
+  function closeRefundForm() {
+    if (refundForm && refundForm.parentNode) refundForm.parentNode.removeChild(refundForm);
+    refundForm = null;
+  }
+
+  function openRefundForm(captured, opt, btn) {
+    closeRefundForm();
+    // 捕获式:身份取自按钮生成时刻;order_id 是服务端绑定的退款按钮订单,
+    // 之后 active_order 焦点变化不改变本表单提交的订单(spec §10)
+    var ctx = { user_id: captured.user_id, session_id: captured.session_id,
+                source_message_id: captured.source_message_id,
+                order_id: opt.order_id };
+    var mask = document.createElement("div");
+    mask.className = "refund-mask";
+    var panel = document.createElement("div");
+    panel.className = "refund-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+    panel.setAttribute("aria-label", "申请退款");
+    panel.setAttribute("data-od-id", "refund-panel");
+
+    var title = document.createElement("h2");
+    title.className = "refund-title";
+    title.textContent = "申请退款";
+
+    var orderField = document.createElement("div");
+    orderField.className = "refund-field";
+    var orderLabel = document.createElement("span");
+    orderLabel.className = "refund-label";
+    orderLabel.textContent = "订单号";
+    var orderVal = document.createElement("div");
+    orderVal.className = "refund-order"; // 只读回填,不可编辑
+    orderVal.textContent = ctx.order_id || "";
+    orderField.appendChild(orderLabel);
+    orderField.appendChild(orderVal);
+
+    var reasonField = document.createElement("div");
+    reasonField.className = "refund-field";
+    var reasonLabel = document.createElement("label");
+    reasonLabel.className = "refund-label";
+    reasonLabel.setAttribute("for", "refund-reason");
+    reasonLabel.textContent = "退款原因";
+    var select = document.createElement("select");
+    select.className = "refund-select";
+    select.id = "refund-reason";
+    REFUND_REASONS.forEach(function (r) {
+      var option = document.createElement("option");
+      option.value = r;
+      option.textContent = r;
+      select.appendChild(option);
+    });
+    reasonField.appendChild(reasonLabel);
+    reasonField.appendChild(select);
+
+    var btns = document.createElement("div");
+    btns.className = "refund-btns";
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "refund-cancel";
+    cancel.textContent = "取消";
+    var submit = document.createElement("button");
+    submit.type = "button";
+    submit.className = "refund-submit";
+    submit.textContent = "提交申请";
+
+    function close(reopen) {
+      closeRefundForm();
+      if (reopen) btn.disabled = false; // 取消不算消费,允许再次打开
+    }
+
+    cancel.addEventListener("click", function () { close(true); });
+    mask.addEventListener("click", function (e) {
+      if (e.target === mask) close(true); // 点遮罩等同取消
+    });
+    submit.addEventListener("click", function () {
+      submit.disabled = true;
+      cancel.disabled = true;
+      fetch("/v1/chat/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: ctx.user_id, session_id: ctx.session_id,
+          source_message_id: ctx.source_message_id,
+          action: "create_refund", order_id: ctx.order_id,
+          refund_reason: select.value
+        })
+      }).then(function (r) {
+        if (!r.ok) throw new Error("退款申请提交失败(" + r.status + ")");
+        return r.json();
+      }).then(function (d) {
+        close(false);
+        // 只提示待处理工单号,永不展示「审批通过」(spec §12)
+        addBubble("assistant", "已为您提交退款申请，工单号 " + d.ticket_no +
+                  "，状态：待处理，客服将尽快审核。");
+        scrollToBottom();
+      }).catch(function () {
+        close(true);
+        addSystemHint("退款申请提交失败，请稍后重试");  // 不自动重试
+      });
+    });
+
+    btns.appendChild(cancel);
+    btns.appendChild(submit);
+    panel.appendChild(title);
+    panel.appendChild(orderField);
+    panel.appendChild(reasonField);
+    panel.appendChild(btns);
+    mask.appendChild(panel);
+    document.body.appendChild(mask);
+    refundForm = mask;
+    select.focus();
   }
 
   function setStreaming(on) {
@@ -844,11 +1209,69 @@
     return rest;
   }
 
+  // 整行转错误样式:send/resume 的 error 帧与异常路径共用
+  function failRow(row, bubble, message) {
+    row.classList.add("error");
+    row.classList.remove("assistant");
+    row.setAttribute("role", "alert");
+    var avatar = row.querySelector(".msg-avatar");
+    if (avatar) avatar.parentNode.removeChild(avatar);
+    bubble.textContent = message || "网络异常，请稍后再试";
+  }
+
+  // 读取一轮 SSE 流并分发到轮次 UI 上下文 ui;send 与 resume 共用。
+  // 挂起轮(order_selector 帧后紧跟 DONE)返回 suspended=true,无正文。
+  async function readChatStream(resp, ui) {
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = "";
+    var reply = "";
+    var out = { suspended: false, citations: null }; // citations 帧在 Done 前到达
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      buffer = parseEvents(buffer, function (data) {
+        if (data === "[DONE]") return;
+        var evt;
+        try { evt = JSON.parse(data); } catch (e) { return; }
+        if (evt.type === "session") {
+          if (fbSessionId !== evt.session_id) {
+            fbSessionId = evt.session_id; // 新会话,反馈序号从 0 重新计
+            fbReplyIndex = 0;
+          }
+          sessionId = evt.session_id;
+        } else if (evt.type === "delta") {
+          reply += evt.content;
+          ui.bubble.textContent = reply;
+          scrollToBottom();
+        } else if (evt.type === "tool_start") {
+          addBadge(ui.badgesEl, ui.badgeById, evt.tool_call_id, evt.name);
+          scrollToBottom();
+        } else if (evt.type === "tool_end") {
+          settleBadge(ui.badgeById, evt.tool_call_id, evt.name, evt.ok);
+          scrollToBottom();
+        } else if (evt.type === "citations") {
+          out.citations = evt.citations || [];
+        } else if (evt.type === "suggest_actions") {
+          renderActions(ui.col, evt);  // 帧在 commit 成功后、DONE 前到达,直接渲染
+        } else if (evt.type === "order_selector") {
+          out.suspended = true;
+          renderOrderCards(ui, evt);   // 卡组渲染进当前助手纵列,等待点选
+        } else if (evt.type === "error") {
+          failRow(ui.row, ui.bubble, evt.message || "出错了，请稍后再试");
+        }
+      });
+    }
+    return out;
+  }
+
   async function send() {
     var text = inputEl.value.trim();
     if (!text || streaming) return;
 
     removeSuggestions();
+    expireOrderCards(); // 新消息发出,页面上未消费旧订单卡前端先失效
     inputEl.value = "";
     inputEl.style.height = "auto";
     stickToBottom = true; // 用户主动发言,视图跟随到底
@@ -864,6 +1287,8 @@
     row.insertBefore(col, bubble);
     col.appendChild(badgesEl);
     col.appendChild(bubble);
+    var ui = { row: row, col: col, bubble: bubble,
+               badgesEl: badgesEl, badgeById: badgeById };
     row.classList.add("streaming");
     // 首个 token 到达前显示"正在输入"指示;textContent 赋值会自动将其替换
     bubble.innerHTML = '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>';
@@ -885,63 +1310,18 @@
         throw new Error(errText || ("请求失败（" + resp.status + "）"));
       }
 
-      var reader = resp.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = "";
-      var reply = "";
-      var lastCitations = null; // citations 帧在 Done 前到达,供角标弹层引用
-
-      while (true) {
-        var chunk = await reader.read();
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        buffer = parseEvents(buffer, function (data) {
-          if (data === "[DONE]") return;
-          var evt;
-          try { evt = JSON.parse(data); } catch (e) { return; }
-          if (evt.type === "session") {
-            if (fbSessionId !== evt.session_id) {
-              fbSessionId = evt.session_id; // 新会话,反馈序号从 0 重新计
-              fbReplyIndex = 0;
-            }
-            sessionId = evt.session_id;
-          } else if (evt.type === "delta") {
-            reply += evt.content;
-            bubble.textContent = reply;
-            scrollToBottom();
-          } else if (evt.type === "tool_start") {
-            addBadge(badgesEl, badgeById, evt.tool_call_id, evt.name);
-            scrollToBottom();
-          } else if (evt.type === "tool_end") {
-            settleBadge(badgeById, evt.tool_call_id, evt.name, evt.ok);
-            scrollToBottom();
-          } else if (evt.type === "citations") {
-            lastCitations = evt.citations || [];
-          } else if (evt.type === "suggest_actions") {
-            renderActions(col, evt);  // 帧在 commit 成功后、DONE 前到达,直接渲染
-          } else if (evt.type === "error") {
-            row.classList.add("error");
-            row.classList.remove("assistant");
-            row.setAttribute("role", "alert");
-            var evtAvatar = row.querySelector(".msg-avatar");
-            if (evtAvatar) evtAvatar.parentNode.removeChild(evtAvatar);
-            bubble.textContent = evt.message || "出错了，请稍后再试";
-          }
-        });
+      var out = await readChatStream(resp, ui);
+      if (out.suspended && !row.classList.contains("error")) {
+        bubble.style.display = "none"; // 挂起轮无正文,藏起空气泡等 resume 追加
+      } else {
+        if (!bubble.textContent) bubble.textContent = "(未收到回复)";
       }
-
-      if (!bubble.textContent) bubble.textContent = "(未收到回复)";
-      if (!row.classList.contains("error")) {
-        if (lastCitations && lastCitations.length) renderCitations(bubble, lastCitations);
+      if (!row.classList.contains("error") && !out.suspended) {
+        if (out.citations && out.citations.length) renderCitations(bubble, out.citations);
         if (sessionId) addFeedback(col, sessionId, fbReplyIndex++);
       }
     } catch (err) {
-      row.classList.add("error");
-      row.classList.remove("assistant");
-      row.setAttribute("role", "alert");
-      var errAvatar = row.querySelector(".msg-avatar");
-      if (errAvatar) errAvatar.parentNode.removeChild(errAvatar);
-      bubble.textContent = err.message || "网络异常，请稍后再试";
+      failRow(row, bubble, err.message);
     } finally {
       row.classList.remove("streaming");
       setStreaming(false);
@@ -952,6 +1332,8 @@
   newChatBtn.addEventListener("click", function () {
     if (streaming) return;
     sessionId = null;
+    orderGroups = [];   // 旧会话未消费订单卡随 DOM 一并清空
+    closeRefundForm();
     messagesEl.innerHTML = "";
     suggestionsEl = null;
     addBubble("assistant", GREETING);
