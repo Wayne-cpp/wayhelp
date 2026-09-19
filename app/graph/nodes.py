@@ -27,8 +27,8 @@ class GraphDeps:
     system_prompt: str = ""  # Task 13 装配传 SERVICE_SYSTEM_PROMPT
 
 
-def parse_intent_output(text: str) -> tuple[str, bool] | None:
-    """从模型输出提取 {"intent","needs_knowledge"};任何不合法一律 None(调用方兜底)。"""
+def parse_intent_output(text: str) -> tuple[str, float | None] | None:
+    """提取 {"intent","confidence"};intent 非法 → None;confidence 非法置 None 不拒判。"""
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         return None
@@ -37,10 +37,61 @@ def parse_intent_output(text: str) -> tuple[str, bool] | None:
     except json.JSONDecodeError:
         return None
     intent = data.get("intent")
-    nk = data.get("needs_knowledge")
-    if intent not in INTENTS or type(nk) is not bool:  # 字符串 "false"/缺失都算非法
+    if intent not in INTENTS:
         return None
-    return intent, nk
+    conf = data.get("confidence")
+    if isinstance(conf, bool) or not isinstance(conf, (int, float)):
+        conf = None
+    elif not 0.0 <= float(conf) <= 1.0:
+        conf = None
+    return intent, (float(conf) if conf is not None else None)
+
+
+def parse_understand_output(text: str) -> str | None:
+    """提取 {"resolved_query": str};空串=透传标记(调用方回填 raw_query);非法 → None。"""
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+    q = data.get("resolved_query")
+    if not isinstance(q, str):
+        return None
+    return q
+
+
+def parse_refund_scope_output(text: str) -> str | None:
+    """提取 {"mode": ...};三枚举之外 → None(调用方降级 clarify)。"""
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+    mode = data.get("mode")
+    return mode if mode in ("general", "order_specific", "clarify") else None
+
+
+def parse_expand_output(text: str) -> list[str] | None:
+    """提取 {"queries": [...]};结构非法 → None;合法则去空去重(可空 list)。"""
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+    queries = data.get("queries")
+    if not isinstance(queries, list):
+        return None
+    out: list[str] = []
+    for q in queries:
+        if isinstance(q, str) and q.strip() and q.strip() not in out:
+            out.append(q.strip())
+    return out
 
 
 def route_by_intent(state) -> str:
@@ -67,17 +118,17 @@ def build_front_nodes(deps: GraphDeps) -> dict:
         text = resp.content if isinstance(resp.content, str) else ""
         parsed = parse_intent_output(text)
         if parsed is None:
-            logger.warning("node=classify_intent 解析失败,保守兜底 knowledge: %r", text[:120])
-            intent, needs_knowledge = "售后", True
+            logger.warning("node=classify_intent 解析失败,兜底「其他」: %r", text[:120])
+            intent, confidence = "其他", None
         else:
-            intent, needs_knowledge = parsed
-        route = ROUTE_TABLE[(intent, needs_knowledge)]
-        logger.info("node=classify_intent intent=%s needs_knowledge=%s route=%s",
-                    intent, needs_knowledge, route)
-        return {"intent": intent, "needs_knowledge": needs_knowledge, "route": route,
+            intent, confidence = parsed
+        route = ROUTE_TABLE[intent]
+        logger.info("node=classify_intent intent=%s confidence=%s route=%s",
+                    intent, confidence, route)
+        return {"intent": intent, "intent_confidence": confidence, "route": route,
                 "node_trace": [*state["node_trace"],
                                {"node": "classify_intent", "intent": intent,
-                                "needs_knowledge": needs_knowledge, "route": route}]}
+                                "confidence": confidence, "route": route}]}
 
     return {"resolve_reference": resolve_reference, "classify_intent": classify_intent}
 
@@ -180,7 +231,7 @@ def build_knowledge_nodes(deps: GraphDeps) -> dict:
             "gate_fallback": gate_fallback, "route_after_gate": route_after_gate}
 
 
-from app.prompts.service import CHITCHAT_REPLY, COMPLAINT_REPLY
+from app.prompts.service import CHITCHAT_REPLY, COMPLAINT_REPLY, FALLBACK_ANSWER
 
 COMPLAINT_ACTIONS = [
     {"action": "transfer_human", "label": "转人工"},
@@ -206,7 +257,16 @@ def build_fixed_nodes() -> dict:
                 "turn_messages": [*state["turn_messages"], AIMessage(content=CHITCHAT_REPLY)],
                 "node_trace": [*state["node_trace"], {"node": "chitchat_reply"}]}
 
-    return {"complaint_reply": complaint_reply, "chitchat_reply": chitchat_reply}
+    async def other_fallback(state):
+        writer = get_stream_writer()
+        writer(ev_fixed_delta(FALLBACK_ANSWER))
+        logger.info("node=other_fallback")  # 零模型调用
+        return {"final_text": FALLBACK_ANSWER,
+                "turn_messages": [*state["turn_messages"], AIMessage(content=FALLBACK_ANSWER)],
+                "node_trace": [*state["node_trace"], {"node": "other_fallback"}]}
+
+    return {"complaint_reply": complaint_reply, "chitchat_reply": chitchat_reply,
+            "other_fallback": other_fallback}
 
 
 import asyncio
@@ -258,7 +318,9 @@ def _build_low_conf(state, cid: int | None) -> LowConfidenceRecord | None:
 
 
 def _should_cite(state) -> bool:
-    if state["route"] != "knowledge" or state["retrieval_status"] != "ok":
+    # ch06 Task 2 临时桥:refund 暂借旧 retrieve 链(语义同旧 knowledge 出口),
+    # 引用判定随路径放行;Task 8 将去掉 route 限定(business 工具检索也可引用)。
+    if state["route"] not in ("knowledge", "refund") or state["retrieval_status"] != "ok":
         return False
     if not state["evidence"]:
         return False
@@ -289,8 +351,8 @@ def build_log_node(deps: GraphDeps):
         if state["suggested_actions"]:
             writer(ev_suggest_actions(result.source_message_id,
                                       state["suggested_actions"]))
-        logger.info("node=log session=%s intent=%s needs_knowledge=%s route=%s gate=%s steps=%s tokens=%s accounting=%s",
-                    sid, state.get("intent"), state.get("needs_knowledge"),
+        logger.info("node=log session=%s intent=%s route=%s gate=%s steps=%s tokens=%s accounting=%s",
+                    sid, state.get("intent"),
                     state.get("route"), state.get("retrieval_status"),
                     state.get("agent_steps"), state.get("agent_tokens"),
                     state.get("token_accounting"))

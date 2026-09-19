@@ -61,8 +61,10 @@ class FakeStreamModel:
     """script 元素:str(delta 文本)| Exception | ("finish", reason) | ("tool", [tool_call_chunks...])
     多段脚本用 ("then", next_script) 分隔第二次调用(两次均可绑定工具,由调用方决定)。"""
 
-    def __init__(self, script):
+    def __init__(self, script, canned=None):
         self._scripts = [list(script)]
+        if canned is not None:
+            self._canned = list(canned)  # [(marker, json文本), ...] 覆盖类默认罐头
         self.received: list = []
         self.received_tools: list[list | None] = []  # 每次调用绑定的工具名列表或 None
 
@@ -70,14 +72,24 @@ class FakeStreamModel:
         self._bound = [t.name for t in tools]
         return self
 
-    # 裁决适配(Task 13):图的 classify_intent 节点走 ainvoke;返回罐头业务意图
-    # (订单/无需知识 → business 直进 main_agent),不消耗 astream 脚本、不记
-    # received——让 test_chat_api 既有 SSE 协议用例的脚本全数留给 main_agent。
+    # 图内 LLM 节点都走 ainvoke;按 prompt 标记分派罐头,不消耗 astream 脚本、不记
+    # received——让 SSE 用例的脚本全数留给 main_agent。canned 可经构造参数覆盖。
+    _CANNED = (
+        ("意图分类器", '{"intent":"订单","confidence":0.9}'),
+        ("执行分支", '{"mode":"order_specific"}'),
+        ("查询扩写", '{"queries":[]}'),
+        ("指代消解", '{"resolved_query": ""}'),   # 空串 = 透传
+    )
+
     async def ainvoke(self, messages, config=None, **kwargs):
         from langchain_core.messages import AIMessage
-        return AIMessage(content='{"intent":"订单","needs_knowledge":false}')
+        text = messages[-1].content if messages else ""
+        for marker, canned in getattr(self, "_canned", self._CANNED):
+            if marker in text:
+                return AIMessage(content=canned)
+        raise AssertionError(f"FakeStreamModel.ainvoke 未识别的 prompt: {text[:80]!r}")
 
-    async def astream(self, messages):
+    async def astream(self, messages, config=None, **kwargs):
         self.received.append(messages)
         self.received_tools.append(getattr(self, "_bound", None))
         self._bound = None
@@ -107,6 +119,10 @@ from app.chains.tool_chat_chain import finalize_tool_calls, merge_tool_call_chun
 
 class ScriptedChatModel(BaseChatModel):
     """脚本化假模型(真 Runnable → LangChain 回调链完整,图 messages 流可用)。
+    scripts 按模型调用顺序消费:understand(首轮无历史无 active_order 时跳过)
+    → classify → refund_scope(仅 refund 分支)→ expand(仅 order_specific 且
+    hybrid_rerank 且开关开)→ main_agent 每一步;多轮用例从第二轮起每轮开头
+    多一段 understand 脚本(罐头 `{"resolved_query": ""}` = 透传)。
     scripts: 每段是一次调用的脚本,元素:
       str → 文本 delta;("tool", [tool_call_chunks]) → 工具调用;
       ("finish", reason) → finish_reason;("usage", dict) → usage_metadata;

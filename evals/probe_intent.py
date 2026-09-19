@@ -22,9 +22,10 @@ async def main() -> int:
     for r in rows:
         resp = await model.ainvoke([HumanMessage(content=INTENT_PROMPT.replace("{query}", r["query"]))])
         got = parse_intent_output(resp.content if isinstance(resp.content, str) else "")
-        ok = got == (r["intent"], r["needs_knowledge"])
+        got_intent = got[0] if got else None
+        ok = got_intent == r["intent"]
         fails += 0 if ok else 1
-        print(f"{'OK ' if ok else 'BAD'} {r['query']!r}: 期望 {(r['intent'], r['needs_knowledge'])} 实得 {got}")
+        print(f"{'OK ' if ok else 'BAD'} {r['query']!r}: 期望 {r['intent']!r} 实得 {got}")
     print(f"\n{len(rows) - fails}/{len(rows)} 命中")
     return fails
 

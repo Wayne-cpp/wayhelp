@@ -8,8 +8,11 @@ import pytest
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 
-from app.graph.nodes import GraphDeps, build_front_nodes, parse_intent_output
-from app.graph.state import ROUTE_TABLE, ChatGraphState, new_turn_state
+from app.graph.nodes import (
+    GraphDeps, build_front_nodes, parse_expand_output, parse_intent_output,
+    parse_refund_scope_output, parse_understand_output,
+)
+from app.graph.state import ChatGraphState, new_turn_state
 from tests.conftest import make_settings
 
 
@@ -45,32 +48,69 @@ def _graph(model):
 
 
 @pytest.mark.parametrize("text,expected", [
-    ('{"intent":"物流","needs_knowledge":false}', ("物流", False)),
-    ('{"intent":"售后","needs_knowledge":true}', ("售后", True)),
-    ('前缀文本{"intent":"投诉","needs_knowledge":false}后缀', ("投诉", False)),
-    ('{"intent":"售后","needs_knowledge":"false"}', None),   # 字符串 false 非法
-    ('{"intent":"售后"}', None),                              # 缺字段
-    ('{"intent":"退票","needs_knowledge":true}', None),       # 非法枚举
+    ('{"intent":"物流","confidence":0.9}', ("物流", 0.9)),
+    ('前缀{"intent":"投诉","confidence":0}后缀', ("投诉", 0.0)),
+    ('{"intent":"其他","confidence":"高"}', ("其他", None)),   # 非数字置 None 不拒判
+    ('{"intent":"售后","confidence":1.5}', ("售后", None)),    # 越界置 None
+    ('{"intent":"售后","confidence":true}', ("售后", None)),   # 布尔非法
+    ('{"intent":"退票","confidence":0.9}', None),              # 非法枚举
+    ('{"intent":"售后"}', ("售后", None)),                     # 缺 confidence 容忍
     ('不是 JSON', None),
-    ('{"intent":"闲聊","needs_knowledge":false,"x":1}', ("闲聊", False)),  # 容忍多余字段
+    ('{"intent":"闲聊","confidence":0.9,"needs_knowledge":true}', ("闲聊", 0.9)),  # 容忍多余字段
 ])
 def test_parse_intent_output(text, expected):
     assert parse_intent_output(text) == expected
 
 
+@pytest.mark.parametrize("text,expected", [
+    ('{"resolved_query":"保温杯能退吗"}', "保温杯能退吗"),
+    ('{"resolved_query": ""}', ""),                    # 空串 = 透传标记
+    ('前缀{"resolved_query":"到哪了"}后缀', "到哪了"),
+    ('{"resolved_query": 3}', None),                   # 非字符串
+    ('{"query":"x"}', None),                           # 缺字段
+    ('不是 JSON', None),
+])
+def test_parse_understand_output(text, expected):
+    assert parse_understand_output(text) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ('{"mode":"general"}', "general"),
+    ('{"mode":"order_specific"}', "order_specific"),
+    ('{"mode":"clarify"}', "clarify"),
+    ('{"mode":"unknown"}', None),       # 枚举外 → None(调用方降级 clarify)
+    ('{"mode": 1}', None),
+    ('废话', None),
+])
+def test_parse_refund_scope_output(text, expected):
+    assert parse_refund_scope_output(text) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ('{"queries":["a","b"]}', ["a", "b"]),
+    ('{"queries":["a"," a ","","b","a"]}', ["a", "b"]),   # 去空去重
+    ('{"queries":[]}', []),                                # 可空
+    ('{"queries":[1,2]}', []),                             # 非字符串项被过滤,结构仍合法
+    ('{"queries":"a"}', None),                             # 非列表结构非法
+    ('nope', None),
+])
+def test_parse_expand_output(text, expected):
+    assert parse_expand_output(text) == expected
+
+
 async def test_classify_sets_route_from_table():
-    g = _graph(_ClassifyModel('{"intent":"退款退货","needs_knowledge":false}'))
+    g = _graph(_ClassifyModel('{"intent":"退款退货","confidence":0.8}'))
     out = await g.ainvoke(new_turn_state("我想退货"))
-    assert out["intent"] == "退款退货" and out["needs_knowledge"] is False
-    assert out["route"] == "knowledge"  # 路由表保守覆盖
+    assert out["intent"] == "退款退货" and out["intent_confidence"] == 0.8
+    assert out["route"] == "refund"
 
 
-async def test_classify_parse_failure_falls_back_to_knowledge(caplog):
+async def test_classify_parse_failure_falls_back_to_other(caplog):
     g = _graph(_ClassifyModel("模型输出了一坨废话"))
     with caplog.at_level(logging.WARNING, logger="wayhelp.graph"):
         out = await g.ainvoke(new_turn_state("查订单"))
-    assert (out["intent"], out["needs_knowledge"]) == ("售后", True)
-    assert out["route"] == "knowledge"  # 解析失败不得退回 business
+    assert out["intent"] == "其他" and out["intent_confidence"] is None
+    assert out["route"] == "other"  # 解析失败兜底「其他」,不硬塞业务意图
     assert "解析失败" in caplog.text or "parse" in caplog.text
 
 

@@ -91,7 +91,7 @@ async def _client(app):
 
 async def test_a1_knowledge_runs_retrieve_and_logs(caplog):
     app = _make_app(
-        [['{"intent":"退款退货","needs_knowledge":true}'],
+        [['{"intent":"退款退货","confidence":0.9}'],
          ["7 天无理由退货[1]。"]],
         retriever=_FakeRetriever(_result()))
     async with await _client(app) as client:
@@ -104,7 +104,7 @@ async def test_a1_knowledge_runs_retrieve_and_logs(caplog):
 async def test_a1_business_skips_retrieve(caplog):
     rt = _FakeRetriever(_result())
     app = _make_app(
-        [['{"intent":"物流","needs_knowledge":false}'],
+        [['{"intent":"物流","confidence":0.9}'],
          [("tool", [{"index": 0, "name": "query_logistics", "id": "c1",
                      "args": '{"order_id":"1001"}'}])],
          ["派送中。"]],
@@ -119,7 +119,7 @@ async def test_a1_business_skips_retrieve(caplog):
 
 async def test_a2_agent_calls_logistics_tool():
     app = _make_app(
-        [['{"intent":"物流","needs_knowledge":false}'],
+        [['{"intent":"物流","confidence":0.9}'],
          [("tool", [{"index": 0, "name": "query_logistics", "id": "c1",
                      "args": '{"order_id":"1001"}'}])],
          ["您的订单由顺丰承运,派送中。"]])
@@ -135,8 +135,8 @@ async def test_a2_agent_calls_logistics_tool():
 async def test_a3_complaint_two_independent_buttons_and_old_button_binds_original(
         db_session_factory):
     app = _make_app(
-        [['{"intent":"投诉","needs_knowledge":false}'],
-         ['{"intent":"订单","needs_knowledge":false}'],
+        [['{"intent":"投诉","confidence":0.95}'],
+         ['{"intent":"订单","confidence":0.9}'],
          ["订单状态良好。"]],
         db_sf=db_session_factory)
     async with await _client(app) as client:
@@ -170,7 +170,7 @@ async def test_a3_complaint_two_independent_buttons_and_old_button_binds_origina
 # ── 验收 4:闲聊固定话术,零生成调用 ──
 
 async def test_a4_chitchat_fixed_reply():
-    app = _make_app([['{"intent":"闲聊","needs_knowledge":false}']])
+    app = _make_app([['{"intent":"闲聊","confidence":0.9}']])
     async with await _client(app) as client:
         frames, _ = await _turn(client, "你好")
     assert _deltas(frames) == CHITCHAT_REPLY
@@ -182,7 +182,7 @@ async def test_a4_chitchat_fixed_reply():
 
 async def test_a5_multi_step_react():
     app = _make_app(
-        [['{"intent":"订单","needs_knowledge":false}'],
+        [['{"intent":"订单","confidence":0.9}'],
          [("tool", [{"index": 0, "name": "query_order", "id": "c1",
                      "args": '{"order_id":"1001"}'}])],
          [("tool", [{"index": 0, "name": "query_logistics", "id": "c2",
@@ -200,7 +200,7 @@ async def test_a5_multi_step_react():
 async def test_a6_pooling_rules(db_session_factory):
     from app.models import LowConfidenceQuestion
     # 维护态:不入池,回 KB_UNAVAILABLE_ANSWER
-    app = _make_app([['{"intent":"售后","needs_knowledge":true}']],
+    app = _make_app([['{"intent":"售后","confidence":0.9}']],
                     retriever=_FakeRetriever(_result(note=NOTE_REBUILDING,
                                                      low=True, hits=[], score=None)),
                     db_sf=db_session_factory)
@@ -209,7 +209,7 @@ async def test_a6_pooling_rules(db_session_factory):
         assert _deltas(frames) == KB_UNAVAILABLE_ANSWER
         assert not any(isinstance(f, dict) and f["type"] == "citations" for f in frames)
     # 零命中:入 retrieval_low_conf
-    app = _make_app([['{"intent":"售后","needs_knowledge":true}']],
+    app = _make_app([['{"intent":"售后","confidence":0.9}']],
                     retriever=_FakeRetriever(_result(note=NOTE_NOT_BUILT,
                                                      low=True, hits=[], score=None)),
                     db_sf=db_session_factory)
@@ -217,7 +217,7 @@ async def test_a6_pooling_rules(db_session_factory):
         frames, sid2 = await _turn(client, "偏门问题甲")
         assert _deltas(frames) == REFUSAL_ANSWER
     # 高分但模型自评拒答:入 self_check
-    app = _make_app([['{"intent":"退款退货","needs_knowledge":true}'],
+    app = _make_app([['{"intent":"退款退货","confidence":0.9}'],
                      [REFUSAL_ANSWER]],
                     retriever=_FakeRetriever(_result()), db_sf=db_session_factory)
     async with await _client(app) as client:
@@ -240,8 +240,8 @@ async def test_a6_pooling_rules(db_session_factory):
 async def test_a7_state_reset_between_turns():
     rt = _FakeRetriever(_result(low=True, hits=[], score=0.01))
     app = _make_app(
-        [['{"intent":"退款退货","needs_knowledge":true}'],   # 第一轮:低置信被拒
-         ['{"intent":"闲聊","needs_knowledge":false}'],      # 第二轮:闲聊
+        [['{"intent":"退款退货","confidence":0.9}'],   # 第一轮:低置信被拒
+         ['{"intent":"闲聊","confidence":0.9}'],      # 第二轮:闲聊
          ],
         retriever=rt)
     async with await _client(app) as client:
@@ -257,7 +257,7 @@ async def test_a7_state_reset_between_turns():
 # ── 验收 9:预算在发起下一次模型调用前生效 ──
 
 async def test_a9_budget_blocks_before_call():
-    model = ScriptedChatModel(scripts=[['{"intent":"订单","needs_knowledge":false}'],
+    model = ScriptedChatModel(scripts=[['{"intent":"订单","confidence":0.9}'],
                                        ["不应出现的文本"]])
     runtime = make_runtime(tools=[])
     app = create_app(settings=make_settings(max_agent_tokens=1), model=model,
@@ -273,7 +273,7 @@ async def test_a9_budget_blocks_before_call():
 
 async def test_a10_multi_step_persisted_as_groups(db_session_factory):
     app = _make_app(
-        [['{"intent":"订单","needs_knowledge":false}'],
+        [['{"intent":"订单","confidence":0.9}'],
          [("tool", [{"index": 0, "name": "query_order", "id": "c1",
                      "args": '{"order_id":"1"}'}])],
          [("tool", [{"index": 0, "name": "query_logistics", "id": "c2",
@@ -299,7 +299,7 @@ async def test_a10_multi_step_persisted_as_groups(db_session_factory):
 
 async def test_a11_agent_has_no_write_power(db_session_factory):
     app = _make_app(
-        [['{"intent":"售后","needs_knowledge":false}'],
+        [['{"intent":"订单","confidence":0.9}'],  # a11 特例:售后会走 refund 临时链落 gate_fallback,本用例只验写权限
          [("tool", [{"index": 0, "name": "create_ticket", "id": "c9",
                      "args": '{"description":"x","ticket_type":"投诉"}'}])],
          [("tool", [{"index": 0, "name": "suggest_options", "id": "s1",

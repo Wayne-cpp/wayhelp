@@ -23,6 +23,7 @@ def build_chat_graph(deps: GraphDeps, checkpointer):
     g.add_node("gate_fallback", knowledge["gate_fallback"])
     g.add_node("complaint_reply", fixed["complaint_reply"])
     g.add_node("chitchat_reply", fixed["chitchat_reply"])
+    g.add_node("other_fallback", fixed["other_fallback"])
     g.add_node("main_agent", build_agent_node(deps))
     g.add_node("log", build_log_node(deps))
 
@@ -30,13 +31,16 @@ def build_chat_graph(deps: GraphDeps, checkpointer):
     g.add_edge("resolve_reference", "classify_intent")
     g.add_conditional_edges(
         "classify_intent", route_by_intent,
-        {"knowledge": "retrieve", "business": "main_agent",
-         "complaint": "complaint_reply", "chitchat": "chitchat_reply"})
+        {"business": "main_agent",
+         "refund": "retrieve",   # ch06 Task 2 临时:退款/售后暂借旧 knowledge 链,Task 7 切正式子流程
+         "complaint": "complaint_reply", "chitchat": "chitchat_reply",
+         "other": "other_fallback"})
     g.add_edge("retrieve", "confidence_gate")
     g.add_conditional_edges(
         "confidence_gate", knowledge["route_after_gate"],
         {"main_agent": "main_agent", "gate_fallback": "gate_fallback"})
-    for node in ("main_agent", "gate_fallback", "complaint_reply", "chitchat_reply"):
+    for node in ("main_agent", "gate_fallback", "complaint_reply", "chitchat_reply",
+                 "other_fallback"):
         g.add_edge(node, "log")
     g.add_edge("log", END)
     return g.compile(checkpointer=checkpointer)
