@@ -121,10 +121,10 @@ async def test_a2_agent_calls_logistics_tool():
     app = _make_app(
         [['{"intent":"物流","confidence":0.9}'],
          [("tool", [{"index": 0, "name": "query_logistics", "id": "c1",
-                     "args": '{"order_id":"1001"}'}])],
+                     "args": '{"order_id":"1111-1001"}'}])],
          ["您的订单由顺丰承运,派送中。"]])
     async with await _client(app) as client:
-        frames, _ = await _turn(client, "订单 1001 的物流到哪了")
+        frames, _ = await _turn(client, "订单 1111-1001 的物流到哪了")
     starts = [f for f in frames if isinstance(f, dict) and f["type"] == "tool_start"]
     assert [s["name"] for s in starts] == ["query_logistics"]
     assert "派送中" in _deltas(frames)
@@ -185,12 +185,12 @@ async def test_a5_multi_step_react():
     app = _make_app(
         [['{"intent":"订单","confidence":0.9}'],
          [("tool", [{"index": 0, "name": "query_order", "id": "c1",
-                     "args": '{"order_id":"1001"}'}])],
+                     "args": '{"order_id":"1111-1001"}'}])],
          [("tool", [{"index": 0, "name": "query_logistics", "id": "c2",
-                     "args": '{"order_id":"1001"}'}])],
+                     "args": '{"order_id":"1111-1001"}'}])],
          ["订单已发货,顺丰派送中。"]])
     async with await _client(app) as client:
-        frames, _ = await _turn(client, "订单 1001 买的是什么,到哪了")
+        frames, _ = await _turn(client, "订单 1111-1001 买的是什么,到哪了")
     starts = [f["name"] for f in frames
               if isinstance(f, dict) and f["type"] == "tool_start"]
     assert starts == ["query_order", "query_logistics"]
@@ -277,9 +277,9 @@ async def test_a10_multi_step_persisted_as_groups(db_session_factory):
     app = _make_app(
         [['{"intent":"订单","confidence":0.9}'],
          [("tool", [{"index": 0, "name": "query_order", "id": "c1",
-                     "args": '{"order_id":"1"}'}])],
+                     "args": '{"order_id":"1111-1001"}'}])],
          [("tool", [{"index": 0, "name": "query_logistics", "id": "c2",
-                     "args": '{"order_id":"1"}'}])],
+                     "args": '{"order_id":"1111-1001"}'}])],
          ["查好了。"]],
         db_sf=db_session_factory)
     async with await _client(app) as client:

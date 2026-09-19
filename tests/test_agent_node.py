@@ -10,7 +10,8 @@ from langgraph.graph import END, START, StateGraph
 from app.graph.agent_node import build_agent_node
 from app.graph.nodes import GraphDeps
 from app.graph.state import ChatGraphState, new_turn_state
-from tests.conftest import FakeStreamModel, make_settings
+from app.prompts.service import REFUSAL_ANSWER
+from tests.conftest import TEST_USER_ID, FakeStreamModel, make_settings
 
 
 def _tool_chunk(name, args, call_id):
@@ -18,16 +19,23 @@ def _tool_chunk(name, args, call_id):
                       "args": json.dumps(args)}])
 
 
-def _agent(script, **settings_over):
+def _agent_graph(deps):
     """main_agent 包进最小编译图返回(START → main_agent → END)。"""
-    deps = GraphDeps(model=FakeStreamModel(script),
-                     settings=make_settings(**settings_over),
-                     retriever=None, store=None)
     g = StateGraph(ChatGraphState)
     g.add_node("main_agent", build_agent_node(deps))
     g.add_edge(START, "main_agent")
     g.add_edge("main_agent", END)
     return g.compile()
+
+
+def _cfg(user_id=""):
+    return {"configurable": {"user_id": user_id}}
+
+
+def _agent(script, **settings_over):
+    return _agent_graph(GraphDeps(model=FakeStreamModel(script),
+                                  settings=make_settings(**settings_over),
+                                  retriever=None, store=None))
 
 
 async def test_one_step_converge():
@@ -39,16 +47,19 @@ async def test_one_step_converge():
 
 
 async def test_multi_step_order_then_logistics():
+    st = new_turn_state("订单 1111-1001 到哪了,先查订单再查物流")
+    st.update({"resolved_query": "订单 1111-1001 到哪了,先查订单再查物流",
+               "route": "business"})
     node = _agent([
-        _tool_chunk("query_order", {"order_id": "1001"}, "c1"), ("then", [
-            _tool_chunk("query_logistics", {"order_id": "1001"}, "c2"), ("then", [
+        _tool_chunk("query_order", {"order_id": "1111-1001"}, "c1"), ("then", [
+            _tool_chunk("query_logistics", {"order_id": "1111-1001"}, "c2"), ("then", [
                 "订单已发货,物流派送中。"])]),
     ])
-    out = await node.ainvoke(new_turn_state("订单 1001 到哪了,先查订单再查物流"))
+    out = await node.ainvoke(st, config=_cfg(TEST_USER_ID))
     assert out["agent_steps"] == 3
     tools = [m for m in out["turn_messages"] if m.type == "tool"]
     assert [t.name for t in tools] == ["query_order", "query_logistics"]
-    assert "1001" in tools[0].content  # 真实工具结果喂回
+    assert "1111-1001" in tools[0].content  # 真实工具结果喂回
     assert out["final_text"] == "订单已发货,物流派送中。"
 
 
@@ -164,3 +175,129 @@ async def test_fixed_fallback_counts_toward_output_cap():
     ], max_message_chars=10)
     with pytest.raises(TurnAbortError):
         await node.ainvoke(new_turn_state("q"))
+
+
+# ---- ch06 Task 6:分支绑定 / query_faq 收尾 / order_context / 申请退款 ----
+
+async def test_business_branch_binds_faq_and_refund_branch_not():
+    # 经 main_agent 节点直驱:检查 model.received_tools / registry 行为
+    model = FakeStreamModel(["答复。"])
+    deps = GraphDeps(model=model, settings=make_settings(), retriever=None, store=None)
+    g = _agent_graph(deps)
+    st = new_turn_state("保温杯有库存吗")
+    st.update({"resolved_query": "保温杯有库存吗", "route": "business",
+               "intent": "商品咨询"})
+    await g.ainvoke(st, config=_cfg())
+    assert model.received_tools[0] == ["query_order", "query_product",
+                                       "query_logistics", "query_faq", "suggest_options"]
+    st2 = new_turn_state("这单能退吗")
+    st2.update({"resolved_query": "订单 1111-1001 能退吗", "route": "refund",
+                "intent": "退款退货", "refund_mode": "order_specific",
+                "order_context": {"order_id": "1111-1001", "product": "保温杯",
+                                  "status": "已完成", "amount": 89.0,
+                                  "created_at": "2026-09-16T12:00:00",
+                                  "delivered_at": "2026-09-17T12:00:00",
+                                  "returnable_note": "普通商品,在 7 天无理由退货期内",
+                                  "queried_at": "2026-09-19T12:00:00"}})
+    model2 = FakeStreamModel(["可以退。"])
+    await _agent_graph(GraphDeps(model=model2, settings=make_settings(),
+                                 retriever=None, store=None)).ainvoke(st2, config=_cfg())
+    assert model2.received_tools[0] == ["query_order", "query_product",
+                                        "query_logistics", "suggest_options"]
+
+
+async def test_clarify_branch_has_no_tools():
+    model = FakeStreamModel(["请问您想咨询哪方面的问题呢?"])
+    st = new_turn_state("那个事")
+    st.update({"resolved_query": "那个事", "route": "refund", "refund_mode": "clarify"})
+    await _agent_graph(GraphDeps(model=model, settings=make_settings(),
+                                 retriever=None, store=None)).ainvoke(st, config=_cfg())
+    assert model.received_tools[0] is None  # 不绑定工具
+
+
+async def test_faq_low_confidence_terminal_refusal_without_second_model_call():
+    from tests.test_ch05_acceptance import _FakeRetriever, _result
+    rt = _FakeRetriever(_result(low=True, hits=[], score=0.01))
+    model = FakeStreamModel([
+        ("tool", [{"index": 0, "name": "query_faq", "id": "f1", "args": "{}"}]),
+        ("then", ["不该出现的第二次答复"]),
+    ])
+    st = new_turn_state("火星特产能退吗")
+    st.update({"resolved_query": "火星特产能退吗", "route": "business"})
+    out = await _agent_graph(GraphDeps(model=model, settings=make_settings(),
+                                       retriever=rt, store=None)).ainvoke(st, config=_cfg())
+    assert out["final_text"] == REFUSAL_ANSWER
+    assert out["retrieval_status"] == "low_confidence"
+    assert out["low_conf_source"] == "retrieval_low_conf"
+    assert model._scripts == [["不该出现的第二次答复"]]  # 不再调用模型
+
+
+async def test_faq_ok_writes_back_evidence_and_status():
+    from tests.test_ch05_acceptance import _FakeRetriever, _result
+    rt = _FakeRetriever(_result())
+    model = FakeStreamModel([
+        ("tool", [{"index": 0, "name": "query_faq", "id": "f1", "args": "{}"}]),
+        ("then", ["7 天无理由[1]。"]),
+    ])
+    st = new_turn_state("退货政策")
+    st.update({"resolved_query": "退货政策是什么", "route": "business"})
+    out = await _agent_graph(GraphDeps(model=model, settings=make_settings(),
+                                       retriever=rt, store=None)).ainvoke(st, config=_cfg())
+    assert out["retrieval_status"] == "ok" and out["evidence"]
+    assert out["retrieval_result"]["hits"]
+
+
+async def test_suggest_refund_requires_order_context():
+    # 无 order_context:错误 ToolMessage,不出按钮
+    model = FakeStreamModel([
+        ("tool", [{"index": 0, "name": "suggest_options", "id": "s1",
+                   "args": '{"options":["申请退款"]}'}]),
+        ("then", ["好的。"]),
+    ])
+    st = new_turn_state("能退吗")
+    st.update({"resolved_query": "能退吗", "route": "business"})
+    out = await _agent_graph(GraphDeps(model=model, settings=make_settings(),
+                                       retriever=None, store=None)).ainvoke(st, config=_cfg())
+    assert out["suggested_actions"] == []
+    # 有 order_context:按钮绑定服务端订单号(order_context 为 asdict(OrderInfo) 全字段)
+    st2 = {**st, "order_context": {"order_id": "1111-1001", "product": "保温杯",
+                                   "status": "已完成", "amount": 89.0,
+                                   "created_at": "2026-09-16T12:00:00",
+                                   "delivered_at": "2026-09-17T12:00:00",
+                                   "returnable_note": "普通商品,在 7 天无理由退货期内",
+                                   "queried_at": "2026-09-19T12:00:00"}}
+    model2 = FakeStreamModel([
+        ("tool", [{"index": 0, "name": "suggest_options", "id": "s1",
+                   "args": '{"options":["申请退款"]}'}]),
+        ("then", ["可以退,请点下方按钮。"]),
+    ])
+    out2 = await _agent_graph(GraphDeps(model=model2, settings=make_settings(),
+                                        retriever=None, store=None)).ainvoke(st2, config=_cfg())
+    assert out2["suggested_actions"] == [
+        {"action": "refund_form", "label": "申请退款", "order_id": "1111-1001"}]
+
+
+async def test_order_context_from_tool_only_when_user_mentioned():
+    st = new_turn_state("帮我查订单 1111-1001")
+    st.update({"resolved_query": "帮我查订单 1111-1001", "route": "business"})
+    model = FakeStreamModel([
+        ("tool", [{"index": 0, "name": "query_order", "id": "c1",
+                   "args": '{"order_id":"1111-1001"}'}]),
+        ("then", ["订单已完成。"]),
+    ])
+    out = await _agent_graph(GraphDeps(model=model, settings=make_settings(),
+                                       retriever=None, store=None)).ainvoke(st, config=_cfg(TEST_USER_ID))
+    assert out["order_context"]["order_id"] == "1111-1001"
+    # 模型自猜的订单号(用户没提)不建焦点:工具照常执行成功,但不写 order_context
+    st2 = new_turn_state("帮我查下订单")
+    st2.update({"resolved_query": "帮我查下订单", "route": "business"})
+    model2 = FakeStreamModel([
+        ("tool", [{"index": 0, "name": "query_order", "id": "c1",
+                   "args": '{"order_id":"1111-1001"}'}]),
+        ("then", ["订单已完成。"]),
+    ])
+    out2 = await _agent_graph(GraphDeps(model=model2, settings=make_settings(),
+                                        retriever=None, store=None)).ainvoke(st2, config=_cfg(TEST_USER_ID))
+    tool_msgs = [m for m in out2["turn_messages"] if m.type == "tool"]
+    assert [t.name for t in tool_msgs] == ["query_order"] and tool_msgs[0].status != "error"
+    assert out2["order_context"] is None

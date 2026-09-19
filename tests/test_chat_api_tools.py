@@ -16,7 +16,7 @@ BUSINESS = ['{"intent":"订单","needs_knowledge":false}']
 KNOWLEDGE = ['{"intent":"售后","needs_knowledge":true}']
 COMPLAINT = ['{"intent":"投诉","needs_knowledge":false}']
 
-ORDER_CALL = [{"name": "query_order", "args": "{\"order_id\": \"1001\"}",
+ORDER_CALL = [{"name": "query_order", "args": "{\"order_id\": \"1111-1001\"}",
                "id": "call_1", "index": 0}]
 
 
@@ -48,6 +48,20 @@ async def test_sse_json_escaping():
     assert frames[1]["content"] == '带"引号"和\n换行'
 
 
+async def test_main_agent_chat_visible_tag_gates_deltas():
+    """chat_visible tag 过滤集成钉:main_agent 的 astream 带 per-call tags,经
+    messages 流 metadata.tags 外发;分类 JSON 等其余节点调用不外发。若 per-call
+    config tags 不进 metadata(langgraph 行为偏差),deltas 将为空 → 红(spec §8)。"""
+    app = make_app([BUSINESS, ["答复正文"]])
+    status, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "查订单"})
+    assert status == 200
+    frames = parse_frames(lines)
+    deltas = "".join(f["content"] for f in frames
+                     if isinstance(f, dict) and f["type"] == "delta")
+    assert deltas == "答复正文"
+    assert "intent" not in deltas  # 分类 token 不外发
+
+
 # ---- 工具帧 ----
 
 async def test_tool_frames_over_sse():
@@ -58,7 +72,7 @@ async def test_tool_frames_over_sse():
     frames = parse_frames(lines)
     assert frames[0]["type"] == "session"
     assert frames[1]["type"] == "tool_start"
-    assert frames[1]["name"] == "query_order" and frames[1]["args"] == {"order_id": "1001"}
+    assert frames[1]["name"] == "query_order" and frames[1]["args"] == {"order_id": "1111-1001"}
     assert frames[1]["tool_call_id"] == "call_1"
     assert frames[2]["type"] == "tool_end" and frames[2]["ok"] is True
     assert frames[3]["type"] == "delta" and frames[3]["content"] == "答"
@@ -66,7 +80,8 @@ async def test_tool_frames_over_sse():
 
 
 async def test_tool_end_summary_capped_80():
-    logistics_call = [{"name": "query_logistics", "args": "{\"order_id\": \"1001\"}",
+    logistics_call = [{"name": "query_logistics",
+                       "args": "{\"order_id\": \"1111-1001\"}",
                        "id": "call_1", "index": 0}]
     app = make_app([BUSINESS, [("tool", logistics_call)], ["答"]])
     _, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "hi"})

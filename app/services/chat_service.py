@@ -155,8 +155,11 @@ class ChatService:
                         stream_mode=["messages", "custom"]):
                     if mode == "messages":
                         chunk, meta = payload
-                        if (meta or {}).get("langgraph_node") != "main_agent":
+                        meta = meta or {}
+                        if meta.get("langgraph_node") != "main_agent":
                             continue  # 分类/检索内部调用的 token 不外发
+                        if "chat_visible" not in (meta.get("tags") or []):
+                            continue  # 节点内部分类/改写等调用不外发(ch06 spec §8)
                         if not isinstance(chunk, AIMessageChunk):
                             # 裁决护栏:langgraph 1.2.x messages 模式还会发节点级
                             # HumanMessage 回显与聚合终帧 AIMessage(同带节点元数据),

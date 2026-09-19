@@ -18,6 +18,12 @@ def test_prompt_contracts_present():
         assert needle in SERVICE_SYSTEM_PROMPT
 
 
+def test_service_prompt_ch06_clauses():
+    """ch06 新条款钉:query_faq 触发 / 订单事实与政策分离(退款资格) / 人工审核表单。"""
+    for needle in ("query_faq", "不构成退款资格", "人工审核表单"):
+        assert needle in SERVICE_SYSTEM_PROMPT
+
+
 def test_fixed_answers():
     assert COMPLAINT_REPLY.startswith("非常抱歉")
     assert "客服小蜜" in CHITCHAT_REPLY
