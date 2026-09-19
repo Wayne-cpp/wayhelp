@@ -267,6 +267,26 @@ class KnowledgeRetriever:
         return RetrievalResult(hits, requested, effective, confidence, threshold,
                                low, note, plan, leg_counts)
 
+    def rerank_candidates(self, query: str, hits: list[KnowledgeHit],
+                          deadline: float | None = None) -> RetrievalResult | None:
+        """ch06(spec §6.4/D10):对节点合并后的候选集合统一重排,构造单一 hybrid_rerank
+        结果(置信信号与阈值同 search 的 rerank 路径);重排失败/未配置 → None,
+        调用方回退 base_query 完整结果,禁止混用不同策略分数。"""
+        threshold = self._threshold_for("hybrid_rerank")
+        if not hits:
+            return RetrievalResult([], "hybrid_rerank", "hybrid_rerank", None,
+                                   threshold, True, None, None, {})
+        outcome = self._rerank(query, hits, deadline)
+        if not outcome.ok:
+            logger.warning("rerank_candidates 统一重排失败: %s", outcome.note)
+            return None
+        ranked = self._apply_ranking(hits, outcome.ranking)[: self._settings.rerank_top_n]
+        scores = [h.score for h in ranked]
+        confidence = confidence_from_scores(scores, self._settings.rerank_confidence_signal)
+        low = confidence is None or confidence < threshold
+        return RetrievalResult(ranked, "hybrid_rerank", "hybrid_rerank", confidence,
+                               threshold, low, None, None, {})
+
     def _embed_query(self, text: str) -> list[float]:
         try:
             vector = self._embed.embed_query(text)

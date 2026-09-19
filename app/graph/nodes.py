@@ -230,6 +230,38 @@ def snapshot_retrieval(r: RetrievalResult) -> dict:
     }
 
 
+def state_fields_for_result(result: RetrievalResult) -> dict:
+    """RetrievalResult → retrieve 节点同款 state 字段(note→error_code 优先于低置信)。"""
+    snap = snapshot_retrieval(result)
+    code = _STATE_NOTE_CODES.get(result.note)
+    if code is not None:
+        return {"retrieval_result": snap, "retrieval_status": "unavailable",
+                "retrieval_error_code": code}
+    return {"retrieval_result": snap,
+            "retrieval_status": "low_confidence" if result.low_confidence else "ok"}
+
+
+def evidence_dicts_from_snapshot(snap: dict, settings) -> list[dict]:
+    """快照 hits → assemble_evidence 分配引用号(confidence_gate 同款预算)。"""
+    hits = [KnowledgeHit(**h) for h in snap["hits"]]
+    if not hits:
+        return []
+    return [e.to_dict() for e in assemble_evidence(
+        hits, max_items=settings.rerank_top_n,
+        budget_chars=settings.max_tool_result_chars, overhead_chars=200)]
+
+
+def low_conf_fields(snap: dict) -> dict:
+    """低置信入池字段(confidence_gate 同款 reason 结构)。"""
+    return {"low_conf_source": "retrieval_low_conf",
+            "low_conf_reason": {
+                "requested_strategy": snap["requested_strategy"],
+                "effective_strategy": snap["effective_strategy"],
+                "top1": snap["confidence_score"],
+                "threshold": snap["confidence_threshold"],
+                "note": snap["note"]}}
+
+
 def build_knowledge_nodes(deps: GraphDeps) -> dict:
     async def retrieve(state):
         logger.info("node=retrieve query=%r", state["resolved_query"][:50])
@@ -245,37 +277,23 @@ def build_knowledge_nodes(deps: GraphDeps) -> dict:
             logger.warning("node=retrieve unavailable: %s", type(exc).__name__)
             return {"retrieval_status": "unavailable",
                     "retrieval_error_code": "kb_unavailable", "node_trace": trace}
-        snap = snapshot_retrieval(result)
-        code = _STATE_NOTE_CODES.get(result.note)
-        if code is not None:  # 配置/维护态优先于低置信判定
-            return {"retrieval_result": snap, "retrieval_status": "unavailable",
-                    "retrieval_error_code": code, "node_trace": trace}
-        # NOTE_NOT_BUILT 等其余 note 参与低置信判定
-        status = "low_confidence" if result.low_confidence else "ok"
-        logger.info("node=retrieve done status=%s score=%s", status, result.confidence_score)
-        return {"retrieval_result": snap, "retrieval_status": status, "node_trace": trace}
+        fields = state_fields_for_result(result)
+        # 配置/维护态优先于低置信判定;NOTE_NOT_BUILT 等其余 note 参与低置信判定
+        if "retrieval_error_code" not in fields:
+            logger.info("node=retrieve done status=%s score=%s",
+                        fields["retrieval_status"], result.confidence_score)
+        return {**fields, "node_trace": trace}
 
     async def confidence_gate(state):
         status = state["retrieval_status"]
         logger.info("node=confidence_gate status=%s", status)  # spec §6.3:节点进出打 INFO 日志
         trace = [*state["node_trace"], {"node": "confidence_gate", "status": status}]
         if status == "low_confidence":
-            r = state["retrieval_result"]
             logger.info("node=confidence_gate blocked low_confidence")
-            return {"low_conf_source": "retrieval_low_conf",
-                    "low_conf_reason": {
-                        "requested_strategy": r["requested_strategy"],
-                        "effective_strategy": r["effective_strategy"],
-                        "top1": r["confidence_score"],
-                        "threshold": r["confidence_threshold"],
-                        "note": r["note"]},
-                    "node_trace": trace}
+            return {**low_conf_fields(state["retrieval_result"]), "node_trace": trace}
         if status == "ok":
-            hits = [KnowledgeHit(**h) for h in state["retrieval_result"]["hits"]]
-            evidence = [e.to_dict() for e in assemble_evidence(
-                hits, max_items=deps.settings.rerank_top_n,
-                budget_chars=deps.settings.max_tool_result_chars,
-                overhead_chars=200)] if hits else []
+            evidence = evidence_dicts_from_snapshot(state["retrieval_result"],
+                                                    deps.settings)
             return {"evidence": evidence, "node_trace": trace}
         return {"node_trace": trace}  # unavailable:直接落 fallback
 

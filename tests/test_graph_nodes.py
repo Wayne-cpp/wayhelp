@@ -312,6 +312,43 @@ async def test_gate_fallback_texts():
     assert out2["turn_messages"][-1].content == REFUSAL_ANSWER  # 进本轮消息
 
 
+# ─── 检索 helpers 模块级提取(Task 4;供 Task 6/7 复用)───────────────────────
+
+
+def test_state_fields_for_result_note_over_low_confidence():
+    from app.graph.nodes import state_fields_for_result
+    fields = state_fields_for_result(_result(note=NOTE_REBUILDING, low=True, score=None))
+    assert fields["retrieval_status"] == "unavailable"   # 配置/维护态优先于低置信判定
+    assert fields["retrieval_error_code"] == "kb_rebuilding"
+    assert fields["retrieval_result"]["low_confidence"] is True
+    assert state_fields_for_result(_result(low=False))["retrieval_status"] == "ok"
+    assert state_fields_for_result(
+        _result(note=NOTE_NOT_BUILT, low=True, score=None))["retrieval_status"] == "low_confidence"
+
+
+def test_evidence_dicts_from_snapshot_same_budget_as_gate():
+    from app.graph.nodes import evidence_dicts_from_snapshot, snapshot_retrieval
+    from app.knowledge.retriever import KnowledgeHit
+    hit = KnowledgeHit(chunk_id=7, score=0.9, category="policy", questions="q",
+                       answer="a", source_doc="d.md", chunk_index=0, section_path="退货")
+    ev = evidence_dicts_from_snapshot(snapshot_retrieval(_result(hits=[hit])),
+                                      make_settings())
+    assert [e["ref_no"] for e in ev] == [1]
+    assert ev[0]["chunk_id"] == 7 and ev[0]["question"] == "q"
+    assert evidence_dicts_from_snapshot(snapshot_retrieval(_result()),
+                                        make_settings()) == []   # 空 hits 不组装
+
+
+def test_low_conf_fields_reason_structure():
+    from app.graph.nodes import low_conf_fields, snapshot_retrieval
+    f = low_conf_fields(snapshot_retrieval(_result(note=NOTE_NOT_BUILT, low=True, score=None)))
+    assert f["low_conf_source"] == "retrieval_low_conf"
+    assert f["low_conf_reason"] == {"requested_strategy": "hybrid_rerank",
+                                    "effective_strategy": "hybrid_rerank",
+                                    "top1": None, "threshold": 0.0553,
+                                    "note": NOTE_NOT_BUILT}
+
+
 from app.graph.nodes import build_fixed_nodes
 from app.prompts.service import CHITCHAT_REPLY, COMPLAINT_REPLY
 

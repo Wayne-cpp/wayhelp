@@ -369,3 +369,41 @@ def test_sub_intent_rerank_failure_keeps_main_ranking(store, db_session_factory)
     res = r.search("猫砂盆报错能自修吗维修要等几天", query_plan=plan)
     assert res.effective_strategy == "hybrid_rerank"     # 子臂失败不降级
     assert [h.score for h in res.hits] == [pytest.approx(1.0), pytest.approx(0.9)]
+
+
+# ─── 统一重排公开接口(spec §6.4/D10,Task 4)─────────────────────────────────
+
+
+def test_rerank_candidates_success_builds_single_result():
+    from app.knowledge.retriever import KnowledgeHit
+    hits = [KnowledgeHit(i, 0.1 * i, "policy", f"q{i}", f"a{i}", "d.md", i, "s")
+            for i in (1, 2, 3)]
+
+    class _Reranker:
+        def rerank(self, query, docs, top_n, deadline):
+            from app.knowledge.reranker import RerankOutcome
+            return RerankOutcome(True, [(2, 0.9), (0, 0.5), (1, 0.2)], None)
+
+    r = KnowledgeRetriever(make_settings(), embed=object(), store=object(),
+                           reranker=_Reranker())
+    res = r.rerank_candidates("退款", hits)
+    assert res is not None
+    assert res.requested_strategy == res.effective_strategy == "hybrid_rerank"
+    assert [h.chunk_id for h in res.hits] == [3, 1, 2]       # 按重排序
+    assert res.confidence_score == 0.9                        # top1 信号
+    assert res.low_confidence is False                        # 0.9 >= rerank_min_score 0.0553
+
+
+def test_rerank_candidates_failure_returns_none_and_empty_is_low():
+    from app.knowledge.retriever import KnowledgeHit
+    from app.knowledge.reranker import RerankOutcome
+    hits = [KnowledgeHit(1, 0.5, "c", "q", "a", None, None, None)]
+
+    class _Bad:
+        def rerank(self, query, docs, top_n, deadline):
+            return RerankOutcome(False, [], "boom")
+
+    r = KnowledgeRetriever(make_settings(), embed=object(), store=object(), reranker=_Bad())
+    assert r.rerank_candidates("q", hits) is None
+    empty = r.rerank_candidates("q", [])
+    assert empty is not None and empty.hits == [] and empty.low_confidence is True
