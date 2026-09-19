@@ -4,7 +4,7 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from app.schemas import ChatActionRequest, ChatStreamRequest
+from app.schemas import ChatActionRequest, ChatResumeRequest, ChatStreamRequest
 from app.services.chat_service import (
     ChatService,
     CitationsEvent,
@@ -92,6 +92,19 @@ async def chat_stream(body: ChatStreamRequest, request: Request) -> StreamingRes
     service: ChatService = request.app.state.chat_service
     prepared = await service.prepare(body.user_id, body.session_id, body.message)
 
+    return StreamingResponse(
+        event_stream(service, prepared),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/v1/chat/resume")
+async def chat_resume(body: ChatResumeRequest, request: Request) -> StreamingResponse:
+    """ch06(spec §9.1):校验在 SSE 响应建立前完成,错误是真正的 404/409。"""
+    service: ChatService = request.app.state.chat_service
+    prepared = await service.prepare_resume(body.user_id, body.session_id,
+                                            body.interrupt_id, body.order_id)
     return StreamingResponse(
         event_stream(service, prepared),
         media_type="text/event-stream",

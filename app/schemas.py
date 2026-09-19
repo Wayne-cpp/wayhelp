@@ -72,6 +72,24 @@ class ChatStreamRequest(BaseModel):
         return _require_non_blank(v)
 
 
+class ChatResumeRequest(BaseModel):
+    """ch06(spec §9.1):按 interrupt ID 恢复挂起轮并绑定所选订单。"""
+    user_id: str
+    session_id: str
+    interrupt_id: str = Field(min_length=1, max_length=128)
+    order_id: str = Field(min_length=1, max_length=64)
+
+    @field_validator("user_id")
+    @classmethod
+    def _user_id_must_be_uuid(cls, v: str) -> str:
+        return _validate_uuid(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def _session_id_form(cls, v: str | None) -> str | None:
+        return _validate_session_id(v)
+
+
 _SOURCE_MSG_ID_RE = re.compile(r"^[1-9]\d{0,18}$")
 
 

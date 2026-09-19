@@ -20,3 +20,8 @@ class SessionCapacityReachedError(AppError):
 
 class UpstreamError(AppError):
     code = "upstream_error"
+
+
+class ResumeConflictError(AppError):
+    """ch06(spec §9.1):无匹配挂起/ID 不符/订单不在候选内 → 409。"""
+    code = "resume_conflict"

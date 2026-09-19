@@ -8,7 +8,9 @@ from langchain_core.messages import AIMessageChunk
 
 from app.chains.chat_chain import check_input_budget
 from app.config import Settings
-from app.errors import AppError, MessageTooLongError, SessionNotFoundError
+from app.errors import (
+    AppError, MessageTooLongError, ResumeConflictError, SessionNotFoundError,
+)
 from app.graph.errors import TurnAbortError
 from app.graph.state import new_turn_state
 from app.prompts.service import FALLBACK_ANSWER
@@ -112,6 +114,7 @@ class PreparedTurn:
     user_text: str
     lock_key: str
     user_id: str = ""
+    resume_command: Any = None   # langgraph Command;resume 路径传 Command 不传 dict
     released: bool = False
 
 
@@ -142,6 +145,38 @@ class ChatService:
         await self._locks.acquire(sid)
         return PreparedTurn(sid, message, sid, user_id=user_id)
 
+    async def prepare_resume(self, user_id: str, session_id: str,
+                             interrupt_id: str, order_id: str) -> PreparedTurn:
+        """ch06(spec §9.1):锁内核验 pending interrupt/候选/订单归属,失败释锁。
+        409 必须服务端自校验——LangGraph 对不匹配 resume ID 是静默忽略,不报错。"""
+        from langgraph.types import Command
+        from app.services.orders import get_order
+        if not await self._store.exists(session_id, user_id):
+            raise SessionNotFoundError("session not found")
+        await self._locks.acquire(session_id)
+        try:
+            config = {"configurable": {"thread_id": session_id, "user_id": user_id}}
+            st = await self._graph.aget_state(config)
+            match = None
+            for task in st.tasks:
+                for intr in task.interrupts:
+                    if intr.id == interrupt_id:
+                        match = intr
+            value = getattr(match, "value", None) or {}
+            if match is None or value.get("type") != "order_selector":
+                raise ResumeConflictError("no matching pending order selection")
+            candidates = {o.get("order_id") for o in value.get("orders") or []}
+            if order_id not in candidates:
+                raise ResumeConflictError("order not in pending candidates")
+            if get_order(user_id, order_id) is None:
+                raise SessionNotFoundError("session not found")  # 404 不泄露
+        except Exception:
+            self._locks.release(session_id)
+            raise
+        return PreparedTurn(session_id=session_id, user_text="", lock_key=session_id,
+                            user_id=user_id,
+                            resume_command=Command(resume={interrupt_id: {"order_id": order_id}}))
+
     def release_turn(self, turn: PreparedTurn) -> None:
         if turn.released:
             return
@@ -156,9 +191,11 @@ class ChatService:
             yield SessionEvent(turn.session_id)
             config = {"configurable": {"thread_id": turn.session_id,
                                        "user_id": turn.user_id}}
+            graph_input = (turn.resume_command if turn.resume_command is not None
+                           else new_turn_state(turn.user_text))
             try:
                 async for mode, payload in self._graph.astream(
-                        new_turn_state(turn.user_text), config,
+                        graph_input, config,
                         stream_mode=["messages", "custom"]):
                     if mode == "messages":
                         chunk, meta = payload
