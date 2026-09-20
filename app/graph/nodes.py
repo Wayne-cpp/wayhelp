@@ -293,17 +293,30 @@ def build_refund_nodes(deps: GraphDeps) -> dict:
                 expand_note = f"expand_degraded:{type(exc).__name__}"
         timeout = settings.knowledge_tool_timeout_seconds
         deadline = time.monotonic() + timeout
-        try:
-            results = await asyncio.wait_for(
+        try:  # return_exceptions:仅扩写支路异常可丢弃;base 异常/总超时仍整轮不可用(spec §6.4)
+            raw = await asyncio.wait_for(
                 asyncio.gather(*[asyncio.to_thread(deps.retriever.search, q,
                                                    scope=None, deadline=deadline)
-                                 for q in queries]),
+                                 for q in queries], return_exceptions=True),
                 timeout=timeout)
         except Exception as exc:
             logger.warning("node=refund_policy 检索不可用: %s", type(exc).__name__)
             return {"retrieval_status": "unavailable",
                     "retrieval_error_code": "kb_unavailable",
                     "expanded_queries": queries, "node_trace": trace}
+        if isinstance(raw[0], BaseException):  # base_query 权威:它挂了就是不可用
+            logger.warning("node=refund_policy base 检索异常: %s", type(raw[0]).__name__)
+            return {"retrieval_status": "unavailable",
+                    "retrieval_error_code": "kb_unavailable",
+                    "expanded_queries": queries, "node_trace": trace}
+        results, dropped = [], []
+        for q, r in zip(queries, raw):
+            if isinstance(r, BaseException):  # 扩写支路临时异常:丢弃并记原因(spec §6.4)
+                logger.warning("node=refund_policy 丢弃扩写支路: %s", type(r).__name__)
+                dropped.append(f"expansion_branch_dropped:{type(r).__name__}")
+            else:
+                results.append(r)
+        drop_note = ";".join(dropped) or None
         for r in results:  # 维护态:任一查询命中维护 note 即整轮不可用(spec §6.4)
             if _STATE_NOTE_CODES.get(r.note) is not None:
                 out = state_fields_for_result(r)
@@ -311,7 +324,7 @@ def build_refund_nodes(deps: GraphDeps) -> dict:
                 return out
         base = results[0]
         result = base
-        if len(queries) > 1 and settings.knowledge_strategy == "hybrid_rerank":
+        if len(results) > 1 and settings.knowledge_strategy == "hybrid_rerank":
             candidates, seen = [], set()
             for r in results:  # 只按 chunk_id 合并候选,不比较/混合各查询分数(D10)
                 for h in r.hits:
@@ -339,6 +352,8 @@ def build_refund_nodes(deps: GraphDeps) -> dict:
                 result = base
         elif expand_note:
             result = replace(base, note=";".join(x for x in (base.note, expand_note) if x) or None)
+        if drop_note:  # 丢弃支路原因可观测:按既有 join 约定拼进最终结果 note
+            result = replace(result, note=";".join(x for x in (result.note, drop_note) if x) or None)
         out = state_fields_for_result(result)
         out["expanded_queries"] = queries
         if out["retrieval_status"] == "low_confidence":

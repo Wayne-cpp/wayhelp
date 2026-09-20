@@ -394,6 +394,27 @@ class _RankRetriever:
         return self._rerank
 
 
+class _BranchDropRetriever:
+    """FIX D:search 按问句文本路由——fail_queries 中的扩写支路抛错,其余返回 base_result;
+    rerank_candidates 记录调用。按文本而非调用序判定,抗 gather 并发调度不定序。"""
+
+    def __init__(self, base_result, fail_queries=(), rerank="unset"):
+        self._base, self._fail = base_result, set(fail_queries)
+        self._rerank = rerank
+        self.search_queries, self.rerank_calls = [], []
+
+    def search(self, query, **kw):
+        self.search_queries.append(query)
+        if query in self._fail:
+            raise TimeoutError("扩写支路临时异常")
+        return self._base
+
+    def rerank_candidates(self, query, hits, deadline=None):
+        self.rerank_calls.append((query, [h.chunk_id for h in hits]))
+        assert self._rerank != "unset"
+        return self._rerank
+
+
 def _st_order(query="这个能退吗", order_id="1111-1001"):
     from dataclasses import asdict
     from app.services.orders import get_order
@@ -545,6 +566,40 @@ async def test_refund_policy_maintenance_on_any_query_unavailable():
     assert out["retrieval_status"] == "unavailable"          # 任一查询维护态 → 整轮不可用
     assert out["retrieval_error_code"] == "kb_rebuilding"
     assert len(out["expanded_queries"]) == 2
+
+
+async def test_refund_policy_partial_expansion_failure_drops_branch_with_note():
+    # FIX D(ch06 评审 Important #2;spec §6.4/§13):base 成功+单扩写支路异常 →
+    # 丢弃该支路记可观测 note,其余支路照常合并统一重排,不整轮 kb_unavailable。
+    rt = _BranchDropRetriever(base_result=_result(hits=[_kh(7)]),
+                              fail_queries=["退货期限是多久"],
+                              rerank=_result(hits=[_kh(8, 0.95)], score=0.95))
+    model = _ExpandModel(['{"queries":["退货期限是多久","运费谁承担"]}'])
+    nodes = _rnodes(model=model, retriever=rt)
+    out = await nodes["refund_policy"](_st_order())
+    assert out["retrieval_status"] == "ok"                    # 非 unavailable(降级不等于故障)
+    assert len(rt.search_queries) == 3                        # 三条问句都实际派发
+    assert rt.rerank_calls                                     # 幸存支路仍进合并统一重排
+    assert rt.rerank_calls[0][1] == [7]
+    assert out["retrieval_result"]["note"] == "expansion_branch_dropped:TimeoutError"
+    assert out["retrieval_result"]["confidence_score"] == 0.95  # 统一重排结果未被丢弃连累
+    assert out["evidence"][0]["chunk_id"] == 8
+
+
+async def test_refund_policy_total_expansion_failure_degrades_to_base():
+    # FIX D:全部扩写支路异常而 base 成功 → 退化为 base-only,note 记丢弃原因,
+    # 不误挂 unified_rerank_failed(rerank 对 base 自身命中无新候选可排,未运行)。
+    rt = _BranchDropRetriever(base_result=_result(hits=[_kh(7)]),
+                              fail_queries=["退货期限是多久", "运费谁承担"])
+    model = _ExpandModel(['{"queries":["退货期限是多久","运费谁承担"]}'])
+    nodes = _rnodes(model=model, retriever=rt)
+    out = await nodes["refund_policy"](_st_order())
+    assert out["retrieval_status"] == "ok"
+    assert rt.rerank_calls == []                              # 无新增候选,统一重排未运行
+    assert out["retrieval_result"]["confidence_score"] == 0.9   # base 完整策略/分数/阈值
+    assert (out["retrieval_result"]["note"]
+            == "expansion_branch_dropped:TimeoutError;expansion_branch_dropped:TimeoutError")
+    assert out["evidence"][0]["chunk_id"] == 7                # 证据即 base 命中
 
 
 def _gate_graph(nodes):
