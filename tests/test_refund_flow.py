@@ -75,6 +75,47 @@ async def test_missing_order_suspends_then_resume_completes_single_turn():
         assert resp2.status_code == 409
 
 
+async def test_resume_markers_in_tool_step_text_still_cites():
+    """引用判定看跨步累计可见文本(dev-notes Task 13 观察→FIX C):真模型形态是
+    步 1 正文带 [n] 角标 + suggest_options 同步调用,步 2 短收尾无角标——若只看
+    末步文本,用户已看到死角标却永不出引用卡。SSE 必须仍发 citations 帧。"""
+    scripts = [
+        ['{"intent":"退款退货","confidence":0.9}'],      # classify(首轮无历史,understand 跳过)
+        ['{"mode":"order_specific"}'],                  # refund_scope
+        ['{"queries":[]}'],                             # resume:expand 罐头
+        # main_agent 步 1:正文角标 + suggest_options 同一步(真实失败形状)
+        ["订单 1111-1001 在 7 天无理由期内,可以退[1]。",
+         ("tool", [{"index": 0, "name": "suggest_options", "id": "s1",
+                    "args": '{"options":["申请退款"]}'}])],
+        # 步 2:无角标短收尾
+        ["请点击下方按钮提交退款申请。"],
+    ]
+    app = _app(scripts, _FakeRetriever(_result()))
+    async with await _client(app) as client:
+        frames, sid = await _turn(client, "这个能退吗")
+        sel = frames[1]
+        resp = await client.post("/v1/chat/resume", json={
+            "user_id": TEST_USER_ID, "session_id": sid,
+            "interrupt_id": sel["interrupt_id"], "order_id": "1111-1001"})
+        assert resp.status_code == 200
+        frames2 = _parse_sse(resp)
+        types2 = [f if isinstance(f, str) else f["type"] for f in frames2]
+        # 可见流不受影响:两步正文都外发
+        text = "".join(f.get("content", "") for f in frames2
+                       if isinstance(f, dict) and f["type"] == "delta")
+        assert "可以退[1]" in text and "请点击下方按钮" in text
+        # 角标在步 1:citations 帧必须发,且在最后一个 delta 之后、[DONE] 之前
+        assert "citations" in types2
+        cit = next(f for f in frames2 if isinstance(f, dict) and f["type"] == "citations")
+        assert cit["citations"][0]["ref_no"] == 1
+        assert types2.index("citations") > max(
+            i for i, t in enumerate(types2) if t == "delta")
+        assert types2[-1] == "[DONE]"
+        # 建议按钮不受影响
+        sug = [f for f in frames2 if isinstance(f, dict) and f["type"] == "suggest_actions"]
+        assert sug and sug[0]["options"][0]["action"] == "refund_form"
+
+
 async def test_resume_survives_sqlite_reopen():
     """挂起态落 SQLite 文件;关库重开后同一 interrupt ID 仍可恢复(spec §13)。"""
     import dataclasses

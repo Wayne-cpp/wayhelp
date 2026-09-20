@@ -142,6 +142,7 @@ def build_agent_node(deps: GraphDeps):
         spent = 0
         accounting = "none"
         visible_chars = 0
+        turn_text: list[str] = []  # 跨步累计整轮可见文本(与外发 delta 逐字一致)
         trace = [*state["node_trace"]]
 
         def _abort(code: str, message: str):
@@ -268,6 +269,8 @@ def build_agent_node(deps: GraphDeps):
             if broken or not _calls_legal(calls, settings.max_tool_calls_per_turn):
                 _abort("invalid_tool_call", "工具调用申请不合法")
 
+            turn_text.extend(text_parts)  # 引用判定看整轮累计而非末步(角标常在带工具步正文)
+
             if not calls:
                 final = "".join(text_parts).strip() or FALLBACK_ANSWER
                 if not "".join(text_parts).strip():
@@ -277,7 +280,10 @@ def build_agent_node(deps: GraphDeps):
                     writer(ev_fixed_delta(FALLBACK_ANSWER))
                 turn_messages.append(AIMessage(content=final))
                 trace.append({"node": "main_agent", "steps": steps})
-                out = {"turn_messages": turn_messages, "final_text": final,
+                # final_text=整轮累计可见文本(落库/历史仍按 turn_messages 逐步分条,
+                # 罐头兜底与预算/未过闸收尾保持整串罐头,不掺模型文本)
+                out = {"turn_messages": turn_messages,
+                       "final_text": "".join(turn_text).strip() or final,
                        "agent_steps": steps, "agent_tokens": spent,
                        "token_accounting": accounting, "suggested_actions": suggested,
                        "node_trace": trace}
