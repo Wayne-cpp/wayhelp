@@ -27,9 +27,10 @@
 - 意图 JSON 就 `{"intent","confidence"}` 两字段;needs_knowledge 维度已整体移除(state / prompt / parse / 日志 / probe 不留失效引用)
 - SSE delta 三条件过滤:langgraph_node==main_agent + metadata.tags 含 chat_visible + AIMessageChunk;understand / classify / refund_scope / expand 等节点内部模型调用不外发
 - 全量 pytest 的 DB 依赖:dbfixtures 用 .env 的 TEST_ADMIN_DATABASE_URL(root@127.0.0.1 TCP)建 wayhelp_test 库;若本机是原生 mysqld 而非 Docker,root 走 auth_socket 会 1698 拒连、fixture 入口直接 exit(3)——要么起 docker compose,要么给 root 开 TCP 密码授权(wayhelp 账号只有 wayhelp 库权限,不够)
+- uvicorn 起服:shell 有代理变量(http_proxy→7890 等)且无 no_proxy 时,milvus-lite 内嵌 gRPC 会被劫持进代理(GOAWAY)→ 启动契约探针误判 rebuild_required、检索整轮不可用;起服命令前加 `no_proxy=127.0.0.1,localhost`(curl 访问本机服务仍须另加 --noproxy '*')
 
 ## 当前状态(2026-09-21)
-- 2026-09-21:ch06 评审 Minor backlog 闭环——M3 规则 13 限定「可用工具含 query_faq 时」/ M4 §5 表第 3/5/7 行补字面钉 / M5 chat_visible 节点内钉(每步 astream 带 tag)/ M6 nodes.py 中部 import 归位;M1(历史 token 裁剪)/M2(订单 NS 碰撞)/M7(工具选择非确定)按评审标注记档不修;全量 pytest **530 passed**
+- 2026-09-21:ch06 评审 Minor backlog 闭环——M3 规则 13 限定「可用工具含 query_faq 时」/ M4 §5 表第 3/5/7 行补字面钉 / M5 chat_visible 节点内钉(每步 astream 带 tag)/ M6 nodes.py 中部 import 归位;M1(历史 token 裁剪)/M2(订单 NS 碰撞)/M7(工具选择非确定)按评审标注记档不修;全量 pytest **530 passed**;**验收 4 浏览器人工点验四项全过**(订单卡/退款表单/旧卡失效/引用弹层,截图实证),ch06 全部验收关闭
 - ch06 完成:正式版分流器上线——understand_query 指代消解(历史完整轮 + active_order 辅助 + 订单号来源校验)/ classify_intent 八类两字段(纯 intent ROUTE_TABLE)/ refund 子流程(refund_scope 三分支 → refund_prepare 缺单 interrupt 挂起订单选单 → refund_policy 扩写+多查询统一重排+置信闸)/ POST /v1/chat/resume(锁内校验 404/409)/ create_refund 动作 / 前端 order_selector 订单卡 + refund_form 退款表单;probe 真模型验证 24/24 intent + 3 多轮剧本 0 失败;R2 milvus_store 首连竞态加锁修复;全量 pytest **520 passed**
 - ch05 完成:聊天主链路切换 LangGraph 图驱动(SSE 协议不变 + suggest_actions 帧),spec §13 验收 11 条集成钉 + SQLite checkpoint 文件级持久化验证全绿,全量 pytest 443 passed;ch04 的 R7 忠实度 1.0 / 覆盖 0.970 / 库外拒答 1.0 成果保留
 - 运行入口不变(docker compose up -d → uv run uvicorn app.main:create_app --factory);图工作记忆落 data/checkpoints.db(.gitignore 的 data/ 规则已覆盖);DeepSeek 端点 stream_usage 已联调核实(流式 usage 正常返回)
