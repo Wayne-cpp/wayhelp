@@ -1,22 +1,39 @@
 """ch05 图节点。节点经闭包捕获 GraphDeps;日志统一 logger 'wayhelp.graph'。"""
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.config import get_stream_writer
+from langgraph.types import interrupt
 
 from app.config import Settings
 from app.graph.errors import TurnAbortError
-from app.graph.events import ev_error
+from app.graph.events import (
+    ev_citations, ev_error, ev_fixed_delta, ev_suggest_actions,
+)
 from app.graph.state import INTENTS, ROUTE_TABLE
+from app.knowledge.retriever import (
+    NOTE_REBUILDING, NOTE_REBUILD_REQUIRED, NOTE_UNCONFIGURED,
+    KnowledgeHit, RetrievalResult, assemble_evidence,
+)
+from app.prompts.expand import EXPAND_PROMPT
 from app.prompts.intent import INTENT_PROMPT
 from app.prompts.refund import REFUND_SCOPE_PROMPT
+from app.prompts.service import (
+    AGENT_BUDGET_ANSWER, CHITCHAT_REPLY, COMPLAINT_REPLY, FALLBACK_ANSWER,
+    KB_UNAVAILABLE_ANSWER, REFUSAL_ANSWER,
+)
 from app.prompts.understand import UNDERSTAND_PROMPT
 from app.services import orders
+from app.sessions import LowConfidenceRecord, StoredMessage
+from app.tool_envelope import wrap
 
 logger = logging.getLogger("wayhelp.graph")
 
@@ -219,12 +236,6 @@ def build_front_nodes(deps: GraphDeps) -> dict:
 
 # ── ch06 Task 7:refund 子流程(refund_prepare 挂起 / refund_policy 扩写统一重排)──
 
-import time
-
-from langgraph.types import interrupt
-
-from app.prompts.expand import EXPAND_PROMPT
-
 
 def route_refund_mode(state) -> str:
     return state["refund_mode"]
@@ -368,16 +379,6 @@ def build_refund_nodes(deps: GraphDeps) -> dict:
             "route_refund_mode": route_refund_mode, "route_after_prepare": route_after_prepare}
 
 
-import asyncio
-from dataclasses import asdict, is_dataclass, replace
-
-from app.knowledge.retriever import (
-    NOTE_REBUILDING, NOTE_REBUILD_REQUIRED, NOTE_UNCONFIGURED,
-    KnowledgeHit, RetrievalResult, assemble_evidence,
-)
-from app.graph.events import ev_fixed_delta
-from app.prompts.service import KB_UNAVAILABLE_ANSWER, REFUSAL_ANSWER
-
 _STATE_NOTE_CODES = {
     NOTE_UNCONFIGURED: "kb_unconfigured",
     NOTE_REBUILDING: "kb_rebuilding",
@@ -453,8 +454,6 @@ def build_knowledge_nodes(deps: GraphDeps) -> dict:
     return {"gate_fallback": gate_fallback}
 
 
-from app.prompts.service import CHITCHAT_REPLY, COMPLAINT_REPLY, FALLBACK_ANSWER
-
 COMPLAINT_ACTIONS = [
     {"action": "transfer_human", "label": "转人工"},
     {"action": "create_ticket", "label": "建工单", "ticket_type": "投诉"},
@@ -489,17 +488,6 @@ def build_fixed_nodes() -> dict:
 
     return {"complaint_reply": complaint_reply, "chitchat_reply": chitchat_reply,
             "other_fallback": other_fallback}
-
-
-import asyncio
-import contextlib
-
-from langchain_core.messages import ToolMessage
-
-from app.graph.events import ev_citations, ev_suggest_actions
-from app.prompts.service import AGENT_BUDGET_ANSWER
-from app.sessions import LowConfidenceRecord, StoredMessage
-from app.tool_envelope import wrap
 
 
 def _to_stored(turn_messages, settings) -> list[StoredMessage]:
