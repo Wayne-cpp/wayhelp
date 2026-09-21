@@ -18,7 +18,6 @@ nohup.out
 # 本地运行时数据(Milvus Lite 库文件、uvicorn 日志等,重新建库可再生,不入库)
 data/
 
-# 评估产物(滚动最新报告 + 时间戳归档),重跑可再生,不入库
-evals/results/rag_eval.json
-evals/results/*_compare.json
-evals/results/*_compare.md
+# 评估产物(滚动最新报告 + 时间戳归档 + 语料快照),重跑可再生,不入库;
+# 整目录忽略(历史已跟踪的归档文件不受影响,仍留在库里)
+evals/results/
