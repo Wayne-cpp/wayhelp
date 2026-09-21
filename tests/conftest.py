@@ -67,6 +67,7 @@ class FakeStreamModel:
             self._canned = list(canned)  # [(marker, json文本), ...] 覆盖类默认罐头
         self.received: list = []
         self.received_tools: list[list | None] = []  # 每次调用绑定的工具名列表或 None
+        self.received_configs: list = []             # 每次 astream 的 per-call config(chat_visible 钉)
 
     def bind_tools(self, tools):
         self._bound = [t.name for t in tools]
@@ -92,6 +93,7 @@ class FakeStreamModel:
     async def astream(self, messages, config=None, **kwargs):
         self.received.append(messages)
         self.received_tools.append(getattr(self, "_bound", None))
+        self.received_configs.append(config)
         self._bound = None
         script = self._scripts.pop(0) if self._scripts else ["(空)"]
         for item in script:

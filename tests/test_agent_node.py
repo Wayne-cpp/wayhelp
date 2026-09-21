@@ -334,3 +334,20 @@ async def test_order_context_from_tool_only_when_user_mentioned():
     tool_msgs = [m for m in out2["turn_messages"] if m.type == "tool"]
     assert [t.name for t in tool_msgs] == ["query_order"] and tool_msgs[0].status != "error"
     assert out2["order_context"] is None
+
+
+async def test_main_agent_every_astream_carries_chat_visible_tag():
+    """chat_visible 节点内钉(评审 Minor:集成钉已有、节点内未演练):main_agent 每一步
+    astream 都必须带 per-call config tags——SSE delta 三条件过滤的源头(spec §8);
+    若某一步漏挂,该步正文将被 messages 流过滤静默丢失。"""
+    st = new_turn_state("订单 1111-1001 到哪了")
+    st.update({"resolved_query": "订单 1111-1001 到哪了", "route": "business"})
+    model = FakeStreamModel([
+        ("tool", [{"index": 0, "name": "query_logistics", "id": "c1",
+                   "args": '{"order_id":"1111-1001"}'}]),
+        ("then", ["物流派送中。"]),
+    ])
+    out = await _agent_graph(GraphDeps(model=model, settings=make_settings(),
+                                       retriever=None, store=None)).ainvoke(st, config=_cfg(TEST_USER_ID))
+    assert out["agent_steps"] == 2
+    assert model.received_configs == [{"tags": ["chat_visible"]}] * 2
