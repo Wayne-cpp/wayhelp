@@ -81,3 +81,56 @@ async def test_clarify_branch_no_tools_no_selector():
     types = _types(frames)
     assert "order_selector" not in types and "tool_start" not in types
     assert "请问" in _deltas(frames)
+
+
+# ── §5 样例表字面钉(评审 Minor:第 3/5/7 行此前只有语义钉)──
+
+
+async def test_specs_query_uses_query_faq():
+    """§5 行 3:MH-W20 水箱容量 → 商品咨询/business → query_faq 取 product-specs 规格。"""
+    rt = _FakeRetriever(_scoped_result(doc="product-specs.md", cat="specs"))
+    app = _app([['{"intent":"商品咨询","confidence":0.9}'],
+                [("tool", [{"index": 0, "name": "query_faq", "id": "f1", "args": "{}"}])],
+                ["自动饮水机 MH-W20 的水箱容量为 2L[1]。"]],
+               rt)
+    async with await _client(app) as client:
+        frames, _ = await _turn(client, "自动饮水机 MH-W20 的水箱容量是多少")
+    assert rt.calls == ["自动饮水机 MH-W20 的水箱容量是多少"]  # 以完整原问题检索
+    assert "2L" in _deltas(frames)
+    assert any(isinstance(f, dict) and f["type"] == "citations" for f in frames)
+
+
+async def test_how_to_refund_general_retrieves_faq():
+    """§5 行 5:如何申请退款 → 退款退货/general → 不选单,强制检索 FAQ 申请步骤。"""
+    rt = _FakeRetriever(_scoped_result(doc="product-faq.md", cat="faq"))
+    scripts = [['{"intent":"退款退货","confidence":0.9}'],
+               ['{"mode":"general"}'],
+               ["在订单详情页提交退款申请并选择原因即可[1]。"]]
+    app = _app(scripts, rt)
+    async with await _client(app) as client:
+        frames, _ = await _turn(client, "如何申请退款")
+    assert "order_selector" not in _types(frames)      # 通用问题不选单
+    assert rt.calls == ["如何申请退款"]                # general 不扩写,单查询
+    assert "退款申请" in _deltas(frames)
+    assert any(isinstance(f, dict) and f["type"] == "citations" for f in frames)
+    assert app.state.model.scripts == []               # 脚本按序恰好耗尽
+
+
+async def test_warranty_order_specific_direct_retrieves_policy():
+    """§5 行 7:保修期个案(订单号在问句)→ 售后/order_specific → 唯一候选直通不选单,
+    检索问句附加订单事实(签收/状态),扩写支路并发,答复带引用。"""
+    rt = _FakeRetriever(_scoped_result(doc="after-sales-manual.md", cat="manual"))
+    scripts = [['{"intent":"售后","confidence":0.9}'],
+               ['{"mode":"order_specific"}'],
+               ['{"queries":["整机保修期是多久","保修期内维修收费吗"]}'],  # expand 罐头
+               ["订单 1111-1001 已于 3 天前签收,按政策整机保修一年[1],仍在保修期内。"]]
+    app = _app(scripts, rt)
+    async with await _client(app) as client:
+        frames, _ = await _turn(client, "订单 1111-1001 的这台设备还在保修期吗")
+    assert "order_selector" not in _types(frames)      # 订单号在问句,直通不选单
+    assert rt.calls[0].startswith("订单 1111-1001 的这台设备还在保修期吗")
+    assert "(商品:保温杯" in rt.calls[0]               # 订单事实附加进检索问句(§6.4)
+    assert rt.calls[1:] == ["整机保修期是多久", "保修期内维修收费吗"]
+    assert "保修" in _deltas(frames)
+    assert any(isinstance(f, dict) and f["type"] == "citations" for f in frames)
+    assert app.state.model.scripts == []
