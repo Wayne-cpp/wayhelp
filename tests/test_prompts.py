@@ -24,6 +24,12 @@ def test_service_prompt_ch06_clauses():
         assert needle in SERVICE_SYSTEM_PROMPT
 
 
+def test_rule13_scoped_to_query_faq_availability():
+    """评审 Minor 钉:规则 13 须以 query_faq 可用为前提——refund 过闸分支不绑
+    query_faq、clarify 分支不绑任何工具,无限定会让模型调出不存在的工具(unknown_tool)。"""
+    assert "可用工具含 query_faq" in SERVICE_SYSTEM_PROMPT
+
+
 def test_fixed_answers():
     assert COMPLAINT_REPLY.startswith("非常抱歉")
     assert "客服小蜜" in CHITCHAT_REPLY
