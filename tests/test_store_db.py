@@ -5,7 +5,7 @@ import pytest
 
 from app.main import AppRuntime, create_app
 from app.store_db import DbSessionStore
-from app.sessions import StoredMessage
+from app.sessions import ContextMeta, StoredMessage
 from app.tool_envelope import wrap
 from tests.conftest import FakeStreamModel, make_settings
 from tests.dbfixtures import db_engine, db_session_factory  # noqa: F401  (fixture 注册,依赖需一并导入)
@@ -29,23 +29,30 @@ async def test_create_exists_snapshot_commit(db_session_factory):
     assert [(m.role, m.content) for m in snap] == [("user", "问"), ("assistant", "答")]
 
 
-@pytest.mark.xfail(reason="ch07 Task 4:validate_turn 停收 tool 行,tool 行不再落库;"
-                         "本用例随 Task 10 _to_stored 定稿后改写摘除", raises=ValueError)
 async def test_tool_turn_roundtrip(db_session_factory):
+    """ch07 定稿:tool 行不落库——带 tool 行的 commit 整轮 ValueError;
+    纯工具调用步(assistant content=None + tool_calls)的新形态正常逐行落库。"""
     store = DbSessionStore(db_session_factory, max_message_chars=8000)
     sid = await store.create(USER)
     calls = [{"name": "query_faq", "args": {"keyword": "退货"}, "id": "call_1", "type": "tool_call"}]
     envelope = wrap("查到 1 条", True, None, 4000)
-    await store.commit_turn(sid, [
+    with pytest.raises(ValueError, match="tool"):
+        await store.commit_turn(sid, [
+            StoredMessage("user", "退货政策?"),
+            StoredMessage("assistant", None, tool_calls=calls),
+            StoredMessage("tool", envelope, tool_call_id="call_1"),
+            StoredMessage("assistant", "退货政策是……"),
+        ])
+    assert await store.snapshot(sid) == []  # 校验先于落库,整轮不进 DB
+    r = await store.commit_turn(sid, [
         StoredMessage("user", "退货政策?"),
         StoredMessage("assistant", None, tool_calls=calls),
-        StoredMessage("tool", envelope, tool_call_id="call_1"),
         StoredMessage("assistant", "退货政策是……"),
     ])
+    assert len(r.message_ids) == 3
     snap = await store.snapshot(sid)
-    assert [m.role for m in snap] == ["user", "assistant", "tool", "assistant"]
-    assert snap[1].tool_calls[0]["name"] == "query_faq"
-    assert snap[2].tool_call_id == "call_1" and snap[2].content == envelope
+    assert [m.role for m in snap] == ["user", "assistant", "assistant"]
+    assert snap[1].tool_calls[0]["name"] == "query_faq" and snap[1].content is None
 
 
 async def test_commit_rolls_back_on_failure(db_session_factory, monkeypatch):
@@ -185,3 +192,99 @@ def test_check_ch07_tables_missing(db_engine):
             conn.execute(text("ALTER TABLE conversations ADD COLUMN layer1_from_msg_id "
                               "BIGINT UNSIGNED NULL AFTER summary_upto_msg_id"))
             conn.commit()
+
+
+# ---- ch07 Task 5:逐行 ids / 只读查询 / 摘要与锚点事务 CAS ----
+# helper 命名 _tool_turn 避让本文件既有 2 行式 _turn;新形态 = 中间纯工具调用步
+
+
+def _tool_turn(user="你好", final="在的"):
+    return [StoredMessage("user", user),
+            StoredMessage("assistant", None,
+                          tool_calls=[{"name": "query_order", "args": {}, "id": "c1", "type": "tool_call"}]),
+            StoredMessage("assistant", final)]
+
+
+async def test_commit_turn_ids_and_no_tool_rows(db_session_factory):
+    store = DbSessionStore(db_session_factory, 8000)
+    sid = await store.create("u1")
+    r = await store.commit_turn(sid, _tool_turn())
+    assert len(r.message_ids) == 3 and r.source_message_id == r.message_ids[0]
+    assert [int(i) for i in r.message_ids] == sorted(int(i) for i in r.message_ids)
+
+
+async def test_context_meta_and_move_layer1_from(db_session_factory):
+    store = DbSessionStore(db_session_factory, 8000)
+    sid = await store.create("u1")
+    assert (await store.get_context_meta(sid, "u1")) == ContextMeta(None, None, None)
+    r1 = await store.commit_turn(sid, _tool_turn())
+    r2 = await store.commit_turn(sid, _tool_turn("第二问", "第二答"))
+    last1 = int(r1.message_ids[-1])
+    mid = int(r1.message_ids[1])
+    assert await store.move_layer1_from(sid, "u1", mid) is False      # 非完整轮边界
+    assert await store.move_layer1_from(sid, "u1", last1) is True     # 第一轮末 = 边界
+    assert await store.move_layer1_from(sid, "u1", last1) is False    # 不前移
+    assert await store.move_layer1_from(sid, "u1", int(r2.message_ids[-1])) is True
+    assert await store.move_layer1_from(sid, "other", last1) is False
+    meta = await store.get_context_meta(sid, "u1")
+    assert meta.layer1_from == int(r2.message_ids[-1])
+
+
+async def test_append_summary_cas_and_projection(db_session_factory):
+    store = DbSessionStore(db_session_factory, 8000)
+    sid = await store.create("u1")
+    r1 = await store.commit_turn(sid, _tool_turn())
+    upto = int(r1.message_ids[-1])
+    bad = await store.append_summary(sid, 0, upto, "段一", 10_000)
+    assert not bad.applied and bad.reason == "beyond-layer1"          # layer1_from 未设
+    await store.move_layer1_from(sid, "u1", upto)
+    ok = await store.append_summary(sid, 0, upto, "用户问过订单A1001退款", 10_000)
+    assert ok.applied and ok.seq == 1
+    dup = await store.append_summary(sid, 0, upto, "重复", 10_000)
+    assert not dup.applied and dup.reason == "anchor-moved"           # CAS 不回退
+    meta = await store.get_context_meta(sid, "u1")
+    assert meta.summary_upto == upto and "A1001" in meta.summary
+
+
+async def test_list_conversations_and_messages(db_session_factory):
+    store = DbSessionStore(db_session_factory, 8000)
+    sid1 = await store.create("u1")
+    await store.commit_turn(sid1, _tool_turn())
+    sid2 = await store.create("u1")
+    convs = await store.list_conversations("u1")
+    assert [c.id for c in convs] == [sid2, sid1]                       # 新在前
+    assert convs[1].preview == "你好" and convs[1].summarized is False
+    msgs = await store.list_messages(sid1, "u1")
+    # spec §6:list_messages 是前端回放 DTO,过滤 content=NULL 的工具调用 assistant 行
+    assert [m.role for m in msgs] == ["user", "assistant"]
+    assert all(m.content for m in msgs)                                # content=NULL 已过滤
+    assert await store.list_messages(sid1, "other") is None
+    assert await store.list_conversations("other") == []
+
+
+async def test_checkpoint_records_and_span(db_session_factory):
+    store = DbSessionStore(db_session_factory, 8000)
+    sid = await store.create("u1")
+    r = await store.commit_turn(sid, _tool_turn())
+    recs = await store.list_checkpoint_records(sid, "u1")
+    assert [x.role for x in recs] == ["user", "assistant", "assistant"]
+    rows = await store.fetch_span_texts(sid, 0, int(r.message_ids[1]))
+    assert [x[1] for x in rows] == ["user", "assistant"]
+    assert await store.list_checkpoint_records(sid, "other") is None
+
+
+async def test_summary_cascade_delete(db_session_factory):
+    from sqlalchemy import text
+    store = DbSessionStore(db_session_factory, 8000)
+    sid = await store.create("u1")
+    r = await store.commit_turn(sid, _tool_turn())
+    upto = int(r.message_ids[-1])
+    await store.move_layer1_from(sid, "u1", upto)
+    await store.append_summary(sid, 0, upto, "段一", 10_000)
+    with db_session_factory() as s:
+        # messages 的 FK(ch02)不带级联,先清消息行;本用例钉的是 ch07 summaries 的 CASCADE
+        s.execute(text("DELETE FROM messages WHERE conversation_id = :cid"), {"cid": int(sid)})
+        s.execute(text("DELETE FROM conversations WHERE id = :cid"), {"cid": int(sid)})
+        s.commit()
+        left = s.execute(text("SELECT COUNT(*) FROM conversation_summaries")).scalar()
+    assert left == 0                                                   # 外键级联
