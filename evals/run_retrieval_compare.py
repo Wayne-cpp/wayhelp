@@ -337,7 +337,7 @@ def _run_generation(test_cases: list[dict], strat: str, threshold: float | None,
             answer, evidence = REFUSAL_ANSWER, []
         else:
             evidence = [e.to_dict() for e in assemble_evidence(
-                r["hits"], max_items=settings.rerank_top_n,
+                r["hits"], max_items=settings.rerank_top_k,
                 budget_chars=settings.max_tool_result_chars, overhead_chars=200)]
             answer = _simulate_second_turn(model, c["query"], evidence,
                                            r["effective_strategy"])

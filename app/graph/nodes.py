@@ -155,7 +155,7 @@ def build_front_nodes(deps: GraphDeps) -> dict:
             else:
                 active_summary = orders.order_summary(o)
         turns = _history_turns(state.get("messages") or [],
-                               deps.settings.understand_history_turns)
+                               6)  # understand_history_turns 已退役(ch07 Task 2);Task 8 重写历史段时删除
         if not turns and active_summary is None:
             return {"resolved_query": state["raw_query"], "active_order": active,
                     "node_trace": trace}
@@ -342,7 +342,7 @@ def build_refund_nodes(deps: GraphDeps) -> dict:
                     if h.chunk_id not in seen:
                         seen.add(h.chunk_id)
                         candidates.append(h)
-            candidates = candidates[: 4 * settings.rerank_top_n]
+            candidates = candidates[: 4 * settings.rerank_top_k]
             unified = None
             if candidates:
                 try:
@@ -418,7 +418,7 @@ def evidence_dicts_from_snapshot(snap: dict, settings) -> list[dict]:
     if not hits:
         return []
     return [e.to_dict() for e in assemble_evidence(
-        hits, max_items=settings.rerank_top_n,
+        hits, max_items=settings.rerank_top_k,
         budget_chars=settings.max_tool_result_chars, overhead_chars=200)]
 
 

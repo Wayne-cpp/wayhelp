@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(min_length=1)
     model_name: str = Field(min_length=1)
     structured_output_method: Literal["json_schema", "json_mode"] = "json_schema"
-    max_input_tokens: int = Field(default=2000, gt=0)
+    max_input_tokens: int = Field(default=2000, gt=0)  # extract/mining 专用,聊天链路不用
     max_output_tokens: int = Field(default=1000, gt=0)
     max_message_chars: int = Field(default=8000, gt=0)
     max_sessions: int = Field(default=1000, gt=0)
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     tool_timeout_seconds: float = Field(default=5, gt=0)
     tool_max_retries: int = Field(default=2, ge=0)
     max_tool_calls_per_turn: int = Field(default=5, gt=0)
-    max_tool_result_chars: int = Field(default=4000, ge=256)
+    max_tool_result_chars: int = Field(default=4000, ge=256)  # 证据组装字符预算(assemble_evidence budget_chars)
     embedding_base_url: str = "https://api.siliconflow.cn/v1"
     embedding_api_key: str = ""
     embedding_model: str = "BAAI/bge-m3"
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     rerank_timeout_seconds: float = Field(default=5, gt=0)
     rerank_max_retries: int = Field(default=2, ge=0)   # 内部追加重试;2 = 最多共 3 次请求
     retrieval_candidate_k: int = Field(default=50, gt=0)
-    rerank_top_n: int = Field(default=10, gt=0)
+    rerank_top_k: int = Field(default=10, gt=0)
     rerank_confidence_signal: Literal["top1", "margin12", "product", "ratio5"] = "top1"  # 闸门置信信号;胜者由评估校准选拔后冻结
     rerank_min_score: float = Field(default=0.0553)  # 2026-09-16 校准冻结(0.10 档,par=0.971;同上报告);阈值语义随 confidence_signal
     bm25_min_score: float = Field(default=0.0)     # 校准确认无可用闸门(分数退化),保持 0.0
@@ -54,7 +54,15 @@ class Settings(BaseSettings):
     max_agent_steps: int = Field(default=8, gt=0)      # main_agent 内模型调用次数上限
     max_agent_tokens: int = Field(default=20000, gt=0)  # 本轮累计 token 预算(usage 或预留估算)
     checkpoint_db_path: str = "./data/checkpoints.db"
-    understand_history_turns: int = Field(default=6, gt=0)  # 指代消解输入的最近完整轮数
+    # ch07 会话上下文预算(spec §5)
+    model_context_window: int = Field(default=65536, gt=0)
+    max_user_input_tokens: int = Field(default=2000, gt=0)
+    tool_result_max_tokens: int = Field(default=1200, gt=0)
+    summary_projection_tokens: int = Field(default=650, gt=0)
+    history_target_turns: int = Field(default=20, gt=0)
+    steady_tokens_per_turn: int = Field(default=300, gt=0)
+    summary_max_chars: int = Field(default=200, gt=0)
+    safety_margin_tokens: int = Field(default=550, ge=0)
     intent_model_name: str | None = None       # reserved,未接线(双模型 cascade 明确不在本章范围);None = 复用主模型(D5)
     refund_expand_enabled: bool = True         # order_specific 扩写开关(§6.4)
 

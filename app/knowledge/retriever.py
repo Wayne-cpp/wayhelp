@@ -257,7 +257,7 @@ class KnowledgeRetriever:
                 note = outcome.note or note
                 threshold = (self._threshold_for("hybrid") if min_score is None
                              else min_score)
-        top_n = self._settings.rerank_top_n
+        top_n = self._settings.rerank_top_k
         hits = hits[:top_n]
         scores = [h.score for h in hits]
         confidence = (confidence_from_scores(scores, self._settings.rerank_confidence_signal)
@@ -280,7 +280,7 @@ class KnowledgeRetriever:
         if not outcome.ok:
             logger.warning("rerank_candidates 统一重排失败: %s", outcome.note)
             return None
-        ranked = self._apply_ranking(hits, outcome.ranking)[: self._settings.rerank_top_n]
+        ranked = self._apply_ranking(hits, outcome.ranking)[: self._settings.rerank_top_k]
         scores = [h.score for h in ranked]
         confidence = confidence_from_scores(scores, self._settings.rerank_confidence_signal)
         low = confidence is None or confidence < threshold
@@ -307,7 +307,7 @@ class KnowledgeRetriever:
             return RerankOutcome(False, [], "reranker_not_configured")
         docs = [_hit_text(h) for h in hits]
         return self._reranker.rerank(query, docs,
-                                     self._settings.rerank_top_n, deadline)
+                                     self._settings.rerank_top_k, deadline)
 
     @staticmethod
     def _with_score(h: KnowledgeHit, score: float) -> KnowledgeHit:
@@ -346,7 +346,7 @@ class KnowledgeRetriever:
                     pinned_ids.add(h.chunk_id)
                     pinned.append(best[h.chunk_id])
         merged = sorted(best.values(), key=lambda h: -h.score)
-        top_n = self._settings.rerank_top_n
+        top_n = self._settings.rerank_top_k
         in_top = {h.chunk_id for h in merged[:top_n]}
         rescued = [p for p in pinned if p.chunk_id not in in_top]
         if rescued:   # 整体插到 top_n 尾部区段:全部被裁前都在榜内,且不碰榜首 top1

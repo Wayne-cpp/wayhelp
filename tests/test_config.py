@@ -137,7 +137,7 @@ def test_embedding_dim_env_string_coerced(monkeypatch):
 def test_ch04_defaults():
     s = make_settings()
     assert s.knowledge_strategy == "hybrid_rerank"
-    assert s.retrieval_candidate_k == 50 and s.rerank_top_n == 10
+    assert s.retrieval_candidate_k == 50 and s.rerank_top_k == 10
     assert s.rerank_max_retries == 2 and s.rerank_timeout_seconds == 5
     assert s.knowledge_tool_timeout_seconds == 20
     assert s.query_rewrite_enabled is True
@@ -149,3 +149,19 @@ def test_ch04_defaults():
 def test_has_rerank_key_fallback():
     assert make_settings(embedding_api_key="emb-key").has_rerank_key() is True   # 回退
     assert make_settings(rerank_api_key="rr-key").has_rerank_key() is True       # 专属优先
+
+
+def test_ch07_context_defaults():
+    s = Settings(openai_base_url="http://x", openai_api_key="k", model_name="m",
+                 database_url="mysql+pymysql://u:p@h/d")
+    assert s.model_context_window == 65536
+    assert s.max_user_input_tokens == 2000
+    assert s.tool_result_max_tokens == 1200
+    assert s.summary_projection_tokens == 650
+    assert s.rerank_top_k == 10
+    assert s.history_target_turns == 20
+    assert s.steady_tokens_per_turn == 300
+    assert s.summary_max_chars == 200
+    assert s.safety_margin_tokens == 550
+    assert not hasattr(s, "understand_history_turns")
+    assert not hasattr(s, "rerank_top_n")

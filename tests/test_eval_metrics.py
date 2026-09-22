@@ -261,7 +261,7 @@ def test_run_generation_counts():
             return R()
 
     class _Settings:
-        rerank_top_n = 10
+        rerank_top_k = 10
         max_tool_result_chars = 4000
 
     cases = [

@@ -142,7 +142,7 @@ def build_tools(session_factory, conversation_id: int, retriever=None,
                           "low_confidence": False,
                           "effective_strategy": result.effective_strategy})
         evidence = [e.to_dict() for e in assemble_evidence(
-            result.hits, max_items=settings.rerank_top_n if settings else 10,
+            result.hits, max_items=settings.rerank_top_k if settings else 10,
             budget_chars=(settings.max_tool_result_chars if settings else 4000),
             overhead_chars=200)] if result.hits else []
         trace.status = "low_confidence" if result.low_confidence else "ok"
@@ -284,7 +284,7 @@ def build_graph_tools(user_id: str, resolved_query: str, retriever, settings,
                                            "effective_strategy": result.effective_strategy})
                 return faq_trace._cached
             evidence = [e.to_dict() for e in assemble_evidence(
-                result.hits, max_items=settings.rerank_top_n,
+                result.hits, max_items=settings.rerank_top_k,
                 budget_chars=settings.max_tool_result_chars, overhead_chars=200)]
             faq_trace.status = "ok"
             faq_trace.evidence = evidence
