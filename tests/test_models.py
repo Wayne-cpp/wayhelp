@@ -111,3 +111,22 @@ def test_faith_case_crud_defaults(db_session_factory):
         s.commit()
         row = s.query(FaithCase).one()
         assert row.status == "未解决" and row.seen_count == 1
+
+
+def test_conversation_ch07_columns():
+    from app.models import Conversation
+    cols = Conversation.__table__.columns
+    for name in ("summary", "summary_upto_msg_id", "layer1_from_msg_id"):
+        assert name in cols, name
+    assert cols["summary"].nullable
+
+
+def test_conversation_summary_model():
+    from app.models import ConversationSummary
+    cols = ConversationSummary.__table__.columns
+    for name in ("id", "conversation_id", "seq", "from_msg_id", "upto_msg_id",
+                 "content", "created_at"):
+        assert name in cols, name
+    fk = list(cols["conversation_id"].foreign_keys)
+    # SQLAlchemy 2.0 无 Column.fullname;target_fullname 即 "conversations.id" 同一字符串
+    assert fk and fk[0].target_fullname == "conversations.id"

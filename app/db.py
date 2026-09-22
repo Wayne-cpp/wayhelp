@@ -32,3 +32,14 @@ def check_ch04_tables(engine) -> None:
         raise RuntimeError(
             f"缺少 ch04 表 {missing}:请执行 "
             f"docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch04-ddl.sql")
+
+
+def check_ch07_tables(engine) -> None:
+    """缺 ch07 列/表启动失败并提示升级命令(spec §3)。"""
+    with engine.connect() as conn:
+        cols = {r[0] for r in conn.execute(text("SHOW COLUMNS FROM conversations"))}
+        tables = {r[0] for r in conn.execute(text("SHOW TABLES"))}
+    missing = {"summary", "summary_upto_msg_id", "layer1_from_msg_id"} - cols
+    if missing or "conversation_summaries" not in tables:
+        raise RuntimeError(
+            "缺少 ch07 会话上下文表结构,请先执行:mysql wayhelp < sql/ch07-ddl.sql")

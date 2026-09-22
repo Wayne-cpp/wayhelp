@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
-    Boolean, DateTime, Enum, ForeignKey, JSON, String, Text, UniqueConstraint, func,
+    Boolean, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.dialects.mysql import BIGINT, INTEGER
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -19,6 +19,10 @@ class Conversation(Base):
     status: Mapped[str] = mapped_column(
         Enum("进行中", "已转人工", "已结束", name="conv_status"), default="进行中"
     )
+    # ch07 会话上下文:投影摘要 + 双锚点(层边界靠消息 id 表达,不搬数据)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_upto_msg_id: Mapped[int | None] = mapped_column(BIGINT(unsigned=True), nullable=True)
+    layer1_from_msg_id: Mapped[int | None] = mapped_column(BIGINT(unsigned=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -36,6 +40,20 @@ class Message(Base):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     tool_calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ConversationSummary(Base):
+    __tablename__ = "conversation_summaries"
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    seq: Mapped[int] = mapped_column(Integer)
+    from_msg_id: Mapped[int] = mapped_column(BIGINT(unsigned=True))
+    upto_msg_id: Mapped[int] = mapped_column(BIGINT(unsigned=True))
+    content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

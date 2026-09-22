@@ -162,3 +162,24 @@ async def test_commit_turn_returns_db_user_message_id(db_session_factory):
             assert msg is not None and msg.role == "user"
             assert msg.conversation_id == int(sid)
     await asyncio.to_thread(_check)
+
+
+def test_check_ch07_tables_ok(db_engine):
+    from app.db import check_ch07_tables
+    check_ch07_tables(db_engine)  # 不抛即过
+
+
+def test_check_ch07_tables_missing(db_engine):
+    from sqlalchemy import text
+    from app.db import check_ch07_tables
+    with db_engine.connect() as conn:
+        conn.execute(text("ALTER TABLE conversations DROP COLUMN layer1_from_msg_id"))
+        conn.commit()
+    try:
+        with pytest.raises(RuntimeError, match="ch07-ddl"):
+            check_ch07_tables(db_engine)
+    finally:
+        with db_engine.connect() as conn:
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN layer1_from_msg_id "
+                              "BIGINT UNSIGNED NULL AFTER summary_upto_msg_id"))
+            conn.commit()
