@@ -1,7 +1,10 @@
 import pytest
 
 from app.errors import SessionCapacityReachedError
-from app.sessions import CommitTurnResult, InMemorySessionStore, LowConfidenceRecord, StoredMessage
+from app.sessions import (
+    CommitTurnResult, ContextMeta, ConversationItem, ConversationMessage,
+    InMemorySessionStore, LowConfidenceRecord, PersistedTurn, StoredMessage, validate_turn,
+)
 from tests.conftest import TEST_USER_ID
 
 
@@ -108,6 +111,8 @@ async def test_commit_turn_returns_source_message_id():
     assert r1.source_message_id.isdecimal() and r2.source_message_id.isdecimal()
 
 
+@pytest.mark.xfail(reason="ch07 Task 4:validate_turn 停收 tool 行;本用例的 tool 行 envelope "
+                         "契约随 Task 10 _to_stored 定稿后改写摘除", raises=ValueError)
 async def test_validate_turn_accepts_multiple_tool_groups():
     s = InMemorySessionStore(10, 100, 8000)
     sid = await s.create("u")
@@ -136,3 +141,78 @@ async def test_validate_turn_rejects_dangling_second_group():
                 {"name": "query_logistics", "args": {}, "id": "c2", "type": "tool_call"}]),
             StoredMessage("assistant", "答"),
         ])
+
+
+# ---- ch07 Task 4:逐行 message_ids / validate_turn 停收 tool 行 / 锚点与摘要 ----
+
+def _store() -> InMemorySessionStore:
+    return InMemorySessionStore(max_sessions=10, max_messages_per_session=100,
+                                max_message_chars=8000, max_tool_calls_per_turn=5)
+
+
+def _turn() -> list[StoredMessage]:
+    return [StoredMessage("user", "你好"),
+            StoredMessage("assistant", None, tool_calls=[{"name": "query_order", "args": {}, "id": "c1", "type": "tool_call"}]),
+            StoredMessage("assistant", "在的")]
+
+
+@pytest.mark.asyncio
+async def test_commit_returns_per_row_ids():
+    s = _store()
+    sid = await s.create("u1")
+    r = await s.commit_turn(sid, _turn())
+    assert r.source_message_id == r.message_ids[0] and len(r.message_ids) == 3
+    assert len(set(r.message_ids)) == 3
+
+
+def test_validate_turn_rejects_tool_rows():
+    bad = [StoredMessage("user", "hi"),
+           StoredMessage("assistant", None, tool_calls=[{"name": "t", "args": {}, "id": "c1", "type": "tool_call"}]),
+           StoredMessage("tool", "{}", tool_call_id="c1"),
+           StoredMessage("assistant", "好")]
+    with pytest.raises(ValueError, match="tool"):
+        validate_turn(bad, 5)
+    validate_turn(_turn(), 5)  # 无 tool 行的新形态合法
+
+
+@pytest.mark.asyncio
+async def test_memory_anchor_methods():
+    s = _store()
+    sid = await s.create("u1")
+    assert (await s.get_context_meta(sid, "u1")) == ContextMeta(None, None, None)
+    r = await s.commit_turn(sid, _turn())
+    last_id = int(r.message_ids[-1])
+    assert await s.move_layer1_from(sid, "u1", last_id) is True     # 末条是完整轮边界
+    assert await s.move_layer1_from(sid, "u1", last_id) is False    # 相等不前移 → False
+
+
+@pytest.mark.asyncio
+async def test_memory_summary_append_and_projection():
+    s = _store()
+    sid = await s.create("u1")
+    r = await s.commit_turn(sid, _turn())
+    upto = int(r.message_ids[-1])
+    assert await s.move_layer1_from(sid, "u1", upto)
+    res = await s.append_summary(sid, 0, upto, "用户问过订单A1001退款", 10_000)
+    assert res.applied and res.seq == 1
+    meta = await s.get_context_meta(sid, "u1")
+    assert meta.summary_upto == upto and "A1001" in (meta.summary or "")
+    again = await s.append_summary(sid, 0, upto, "重复提交", 10_000)
+    assert not again.applied and again.reason                         # CAS:from_id 已前移
+
+
+@pytest.mark.asyncio
+async def test_memory_list_and_span():
+    s = _store()
+    sid = await s.create("u1")
+    await s.commit_turn(sid, _turn())
+    convs = await s.list_conversations("u1")
+    assert len(convs) == 1 and convs[0].preview == "你好" and convs[0].summarized is False
+    msgs = await s.list_messages(sid, "u1")
+    # spec §6:list_messages 是前端回放 DTO,过滤 content=NULL 的工具调用 assistant 行
+    assert [m.role for m in msgs] == ["user", "assistant"]
+    assert await s.list_messages(sid, "other") is None                # 归属不符 → None
+    rows = await s.fetch_span_texts(sid, 0, 10**9)
+    assert [r[1] for r in rows] == ["user", "assistant", "assistant"]  # 摘要取材不过滤 content
+    recs = await s.list_checkpoint_records(sid, "u1")
+    assert recs is not None and len(recs) == 3

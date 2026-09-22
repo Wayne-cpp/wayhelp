@@ -29,6 +29,8 @@ async def test_create_exists_snapshot_commit(db_session_factory):
     assert [(m.role, m.content) for m in snap] == [("user", "问"), ("assistant", "答")]
 
 
+@pytest.mark.xfail(reason="ch07 Task 4:validate_turn 停收 tool 行,tool 行不再落库;"
+                         "本用例随 Task 10 _to_stored 定稿后改写摘除", raises=ValueError)
 async def test_tool_turn_roundtrip(db_session_factory):
     store = DbSessionStore(db_session_factory, max_message_chars=8000)
     sid = await store.create(USER)

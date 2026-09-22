@@ -226,6 +226,8 @@ async def test_agent_budget_answer_delta():
 
 # ---- 工具往返与落库 envelope ----
 
+@pytest.mark.xfail(reason="ch07 Task 4:validate_turn 停收 tool 行,graph 落库不再有 tool 行;"
+                         "本用例随 Task 10 _to_stored 定稿后改写摘除")
 async def test_stored_tool_envelope_keeps_real_error_code():
     """落库 tool 行 envelope 的 error_code 必须是 executor 的真实码
     (unknown_tool / invalid_args),不得一律写 tool_error。"""

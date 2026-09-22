@@ -1,5 +1,6 @@
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol
 
 from app.errors import SessionCapacityReachedError
@@ -24,6 +25,56 @@ class LowConfidenceRecord:
 @dataclass(frozen=True)
 class CommitTurnResult:
     source_message_id: str  # 本轮用户消息 ID 的十进制字符串(内存实现为分配序号)
+    message_ids: list[str] = field(default_factory=list)  # ch07:本轮逐行落库 ID;DB 实现在 Task 5 补全
+
+
+@dataclass(frozen=True)
+class ContextMeta:
+    summary: str | None
+    summary_upto: int | None
+    layer1_from: int | None
+
+
+@dataclass(frozen=True)
+class ConversationMessage:
+    id: str
+    role: str
+    content: str
+    tool_calls: list[dict] | None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PersistedMessageRecord:
+    id: str
+    role: str
+    content: str | None
+    tool_calls: list[dict] | None
+    tool_call_id: str | None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ConversationItem:
+    id: str
+    status: str
+    created_at: datetime | None
+    updated_at: datetime | None
+    preview: str | None
+    summarized: bool
+
+
+@dataclass(frozen=True)
+class SummaryAppendResult:
+    seq: int | None
+    applied: bool
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class PersistedTurn:
+    stored: list[StoredMessage]
+    checkpoint_indexes: list[int]   # stored 行 ↔ turn_messages 原始索引
 
 
 class SessionStore(Protocol):
@@ -32,10 +83,20 @@ class SessionStore(Protocol):
     async def snapshot(self, session_id: str) -> list[StoredMessage]: ...
     async def commit_turn(self, session_id: str, messages: list[StoredMessage],
                           low_confidence: LowConfidenceRecord | None = None) -> CommitTurnResult: ...
+    async def get_context_meta(self, session_id: str, user_id: str) -> ContextMeta: ...
+    async def list_conversations(self, user_id: str) -> list[ConversationItem]: ...
+    async def list_messages(self, session_id: str, user_id: str) -> list[ConversationMessage] | None: ...
+    async def list_checkpoint_records(self, session_id: str,
+                                      user_id: str) -> list[PersistedMessageRecord] | None: ...
+    async def move_layer1_from(self, session_id: str, user_id: str, new_id: int) -> bool: ...
+    async def fetch_span_texts(self, session_id: str,
+                               from_id: int, upto_id: int) -> list[tuple[int, str, str]]: ...
+    async def append_summary(self, session_id: str, from_id: int, upto_id: int, content: str,
+                             projection_tokens: int) -> SummaryAppendResult: ...
 
 
 def validate_turn(messages: list[StoredMessage], max_tool_calls: int) -> None:
-    """spec §5.1 四条;非法抛 ValueError。"""
+    """turn 结构校验;非法抛 ValueError(ch07:tool 行不落库,中间段只收带 tool_calls 的 assistant)。"""
     if len(messages) < 2:
         raise ValueError("turn must contain at least user + assistant")
     if messages[0].role != "user" or not (messages[0].content or "").strip():
@@ -43,39 +104,19 @@ def validate_turn(messages: list[StoredMessage], max_tool_calls: int) -> None:
     last = messages[-1]
     if last.role != "assistant" or not (last.content or "").strip():
         raise ValueError("turn must end with a non-empty assistant message")
-    middle = messages[1:-1]
-    group_calls: list[dict] = []
-    group_ids: list[str] = []
-
-    def close_group() -> None:
-        if group_calls:
-            expected = [c["id"] for c in group_calls]
-            if sorted(expected) != sorted(group_ids) or len(set(group_ids)) != len(group_ids):
-                raise ValueError("tool call ids and tool messages must match one-to-one")
-            group_calls.clear()
-            group_ids.clear()
-
-    for m in middle:
-        if m.role == "assistant":
-            close_group()  # 新 assistant 出现前先结清上一组
-            if not m.tool_calls:
-                raise ValueError("middle assistant message without tool calls")
-            if len(m.tool_calls) > max_tool_calls:
-                raise ValueError("too many tool calls in turn")
-            for call in m.tool_calls:
-                cid = call.get("id") if isinstance(call, dict) else None
-                if not isinstance(cid, str) or not cid or len(cid) > 64:
-                    raise ValueError("invalid tool call id")
-            group_calls.extend(m.tool_calls)
-        elif m.role == "tool":
-            if not group_calls:
-                raise ValueError("orphan tool message")
-            if not m.tool_call_id or len(m.tool_call_id) > 64:
-                raise ValueError("tool message missing tool_call_id")
-            group_ids.append(m.tool_call_id)
-        else:
+    for m in messages[1:-1]:
+        if m.role == "tool":
+            raise ValueError("tool rows are not persisted (ch07)")
+        if m.role != "assistant":
             raise ValueError(f"unexpected role in turn middle: {m.role}")
-    close_group()
+        if not m.tool_calls:
+            raise ValueError("middle assistant message without tool calls")
+        if len(m.tool_calls) > max_tool_calls:
+            raise ValueError("too many tool calls in turn")
+        for call in m.tool_calls:
+            cid = call.get("id") if isinstance(call, dict) else None
+            if not isinstance(cid, str) or not cid or len(cid) > 64:
+                raise ValueError("invalid tool call id")
 
 
 def _turns(messages: list[StoredMessage]) -> list[list[StoredMessage]]:
@@ -99,16 +140,22 @@ class InMemorySessionStore:
         self._sessions: dict[str, list[StoredMessage]] = {}
         self._msg_seq = 0
         self.low_confidence: list[LowConfidenceRecord] = []
+        self._owners: dict[str, str] = {}
+        self._ids: dict[str, list[int]] = {}
+        self._meta: dict[str, ContextMeta] = {}
+        self._segments: dict[str, list[str]] = {}
 
     async def create(self, user_id: str) -> str:
         if len(self._sessions) >= self._max_sessions:
             raise SessionCapacityReachedError("session capacity reached")
         sid = str(uuid.uuid4())
         self._sessions[sid] = []
+        self._owners[sid] = user_id
+        self._ids[sid] = []
         return sid
 
     async def exists(self, session_id: str, user_id: str) -> bool:
-        return session_id in self._sessions  # 内存实现不绑定 user_id(测试用)
+        return self._owners.get(session_id) == user_id  # ch07:归属生效(与 DB 侧一致)
 
     async def snapshot(self, session_id: str) -> list[StoredMessage]:
         return list(self._sessions[session_id])
@@ -128,7 +175,83 @@ class InMemorySessionStore:
             turns = _turns(msgs)
             if len(turns) <= 1:
                 break  # 始终保留最新完整 turn
-            del msgs[: len(turns[0])]
-        self._msg_seq += 1  # 校验全过后才分配,与入池同点
-        source_id = str(self._msg_seq)
-        return CommitTurnResult(source_id)
+            n = len(turns[0])
+            del msgs[:n]
+            del self._ids[session_id][:n]  # 逐行 id 同步裁前段
+        ids = []
+        for _ in messages:  # 校验全过后才分配,与入池同点
+            self._msg_seq += 1
+            ids.append(str(self._msg_seq))
+        self._ids.setdefault(session_id, []).extend(int(i) for i in ids)
+        return CommitTurnResult(ids[0], ids)
+
+    async def get_context_meta(self, session_id: str, user_id: str) -> ContextMeta:
+        return self._meta.get(session_id, ContextMeta(None, None, None))
+
+    async def list_conversations(self, user_id: str) -> list[ConversationItem]:
+        out = []
+        for sid, owner in self._owners.items():
+            if owner != user_id:
+                continue
+            first_user = next((m for m in self._sessions[sid] if m.role == "user"), None)
+            meta = self._meta.get(sid, ContextMeta(None, None, None))
+            out.append(ConversationItem(sid, "进行中", None, None,
+                                        (first_user.content or "")[:40] if first_user else None,
+                                        meta.summary is not None))
+        return out[::-1]  # 后建在前
+
+    async def list_messages(self, session_id: str, user_id: str):
+        if self._owners.get(session_id) != user_id:
+            return None
+        return [ConversationMessage(str(i), m.role, m.content, m.tool_calls)
+                for i, m in zip(self._ids[session_id], self._sessions[session_id])
+                if m.role in ("user", "assistant") and m.content]
+
+    async def list_checkpoint_records(self, session_id: str, user_id: str):
+        if self._owners.get(session_id) != user_id:
+            return None
+        return [PersistedMessageRecord(str(i), m.role, m.content, m.tool_calls, m.tool_call_id)
+                for i, m in zip(self._ids[session_id], self._sessions[session_id])]
+
+    def _turn_boundary_ids(self, session_id: str) -> set[int]:
+        ids = self._ids.get(session_id, [])
+        bounds = set()
+        pos = 0
+        for t in _turns(self._sessions.get(session_id, [])):  # 模块内直接引用
+            pos += len(t)
+            bounds.add(ids[pos - 1])
+        return bounds
+
+    async def move_layer1_from(self, session_id: str, user_id: str, new_id: int) -> bool:
+        if self._owners.get(session_id) != user_id:
+            return False
+        meta = self._meta.get(session_id, ContextMeta(None, None, None))
+        old = meta.layer1_from
+        if old is not None and new_id <= old:
+            return False
+        if new_id not in self._ids.get(session_id, []):
+            return False
+        if new_id not in self._turn_boundary_ids(session_id):
+            return False
+        self._meta[session_id] = ContextMeta(meta.summary, meta.summary_upto, new_id)
+        return True
+
+    async def fetch_span_texts(self, session_id: str, from_id: int, upto_id: int):
+        return [(i, m.role, m.content or "")
+                for i, m in zip(self._ids.get(session_id, []), self._sessions.get(session_id, []))
+                if from_id < i <= upto_id and m.role in ("user", "assistant")]
+
+    async def append_summary(self, session_id: str, from_id: int, upto_id: int,
+                             content: str, projection_tokens: int) -> SummaryAppendResult:
+        from app.services.token_budget import build_summary_projection
+        meta = self._meta.get(session_id, ContextMeta(None, None, None))
+        if (meta.summary_upto or 0) != from_id:
+            return SummaryAppendResult(None, False, "anchor-moved")
+        if meta.layer1_from is None or upto_id > meta.layer1_from:
+            return SummaryAppendResult(None, False, "beyond-layer1")
+        segs = self._segments.setdefault(session_id, [])
+        segs.append(content)
+        seq = len(segs)
+        projection = build_summary_projection(segs, projection_tokens)
+        self._meta[session_id] = ContextMeta(projection, upto_id, meta.layer1_from)
+        return SummaryAppendResult(seq, True, None)
