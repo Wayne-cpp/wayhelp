@@ -53,7 +53,7 @@ def main() -> int:
             sid, ans = chat(client, sid, q)
             print(f"[{i:02d}] {q[:24]}… -> {ans[:60]}")
     elapsed = time.monotonic() - t0
-    tail = Path(args.log).read_text(encoding="utf-8")[log_start:]
+    tail = Path(args.log).read_bytes()[log_start:].decode("utf-8", errors="replace")
     degraded = "层1 降级" in tail
     triggered = "summary trigger" in tail
     done = "summary done" in tail
