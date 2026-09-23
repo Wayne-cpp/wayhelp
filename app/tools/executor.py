@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
 from app.knowledge.retriever import RetryableKnowledgeError
-from app.tool_envelope import truncate_content
+from app.services.token_budget import truncate_tool_result
 
 RETRYABLE = (TimeoutError, asyncio.TimeoutError, OperationalError, ConnectionError,
              RetryableKnowledgeError)
@@ -51,12 +51,12 @@ class ToolRegistry:
 
 class ToolExecutor:
     def __init__(self, registry: ToolRegistry, timeout_seconds: float, max_retries: int,
-                 max_result_chars: int, write_tools: set[str] | None = None,
+                 max_result_tokens: int, write_tools: set[str] | None = None,
                  tool_policies: dict[str, tuple[float, int]] | None = None):
         self._registry = registry
         self._timeout = timeout_seconds
         self._max_retries = max_retries
-        self._max_chars = max_result_chars
+        self._max_tokens = max_result_tokens
         self._write_tools = WRITE_TOOLS if write_tools is None else write_tools
         self._policies = tool_policies or {}  # name → (timeout, max_retries),仅 readonly 路径生效
 
@@ -114,7 +114,7 @@ class ToolExecutor:
 
     def _success(self, tool, call, result, retries, started) -> ToolOutcome:
         content = result.content if isinstance(result, ToolMessage) else str(result)
-        content = truncate_content(content, True, None, self._max_chars)
+        content = truncate_tool_result(content, self._max_tokens)
         msg = ToolMessage(content=content, tool_call_id=call.get("id") or "",
                           name=tool.name, status="success")
         return ToolOutcome(msg, ToolExecutionRecord(
@@ -129,7 +129,7 @@ class ToolExecutor:
     }
 
     def _error(self, name, args, call_id, code, error_type, started, retries=0) -> ToolOutcome:
-        text = truncate_content(self._ERROR_TEXT[code], False, code, self._max_chars)
+        text = truncate_tool_result(self._ERROR_TEXT[code], self._max_tokens)
         msg = ToolMessage(content=text, tool_call_id=call_id, name=name or "unknown",
                           status="error")
         return ToolOutcome(msg, ToolExecutionRecord(

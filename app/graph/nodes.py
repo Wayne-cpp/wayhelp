@@ -36,7 +36,6 @@ from app.services.context_layers import (
     build_layered_view, needs_reconcile, reconcile_checkpoint_ids, render_history_text,
 )
 from app.sessions import ContextMeta, LowConfidenceRecord, StoredMessage
-from app.tool_envelope import wrap
 
 logger = logging.getLogger("wayhelp.graph")
 
@@ -506,7 +505,7 @@ def build_fixed_nodes() -> dict:
 
 
 def _to_stored(turn_messages, settings) -> list[StoredMessage]:
-    """本轮消息 → 落库行;临时 SystemMessage 不落库;ToolMessage 打 envelope。"""
+    """本轮消息 → 落库行;临时 SystemMessage 不落库。"""
     out: list[StoredMessage] = []
     for m in turn_messages:
         if isinstance(m, HumanMessage):
@@ -515,13 +514,8 @@ def _to_stored(turn_messages, settings) -> list[StoredMessage]:
             out.append(StoredMessage("assistant", m.content or None,
                                      tool_calls=m.tool_calls or None))
         elif isinstance(m, ToolMessage):
-            ok = m.status != "error"
-            out.append(StoredMessage(
-                "tool",
-                wrap(m.content, ok,
-                     None if ok else m.additional_kwargs.get("error_code", "tool_error"),
-                     settings.max_tool_result_chars),
-                tool_call_id=m.tool_call_id))
+            # Task 9 前移:tool 行不落库;Task 10 将改 PersistedTurn + 盖章
+            continue
     return out
 
 

@@ -21,12 +21,12 @@ ORDER_CALL = [{"name": "query_order", "args": "{\"order_id\": \"1111-1001\"}",
                "id": "call_1", "index": 0}]
 
 
-def make_app(scripts, retriever=None):
+def make_app(scripts, retriever=None, store=None):
     """scripts:每次模型调用一段,第一段必为分类输出,其后归 main_agent。"""
     return create_app(
         settings=make_settings(),
         model=ScriptedChatModel(scripts=[list(s) for s in scripts]),
-        runtime=AppRuntime(store=UserBoundMemoryStore(1000, 100, 8000),
+        runtime=AppRuntime(store=store or UserBoundMemoryStore(1000, 100, 8000),
                            toolset_factory=lambda sid: [], retriever=retriever))
 
 
@@ -66,7 +66,9 @@ async def test_main_agent_chat_visible_tag_gates_deltas():
 # ---- 工具帧 ----
 
 async def test_tool_frames_over_sse():
-    app = make_app([BUSINESS, [("tool", ORDER_CALL)], ["答", "复"]])
+    """ch07:工具帧照发 SSE,但 tool 结果不落 messages 表(_to_stored 只产 user/assistant 行)。"""
+    store = UserBoundMemoryStore(1000, 100, 8000)
+    app = make_app([BUSINESS, [("tool", ORDER_CALL)], ["答", "复"]], store=store)
     payload = {"user_id": TEST_USER_ID, "message": "查订单"}
     status, lines = await post_stream(app, payload)
     assert status == 200
@@ -78,6 +80,9 @@ async def test_tool_frames_over_sse():
     assert frames[2]["type"] == "tool_end" and frames[2]["ok"] is True
     assert frames[3]["type"] == "delta" and frames[3]["content"] == "答"
     assert frames[-1] == "[DONE]"
+    rows = await store.list_checkpoint_records(frames[0]["session_id"], TEST_USER_ID)
+    assert [r.role for r in rows] == ["user", "assistant", "assistant"]  # 无 tool 行
+    assert rows[1].tool_calls and rows[1].content is None  # 工具步存为带 tool_calls 的 assistant
 
 
 async def test_tool_end_summary_capped_80():

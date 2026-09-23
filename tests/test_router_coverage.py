@@ -37,16 +37,19 @@ async def test_stock_query_survives_kb_unavailable():
 
 
 async def test_cancel_rule_uses_query_faq():
+    """ch07:query_faq 过闸答复带引用;log 不再因 tool 行崩,且 tool 结果不落库。"""
     rt = _FakeRetriever(_scoped_result(doc="product-faq.md", cat="faq"))
     app = _app([['{"intent":"订单","confidence":0.85}'],
                 [("tool", [{"index": 0, "name": "query_faq", "id": "f1", "args": "{}"}])],
                 ["未发货订单可以在订单页直接取消[1]。"]],
                rt)
     async with await _client(app) as client:
-        frames, _ = await _turn(client, "未发货订单如何取消")
+        frames, sid = await _turn(client, "未发货订单如何取消")
     assert rt.calls == ["未发货订单如何取消"]
     assert "取消" in _deltas(frames)
     assert any(isinstance(f, dict) and f["type"] == "citations" for f in frames)
+    rows = await app.state.store.list_checkpoint_records(sid, TEST_USER_ID)
+    assert "tool" not in [r.role for r in rows]  # ch07:tool 行不落库
 
 
 async def test_general_aftersales_skips_prepare_and_expand():
@@ -87,17 +90,20 @@ async def test_clarify_branch_no_tools_no_selector():
 
 
 async def test_specs_query_uses_query_faq():
-    """§5 行 3:MH-W20 水箱容量 → 商品咨询/business → query_faq 取 product-specs 规格。"""
+    """§5 行 3:MH-W20 水箱容量 → 商品咨询/business → query_faq 取 product-specs 规格。
+    ch07:log 不再因 tool 行崩,citations 帧恢复;tool 结果不落库。"""
     rt = _FakeRetriever(_scoped_result(doc="product-specs.md", cat="specs"))
     app = _app([['{"intent":"商品咨询","confidence":0.9}'],
                 [("tool", [{"index": 0, "name": "query_faq", "id": "f1", "args": "{}"}])],
                 ["自动饮水机 MH-W20 的水箱容量为 2L[1]。"]],
                rt)
     async with await _client(app) as client:
-        frames, _ = await _turn(client, "自动饮水机 MH-W20 的水箱容量是多少")
+        frames, sid = await _turn(client, "自动饮水机 MH-W20 的水箱容量是多少")
     assert rt.calls == ["自动饮水机 MH-W20 的水箱容量是多少"]  # 以完整原问题检索
     assert "2L" in _deltas(frames)
     assert any(isinstance(f, dict) and f["type"] == "citations" for f in frames)
+    rows = await app.state.store.list_checkpoint_records(sid, TEST_USER_ID)
+    assert "tool" not in [r.role for r in rows]  # ch07:tool 行不落库
 
 
 async def test_how_to_refund_general_retrieves_faq():

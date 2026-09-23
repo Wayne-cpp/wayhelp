@@ -351,3 +351,32 @@ async def test_main_agent_every_astream_carries_chat_visible_tag():
                                        retriever=None, store=None)).ainvoke(st, config=_cfg(TEST_USER_ID))
     assert out["agent_steps"] == 2
     assert model.received_configs == [{"tags": ["chat_visible"]}] * 2
+
+
+async def test_main_agent_assembles_context_from_layers():
+    """ch07 Task 9:main_agent 上下文改三层拼装——[system, *层2, *层1, 当前用户句,
+    背景(早期摘要+本轮证据)合成一条 HumanMessage 紧跟用户句;不再读 checkpoint messages。"""
+    from langchain_core.messages import HumanMessage
+
+    st = new_turn_state("现在这句")
+    st.update({"resolved_query": "现在这句", "route": "business",
+               "history_layer2": [HumanMessage(content="层2旧问"), AIMessage(content="层2旧答")],
+               "history_layer1": [HumanMessage(content="层1近问"), AIMessage(content="层1近答")],
+               "history_summary": "早期摘要",
+               "evidence": [{"ref_no": 1, "section_path": "售后手册", "question": "几天能退",
+                             "answer": "7 天无理由"}],
+               "messages": [HumanMessage(content="checkpoint旧历史不该进上下文")]})
+    model = FakeStreamModel(["答复。"])
+    deps = GraphDeps(model=model, settings=make_settings(), retriever=None, store=None,
+                     system_prompt="SYS")
+    await _agent_graph(deps).ainvoke(st, config=_cfg())
+    msgs = model.received[0]
+    assert [(type(m).__name__, m.content) for m in msgs[:6]] == [
+        ("SystemMessage", "SYS"),
+        ("HumanMessage", "层2旧问"), ("AIMessage", "层2旧答"),
+        ("HumanMessage", "层1近问"), ("AIMessage", "层1近答"),
+        ("HumanMessage", "现在这句")]
+    bg = msgs[6]  # 背景合成一条,摘要在前、本轮证据拼接在后
+    assert type(bg).__name__ == "HumanMessage"
+    assert bg.content.startswith("【对话背景】\n早期摘要") and "7 天无理由" in bg.content
+    assert not any("checkpoint旧历史" in (m.content or "") for m in msgs)

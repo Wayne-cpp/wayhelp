@@ -3,11 +3,11 @@
 refund 过闸三只读(无 query_faq)。query_faq 未过闸 → 固定话术收尾,不再调模型。
 停止条件:无 tool_calls 收敛 / 步数或累计 token 预算耗尽 → AGENT_BUDGET_ANSWER。"""
 
+import json
 import logging
 from typing import Literal
 
 from langchain_core.messages import AIMessage, ToolMessage
-from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import tool
 from langgraph.config import get_stream_writer
 from pydantic import ValidationError
@@ -22,6 +22,9 @@ from app.prompts.service import (
     AGENT_BUDGET_ANSWER, FALLBACK_ANSWER, KB_UNAVAILABLE_ANSWER, REFUSAL_ANSWER,
 )
 from app.services.orders import order_summary
+from app.services.token_budget import (
+    compute_budget, estimate_messages, estimate_tokens, measure_sys_tokens,
+)
 from app.tools.business import build_graph_tools
 from app.tools.executor import ToolExecutor, ToolRegistry
 
@@ -94,18 +97,10 @@ def _order_context_text(order_context: dict | None) -> str | None:
             + order_summary(order_context))
 
 
-def _tool_schema_tokens(tools) -> int:
-    """绑定工具 schema 的估算开销(name+description+args schema)。"""
-    import json as _json
-    parts = []
-    for t in tools:
-        parts.append(t.name)
-        parts.append(t.description or "")
-        try:
-            parts.append(_json.dumps(t.args_schema.schema(), ensure_ascii=False))
-        except Exception:
-            pass
-    return count_tokens_approximately([AIMessage(content="\n".join(parts))])
+def _ctx_msg(m) -> dict:
+    """model_ctx 日志用的消息摘要:role + 文本内容(非 str 置 None)+ 落库行 id。"""
+    return {"role": m.type, "content": m.content if isinstance(m.content, str) else None,
+            "db_id": (m.additional_kwargs or {}).get("db_id")}
 
 
 def build_agent_node(deps: GraphDeps):
@@ -126,12 +121,14 @@ def build_agent_node(deps: GraphDeps):
             tools = [*toolset.tools, suggest_options]
         registry = ToolRegistry(tools)  # 注册表无 create_ticket:伪造调用 → unknown_tool
         executor = ToolExecutor(registry, settings.tool_timeout_seconds,
-                                settings.tool_max_retries, settings.max_tool_result_chars,
+                                settings.tool_max_retries, settings.tool_result_max_tokens,
                                 write_tools=set(),  # 聊天图内无写工具
                                 tool_policies={"query_faq": (settings.knowledge_tool_timeout_seconds,
                                                              settings.tool_max_retries)})
         model = deps.model.bind_tools(registry.tools) if tools else deps.model
-        schema_tokens = _tool_schema_tokens(registry.tools)
+        budget = deps.context_budget or compute_budget(
+            deps.settings, measure_sys_tokens(deps.system_prompt, tools))
+        schema_est = measure_sys_tokens("", registry.tools)
         evidence_text = _evidence_text(state["evidence"])
         order_text = _order_context_text(state.get("order_context"))
         context_extra = "\n\n".join(t for t in (evidence_text, order_text) if t) or None
@@ -203,12 +200,32 @@ def build_agent_node(deps: GraphDeps):
             if steps >= settings.max_agent_steps:
                 logger.info("node=main_agent budget: steps=%d", steps)
                 return _budget_answer()
-            context = build_agent_context(deps.system_prompt, state["messages"],
-                                          turn_messages, context_extra,
-                                          settings.max_input_tokens)
+            layer2 = state.get("history_layer2") or []
+            layer1 = state.get("history_layer1") or []
+            bg_parts = []
+            if state.get("history_summary"):
+                bg_parts.append("【对话背景】\n" + state["history_summary"])
+            if context_extra:
+                bg_parts.append(context_extra)
+            background_text = "\n\n".join(bg_parts) or None
+            context = build_agent_context(deps.system_prompt, layer2, layer1,
+                                          turn_messages, background_text,
+                                          settings.model_context_window - settings.max_output_tokens)
             if context is None:
                 _abort("tool_context_too_long", "工具结果超出上下文预算")
-            est_input = count_tokens_approximately(context) + schema_tokens
+            logger.info("model_ctx %s", json.dumps({
+                "session": (config.get("configurable") or {}).get("thread_id", ""),
+                "step": steps + 1,
+                "budget": {"l1": budget.layer1, "l2": budget.layer2},
+                "counts": {"l1": len(layer1), "l2": len(layer2)},
+                "est": {"l1": estimate_messages(layer1), "l2": estimate_messages(layer2),
+                        "summary": estimate_tokens(state.get("history_summary") or ""),
+                        "total": estimate_messages(context)},
+                "summary": state.get("history_summary"),
+                "layer2": [_ctx_msg(m) for m in layer2],
+                "layer1": [_ctx_msg(m) for m in layer1],
+            }, ensure_ascii=False))
+            est_input = estimate_messages(context) + schema_est
             reserve = est_input + settings.max_output_tokens
             if spent + reserve > settings.max_agent_tokens:
                 logger.info("node=main_agent budget: tokens spent=%d reserve=%d", spent, reserve)

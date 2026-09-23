@@ -54,7 +54,7 @@ async def test_registry_rejects_duplicate():
 
 async def test_timeout_then_retry_exhausted():
     ex = ToolExecutor(ToolRegistry([slow_tool]), timeout_seconds=0.1, max_retries=1,
-                      max_result_chars=4000)
+                      max_result_tokens=1200)
     t0 = time.monotonic()
     outcome = await ex.execute(_call("slow_tool", {"x": "1"}))
     assert outcome.message.status == "error"
@@ -66,7 +66,7 @@ async def test_timeout_then_retry_exhausted():
 async def test_retry_eventually_succeeds():
     FLAKY_CALLS["n"] = 0
     ex = ToolExecutor(ToolRegistry([flaky_tool]), timeout_seconds=0.1, max_retries=2,
-                      max_result_chars=4000)
+                      max_result_tokens=1200)
     outcome = await ex.execute(_call("flaky_tool", {"x": "1"}))
     assert outcome.message.status == "success"
     assert outcome.message.content == "ok-after-retry"
@@ -75,7 +75,7 @@ async def test_retry_eventually_succeeds():
 
 async def test_business_error_not_retried():
     ex = ToolExecutor(ToolRegistry([biz_error_tool]), timeout_seconds=1, max_retries=2,
-                      max_result_chars=4000)
+                      max_result_tokens=1200)
     outcome = await ex.execute(_call("biz_error_tool", {"x": "1"}))
     assert outcome.message.status == "error"
     assert outcome.record.retry_count == 0
@@ -85,7 +85,7 @@ async def test_business_error_not_retried():
 
 async def test_unknown_tool():
     ex = ToolExecutor(ToolRegistry([]), timeout_seconds=1, max_retries=0,
-                      max_result_chars=4000)
+                      max_result_tokens=1200)
     outcome = await ex.execute(_call("ghost_tool", {"x": "1"}, cid="c9"))
     assert outcome.message.status == "error"
     assert outcome.message.tool_call_id == "c9"
@@ -99,7 +99,7 @@ async def test_invalid_args_becomes_error_tool_message():
         return str(n)
 
     ex = ToolExecutor(ToolRegistry([strict_tool]), timeout_seconds=1, max_retries=2,
-                      max_result_chars=4000)
+                      max_result_tokens=1200)
     outcome = await ex.execute(_call("strict_tool", {"n": "不是数字"}, cid="c7"))
     assert outcome.message.status == "error"
     assert outcome.message.tool_call_id == "c7"
@@ -114,14 +114,31 @@ async def test_result_truncated_but_valid_envelope_content():
         return "汉" * 5000
 
     ex = ToolExecutor(ToolRegistry([big_tool]), timeout_seconds=5, max_retries=0,
-                      max_result_chars=300)
+                      max_result_tokens=20)
     outcome = await ex.execute(_call("big_tool", {"x": "1"}))
     assert outcome.message.status == "success"
     assert len(outcome.message.content) < 5000  # 回灌模型的内容本身已截断
     from app.tool_envelope import wrap
     payload = json.loads(wrap(outcome.message.content, True, None, 300))
-    assert "truncated" not in payload  # truncate_content 已一次到位,wrap 不再二次截断
+    assert "truncated" not in payload  # truncate_tool_result 已一次到位,wrap 不再二次截断
     assert payload["content"] == outcome.message.content  # 落库与模型所见逐字一致
+
+
+async def test_result_truncated_to_token_budget():
+    """ch07 Task 9:结果截断换 token 尺(truncate_tool_result),以 …[已截断] 收尾。"""
+    from app.services.token_budget import estimate_tokens
+
+    @tool
+    def big_tool(x: str) -> str:
+        """大结果"""
+        return "汉" * 5000
+
+    ex = ToolExecutor(ToolRegistry([big_tool]), timeout_seconds=5, max_retries=0,
+                      max_result_tokens=20)
+    outcome = await ex.execute(_call("big_tool", {"x": "1"}))
+    assert outcome.message.status == "success"
+    assert outcome.message.content.endswith("…[已截断]")
+    assert estimate_tokens(outcome.message.content) <= 20
 
 
 async def test_write_tool_cancel_waits_for_thread_to_land():
@@ -135,7 +152,7 @@ async def test_write_tool_cancel_waits_for_thread_to_land():
         return "written"
 
     ex = ToolExecutor(ToolRegistry([slow_write]), timeout_seconds=5, max_retries=0,
-                      max_result_chars=4000, write_tools={"slow_write"})
+                      max_result_tokens=1200, write_tools={"slow_write"})
     task = asyncio.ensure_future(ex.execute(_call("slow_write", {"x": "1"})))
     await asyncio.sleep(0.05)  # 已进入写路径
     task.cancel()
@@ -156,7 +173,7 @@ async def test_write_tool_no_wait_for_no_retry(monkeypatch):
 
     monkeypatch.setattr(asyncio, "wait_for", spy)
     ex = ToolExecutor(ToolRegistry([write_tool]), timeout_seconds=0.001, max_retries=3,
-                      max_result_chars=4000, write_tools={"write_tool"})
+                      max_result_tokens=1200, write_tools={"write_tool"})
     outcome = await ex.execute(_call("write_tool", {"x": "1"}))
     assert outcome.message.status == "success"
     assert called["wait_for"] == 0  # 写工具不经过 wait_for
@@ -172,7 +189,7 @@ async def test_query_faq_policy_no_retry():
         raise RetryableKnowledgeError("boom")
 
     reg = ToolRegistry([query_faq])
-    ex = ToolExecutor(reg, timeout_seconds=5, max_retries=2, max_result_chars=4000,
+    ex = ToolExecutor(reg, timeout_seconds=5, max_retries=2, max_result_tokens=1200,
                       tool_policies={"query_faq": (20.0, 0)})
     # 注:补 "type": "tool_call" 信封字段(T6 既载坑:缺它 langchain 把信封当 args,工具体不执行)
     outcome = await ex.execute({"name": "query_faq", "args": {"keyword": "x"}, "id": "1",
@@ -192,7 +209,7 @@ async def test_other_tools_keep_default_policy():
         raise TimeoutError()
 
     reg = ToolRegistry([query_order])
-    ex = ToolExecutor(reg, timeout_seconds=5, max_retries=2, max_result_chars=4000,
+    ex = ToolExecutor(reg, timeout_seconds=5, max_retries=2, max_result_tokens=1200,
                       tool_policies={"query_faq": (20.0, 0)})
     outcome = await ex.execute({"name": "query_order", "args": {"order_id": "1"}, "id": "1",
                                 "type": "tool_call"})
