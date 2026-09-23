@@ -85,3 +85,16 @@ def test_chat_page_order_selector_and_refund_form():
                    "order-card", "已选择订单", "该选择已失效",
                    "refund_form", "create_refund", "七天无理由", "拍错或多拍"):
         assert needle in html
+
+
+def test_chat_page_has_sidebar_and_conversation_api():
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent
+            / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    # ch07 Task 13:会话侧栏 DOM + 只读接口接线 + 静默降级(Vibe 例外,无 TDD)
+    assert 'id="sidebar"' in html and 'id="conv-list"' in html
+    assert "/api/conversations?user_id=" in html
+    assert "/api/conversations/${" in html and "/messages?user_id=" in html
+    assert "conv-item" in html and "已摘要" in html
+    assert "loadConversations" in html and "switchConversation" in html
+    assert "display" in html and "catch" in html  # 静默降级路径存在

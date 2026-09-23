@@ -644,8 +644,64 @@
   .composer-hint a { color: var(--muted); text-decoration: none; }
   .composer-hint a:hover { color: var(--fg-2); text-decoration: underline; }
 
+  /* ─── 会话侧栏(ch07):只读列表 + 历史回载;接口异常时整体隐藏 ─── */
+  body > .layout { display: flex; align-items: stretch; height: 100%; }
+  #sidebar {
+    flex: none;
+    width: 240px;
+    overflow-y: auto;
+    padding: var(--space-3);
+    background: var(--surface);
+    border-right: 1px solid var(--border-soft);
+  }
+  #sidebar .sidebar-head {
+    font-weight: 600;
+    font-size: var(--text-sm);
+    color: var(--fg-2);
+    margin: var(--space-2) 0;
+  }
+  #conv-list { list-style: none; margin: 0; padding: 0; }
+  #conv-list .conv-item {
+    padding: var(--space-2);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  #conv-list .conv-item:hover { background: var(--surface-warm); }
+  #conv-list .conv-item.active {
+    background: color-mix(in oklab, var(--accent), var(--surface) 88%);
+  }
+  #conv-list .conv-preview {
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
+  }
+  #conv-list .conv-meta { font-size: 11px; color: var(--meta); }
+  #conv-list .conv-badge {
+    font-size: 10px;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    padding: 0 3px;
+    margin-left: 4px;
+  }
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 72px;
+    transform: translateX(-50%);
+    z-index: 60;
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-pill);
+    background: var(--fg);
+    color: var(--surface);
+    font-size: 14px;
+  }
+
   @media (max-width: 640px) {
     .app { border-inline: none; box-shadow: none; }
+    #sidebar { display: none; }  /* 窄屏藏侧栏,聊天区独占 */
     #messages { padding: var(--space-4) var(--space-3); }
     .msg-row { max-width: 94%; }
     .chat-header { padding: var(--space-3) var(--space-4); }
@@ -662,6 +718,11 @@
 </style>
 </head>
 <body>
+<div class="layout">
+  <aside id="sidebar" data-od-id="sidebar">
+    <div class="sidebar-head">会话</div>
+    <ul id="conv-list" data-od-id="conv-list"></ul>
+  </aside>
 <div class="app">
   <header class="chat-header" data-od-id="chat-header">
     <img class="brand-mark" src="1784959384051.jpg" alt="" aria-hidden="true">
@@ -686,6 +747,7 @@
     </div>
   </div>
   <div class="composer-hint">小蜜是 AI 助手，涉及具体订单将为你转接人工核实 · Enter 发送，Shift+Enter 换行 · <a href="/kb">知识库管理</a> · <a href="/rag-eval">RAG 评估</a></div>
+</div>
 </div>
 
 <script>
@@ -1240,7 +1302,9 @@
             fbSessionId = evt.session_id; // 新会话,反馈序号从 0 重新计
             fbReplyIndex = 0;
           }
+          var wasNewSession = sessionId === null; // 此前为 null = 本轮开启新会话
           sessionId = evt.session_id;
+          if (wasNewSession) onSessionEstablished();
         } else if (evt.type === "delta") {
           reply += evt.content;
           ui.bubble.textContent = reply;
@@ -1331,11 +1395,7 @@
 
   newChatBtn.addEventListener("click", function () {
     if (streaming) return;
-    sessionId = null;
-    orderGroups = [];   // 旧会话未消费订单卡随 DOM 一并清空
-    closeRefundForm();
-    messagesEl.innerHTML = "";
-    suggestionsEl = null;
+    onNewChat();        // sessionId 置空 + 清屏(含订单卡/表单)+ 侧栏高亮清零
     addBubble("assistant", GREETING);
     showSuggestions();
     inputEl.focus();
@@ -1363,9 +1423,113 @@
     closeCitePop();
   });
 
+  /* ─── 会话侧栏(ch07):只读列表 + 历史回载;接口异常静默降级 ─── */
+  function setComposerEnabled(enabled) {
+    // 只锁输入区,不动 streaming 全局(setStreaming 还管焦点/建议/新对话钮)
+    inputEl.disabled = !enabled;
+    sendBtn.disabled = !enabled || !inputEl.value.trim();
+  }
+
+  function clearMessageList() {
+    orderGroups = [];   // DOM 清空,未消费订单卡引用一并丢弃
+    closeRefundForm();
+    messagesEl.innerHTML = "";
+    suggestionsEl = null;
+  }
+
+  function appendHistoryBubble(role, content) {
+    addBubble(role, content);  // 只读回放:纯文本气泡,不带徽章/引用/按钮
+  }
+
+  function showToast(text) {
+    console.warn(text);
+    var toast = document.createElement("div");
+    toast.className = "toast";
+    toast.setAttribute("role", "status");
+    toast.textContent = text;
+    document.body.appendChild(toast);
+    setTimeout(function () {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 2600);
+  }
+
+  async function loadConversations() {
+    try {
+      var resp = await fetch(`/api/conversations?user_id=${encodeURIComponent(userId)}`);
+      if (!resp.ok) throw new Error(String(resp.status));
+      renderConversationList(await resp.json());
+    } catch (e) {
+      document.getElementById("sidebar").style.display = "none"; // 静默降级,不影响聊天
+    }
+  }
+
+  function renderConversationList(items) {
+    var ul = document.getElementById("conv-list");
+    ul.innerHTML = "";
+    (items || []).forEach(function (it) {
+      var li = document.createElement("li");
+      li.className = "conv-item" + (String(it.id) === String(sessionId) ? " active" : "");
+      li.dataset.sessionId = it.id;
+      var preview = document.createElement("div");
+      preview.className = "conv-preview";
+      preview.textContent = it.preview || "(空会话)";
+      var meta = document.createElement("div");
+      meta.className = "conv-meta";
+      meta.textContent = (it.updated_at || "").slice(0, 16).replace("T", " ");
+      if (it.summarized) {
+        var badge = document.createElement("span");
+        badge.className = "conv-badge";
+        badge.textContent = "已摘要";
+        meta.appendChild(badge);
+      }
+      li.appendChild(preview);
+      li.appendChild(meta);
+      li.addEventListener("click", function () { switchConversation(it.id); });
+      ul.appendChild(li);
+    });
+  }
+
+  async function switchConversation(id) {
+    if (String(id) === String(sessionId) || streaming) return;
+    setComposerEnabled(false);  // 回放完成前锁发送区
+    try {
+      var resp = await fetch(`/api/conversations/${id}/messages?user_id=${encodeURIComponent(userId)}`);
+      if (!resp.ok) throw new Error(String(resp.status));
+      var msgs = await resp.json();
+      clearMessageList();
+      (msgs || []).forEach(function (m) { appendHistoryBubble(m.role, m.content); });
+      sessionId = id;
+      renderConversationListActive(id);
+    } catch (e) {
+      showToast("历史加载失败，请重试");  // 轻量报错,当前会话 UI 原样保留
+    } finally {
+      setComposerEnabled(true);
+    }
+  }
+
+  function renderConversationListActive(id) {
+    var lis = document.querySelectorAll("#conv-list .conv-item");
+    for (var i = 0; i < lis.length; i++) {
+      lis[i].classList.toggle("active", String(lis[i].dataset.sessionId) === String(id));
+    }
+  }
+
+  function onNewChat() {
+    sessionId = null;
+    clearMessageList();
+    renderConversationListActive(null);
+  }
+
+  function onSessionEstablished() {
+    var sidebar = document.getElementById("sidebar");
+    if (sidebar.style.display === "none") return;
+    loadConversations();  // 新会话首条落库后以 API 数据刷新列表
+  }
+
   // 初始问候 + 建议问题
   addBubble("assistant", GREETING);
   showSuggestions();
+  loadConversations();  // 侧栏列表;接口不可用时内部静默隐藏
   inputEl.focus();
 })();
 </script>
