@@ -1,7 +1,7 @@
 """20+ 轮上下文长跑(烧额度,手跑):
   默认窗口: uv run python evals/probe_context.py --scenario default
   演示配置: 先用演示 env 起服,再 uv run python evals/probe_context.py --scenario demo
-起服(演示): MODEL_CONTEXT_WINDOW=18000 MAX_OUTPUT_TOKENS=2000 MAX_USER_INPUT_TOKENS=2000 \
+起服(演示): MODEL_CONTEXT_WINDOW=13000 MAX_OUTPUT_TOKENS=2000 MAX_USER_INPUT_TOKENS=2000 \
   MAX_AGENT_STEPS=3 TOOL_RESULT_MAX_TOKENS=1200 RERANK_TOP_K=5 \
   no_proxy=127.0.0.1,localhost uv run uvicorn --factory app.main:create_app
 """
