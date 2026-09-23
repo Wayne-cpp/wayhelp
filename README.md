@@ -1,6 +1,6 @@
 # wayhelp — 电商智能客服
 
-SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,后端走「模型定工具 → 执行 → 结果回灌 → 收敛作答」,回答逐 token 吐出,聊天气泡带工具轨迹徽章;ch03 起叠加 Milvus 向量语义检索,FAQ/政策类问题先查知识库;ch04 起升级四策略混合检索与重排,回答带 [n] 引用角标可回原文,证据不足固定话术拒答并入低置信池;ch05 起聊天主链路由 LangGraph Workflow 图编排,投诉/建工单改为前端独立按钮 + 动作端点;ch06 起图换正式版分流器(指代消解 → 八类意图纯 intent 路由 → 退款/售后确定性子流程:缺订单号 interrupt 挂起出订单卡、选单 resume 续跑、扩写多查询统一重排 + 置信闸),订单数据为按用户命名空间实例化的确定性 mock。单轮工具调用上限 MAX_TOOL_CALLS_PER_TURN(默认 5)。
+SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,后端走「模型定工具 → 执行 → 结果回灌 → 收敛作答」,回答逐 token 吐出,聊天气泡带工具轨迹徽章;ch03 起叠加 Milvus 向量语义检索,FAQ/政策类问题先查知识库;ch04 起升级四策略混合检索与重排,回答带 [n] 引用角标可回原文,证据不足固定话术拒答并入低置信池;ch05 起聊天主链路由 LangGraph Workflow 图编排,投诉/建工单改为前端独立按钮 + 动作端点;ch06 起图换正式版分流器(指代消解 → 八类意图纯 intent 路由 → 退款/售后确定性子流程:缺订单号 interrupt 挂起出订单卡、选单 resume 续跑、扩写多查询统一重排 + 置信闸),订单数据为按用户命名空间实例化的确定性 mock。ch07 起会话历史按三层窗口管理(摘要投影 + 层2 截短 + 层1 原文滑窗,超预算后台异步摘要),聊天页带会话侧栏(多会话切换/历史回载)。单轮工具调用上限 MAX_TOOL_CALLS_PER_TURN(默认 5)。
 
 ## 环境
 - `uv sync`(自动建 Python 3.12 虚拟环境)
@@ -9,7 +9,9 @@ SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,�
 ## 运行
 ```bash
 docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversations/messages/tickets + 灌 faq seed)
-uv run pytest                 # 测试 530 条(DB 用例需 Docker 在线)
+# 已有 ch06 数据卷的老库升级(不得删卷;docker 首启自动含 db/init/05-ddl.sql,新装可跳过):
+docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch07-ddl.sql
+uv run pytest                 # 测试 570 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
@@ -17,7 +19,7 @@ uv run uvicorn app.main:create_app --factory   # 起服
 ## 工具链(ch02 新增)
 - LangChain `@tool` 五个业务工具(`app/tools/business.py`):`query_order` / `query_product` / `query_logistics`(演示用随机数据,不接真实接口)、`query_faq`(SQL LIKE 查 faq 表)、`create_ticket`(写 tickets 表)
 - 基础设施:注册管理、参数 Schema 校验、错误处理、超时重试(`TOOL_TIMEOUT_SECONDS` / `TOOL_MAX_RETRIES`),工具结果截断后回灌模型
-- 聊天页:工具执行前推状态帧,气泡上方显示工具徽章;含工具调用与结果的完整流水落 conversations/messages 表
+- 聊天页:工具执行前推状态帧,气泡上方显示工具徽章;含工具调用的完整流水落 conversations/messages 表(ch07 起 tool 结果行不再落表,assistant 行仍带 tool_calls,见下文 ch07 节)
 
 ## 验证(eval 脚本)
 - uv run python evals/run_provider_smoke.py
@@ -90,7 +92,7 @@ curl --noproxy '*' -X POST http://127.0.0.1:8000/v1/chat/action \
   - `dense`:向量语义检索(ch03 既有,BAAI/bge-m3)
   - `bm25`:Milvus Lite 全文检索(jieba 中文分词,型号/关键词类问题强项)
   - `hybrid`:dense + bm25 双路召回,RRF 融合
-  - `hybrid_rerank`:hybrid 候选(前 RETRIEVAL_CANDIDATE_K 条)交硅基流动重排模型(BAAI/bge-reranker-v2-m3)精排取 RERANK_TOP_N;缺重排密钥时自动降级 hybrid
+  - `hybrid_rerank`:hybrid 候选(前 RETRIEVAL_CANDIDATE_K 条)交硅基流动重排模型(BAAI/bge-reranker-v2-m3)精排取 RERANK_TOP_K;缺重排密钥时自动降级 hybrid
 - 查询改写与拒答:QUERY_REWRITE_ENABLED(默认开)先经模型生成检索查询;命中低于策略阈值即判 low_confidence,服务端不再作答,直接回固定拒答话术并把问题入 `low_confidence_questions` 表
 - 聊天页:回答中的 [1] 角标可点,弹层显示原文与章节路径;👍/👎 满意度反馈(本地 localStorage 锁定);/kb 页提供「重建索引」全量重置入口与策略/范围检索自测
 
@@ -117,7 +119,7 @@ curl --noproxy '*' -X POST http://127.0.0.1:8000/v1/chat/action \
 ### 新增依赖与环境变量
 
 - jieba(新增第三方依赖,Milvus Lite BM25 的 JiebaAnalyzer 中文分词必需),`uv sync` 自动安装
-- 新增环境变量(默认值见 .env.example):RERANK_BASE_URL / RERANK_API_KEY(留空回退 EMBEDDING_API_KEY)/ RERANK_MODEL、RETRIEVAL_CANDIDATE_K、RERANK_TOP_N、RERANK_MIN_SCORE / BM25_MIN_SCORE / HYBRID_MIN_SCORE(策略阈值,评估冻结值见 .env.example 注释)、KNOWLEDGE_STRATEGY、QUERY_REWRITE_ENABLED、KNOWLEDGE_TOOL_TIMEOUT_SECONDS
+- 新增环境变量(默认值见 .env.example):RERANK_BASE_URL / RERANK_API_KEY(留空回退 EMBEDDING_API_KEY)/ RERANK_MODEL、RETRIEVAL_CANDIDATE_K、RERANK_TOP_N(ch07 起改名 RERANK_TOP_K)、RERANK_MIN_SCORE / BM25_MIN_SCORE / HYBRID_MIN_SCORE(策略阈值,评估冻结值见 .env.example 注释)、KNOWLEDGE_STRATEGY、QUERY_REWRITE_ENABLED、KNOWLEDGE_TOOL_TIMEOUT_SECONDS
 
 ### 运行约束(沿用 ch03)
 
@@ -142,6 +144,17 @@ curl --noproxy '*' -X POST http://127.0.0.1:8000/v1/chat/action \
 - 聊天 Agent 仍无写权限:图专用 `build_graph_tools` 只产只读工具(query_order/query_logistics 绑当前用户、query_product、无参 query_faq 以本轮 resolved_query 检索且同轮缓存)+ suggest_options 伪工具(擅传 order_id 等未知键回错误);退款单走 `POST /v1/chat/action` 的 create_refund 动作(六类固定原因,落 tickets 表,状态待处理;create_ticket 同端点);模型伪造 create_ticket/create_refund 只回 unknown_tool 不写库
 - 前端:order_selector 帧渲染订单卡组(点选 → POST /resume,答复追加到原挂起轮;旧卡 disable/失效 409 提示);suggest_actions 的 refund_form 选项出「申请退款」按钮 → 退款表单(订单号服务端绑定只读回填、原因六类下拉)
 - SSE delta 三条件过滤:langgraph_node==main_agent + metadata.tags 含 chat_visible + AIMessageChunk,understand/classify/refund_scope/expand 等节点内部模型调用不外发;citations 帧在 log 提交成功后、DONE 前发,判定看整轮累计可见文本(带工具调用步骤的角标也能出卡)
-- 新增环境变量(config.py 默认值,.env.example 未列):UNDERSTAND_HISTORY_TURNS=6(指代消解历史轮数)/ REFUND_EXPAND_ENABLED=true(退款个案扩写开关)/ INTENT_MODEL_NAME=None(reserved 未接线,意图双模型 cascade 明确不做)
+- 新增环境变量(config.py 默认值,.env.example 未列):UNDERSTAND_HISTORY_TURNS=6(指代消解历史轮数;ch07 已退役,历史用量改由三层预算公式接管)/ REFUND_EXPAND_ENABLED=true(退款个案扩写开关)/ INTENT_MODEL_NAME=None(reserved 未接线,意图双模型 cascade 明确不做)
 - 运行坑:shell 有代理变量时起服须带 `no_proxy=127.0.0.1,localhost`,否则 milvus-lite 内嵌 gRPC 被劫持进代理、启动契约探针误判 rebuild_required(检索整轮不可用)
 - 验收:`uv run pytest tests/test_refund_flow.py tests/test_router_coverage.py -v`(挂起/resume/落库一轮 + spec §5 样例表全链路字面钉);真模型 probe(烧额度、手跑不进 pytest):`uv run python evals/probe_intent.py`(24 单/多轮意图样例)、`uv run python evals/probe_router_multi.py`(3 个多轮剧本全链路)
+
+## 会话上下文管理(ch07 新增)
+
+- 三层历史:模型上下文按「层1 原文滑窗(预算 70%)→ 层2 截短投影(assistant 答复只留开头)→ 摘要多段投影(【对话背景】)」拼装;understand/classify 共享同一份分层历史渲染;ch05/ch06 旧 checkpoint 会话只读对齐 db_id,对齐失败历史整轮放弃、不猜 ID
+- 降级与摘要:log 节点落库后先给本轮消息盖章 db_id,层1 超预算把锚点 layer1_from 单调前移(整轮为界,tool 组不跨层劈开);层2 渲染 token 超预算时后台异步起摘要任务(ensure_future,不阻塞 SSE 收尾;CAS 追加、in-flight 防重入、失败不挪锚点);工具结果按 token 截断(TOOL_RESULT_MAX_TOKENS)
+- 输入闸与自检:拼装超出窗口预算回固定话术 tool_context_too_long;启动时按真实工具面实测 SYS_TOKENS 打全分量预算日志,装不下一轮稳态开销打 critical(不阻断启动)
+- 会话侧栏:聊天页左侧多会话列表(切换 / 历史回载),数据来自只读接口 `GET /api/conversations` 与 `GET /api/conversations/{id}/messages`;接口失联静默降级,不阻塞聊天
+- 日志(log/app.log,FileHandler 幂等挂):`history_ctx`(understand/classify 每轮读出分层历史:摘要 + 滑窗逐条 role/content/db_id + 分层 token 估算)与 `model_ctx`(main_agent 每次模型调用:层1/层2 预算、条数、估算与逐条消息)均为单行 JSON,grep 友好;另有 `层1 降级`、`summary trigger/start/done/skip/failed` 运维事件线
+- 数据库:新增 conversation_summaries 表(会话外键级联删除);老库升级见「运行」节(sql/ch07-ddl.sql,docker 首启自动含 db/init/05-ddl.sql)
+- 新增环境变量(默认值见 .env.example 注释):MODEL_CONTEXT_WINDOW(65536)/ MAX_USER_INPUT_TOKENS / TOOL_RESULT_MAX_TOKENS / SUMMARY_PROJECTION_TOKENS / HISTORY_TARGET_TURNS / STEADY_TOKENS_PER_TURN / SUMMARY_MAX_CHARS / SAFETY_MARGIN_TOKENS;RERANK_TOP_N 全仓改名 RERANK_TOP_K,UNDERSTAND_HISTORY_TURNS 退役
+- probe(烧额度、手跑不进 pytest):`uv run python evals/probe_summary.py`(摘要标注样例)、`uv run python evals/probe_context.py`(20+ 轮长跑:默认窗口零降级零摘要 / 小窗口触发层1 降级 + 摘要级联)

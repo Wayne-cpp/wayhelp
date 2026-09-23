@@ -6,7 +6,7 @@
 ## 怎么跑
 - `uv sync`;`cp .env.example .env` 填 OPENAI_* 与 EMBEDDING_API_KEY
 - `docker compose up -d`(MySQL,首启自动建表)→ `uv run uvicorn --factory app.main:create_app`
-- `uv run pytest`(530 条,需 Docker 在线);页面:`/` 聊天、`/kb` 知识库、`/rag-eval` 评估
+- `uv run pytest`(570 条,需 Docker 在线);页面:`/` 聊天、`/kb` 知识库、`/rag-eval` 评估
 - 细节以 README.md 为准;逐章开发实录在 dev-notes/
 
 ## 目录与约定
@@ -28,9 +28,14 @@
 - SSE delta 三条件过滤:langgraph_node==main_agent + metadata.tags 含 chat_visible + AIMessageChunk;understand / classify / refund_scope / expand 等节点内部模型调用不外发
 - 全量 pytest 的 DB 依赖:dbfixtures 用 .env 的 TEST_ADMIN_DATABASE_URL(root@127.0.0.1 TCP)建 wayhelp_test 库;若本机是原生 mysqld 而非 Docker,root 走 auth_socket 会 1698 拒连、fixture 入口直接 exit(3)——要么起 docker compose,要么给 root 开 TCP 密码授权(wayhelp 账号只有 wayhelp 库权限,不够)
 - uvicorn 起服:shell 有代理变量(http_proxy→7890 等)且无 no_proxy 时,milvus-lite 内嵌 gRPC 会被劫持进代理(GOAWAY)→ 启动契约探针误判 rebuild_required、检索整轮不可用;起服命令前加 `no_proxy=127.0.0.1,localhost`(curl 访问本机服务仍须另加 --noproxy '*')
+- ch07 起账本行契约:messages 表只收 user/assistant 行,tool 结果行不落库(`sessions.validate_turn` 拒收,turn 中间只许带 tool_calls 的 assistant 行);工具调用轨迹仍在 assistant.tool_calls,工具结果只在 token 截断后进模型上下文
+- 上下文 token 唯一估算尺 `app/services/token_budget.py`(estimate_tokens / estimate_messages / compute_budget 窗口倒推):一切预算、层1降级、摘要触发的判断只准用这把尺,不许另立字符数/条数启发式;演示配置验收数字 AVAIL=5649、层1=3954、层2=1695 有测试钉死
+- 上下文锚点/摘要全部事务 CAS 单调前移(layer1_from 只前不回退;摘要段 CAS 追加 + in-flight 防重入 + 失败不挪锚点);绕过 store 的 CAS 方法直改 conversation_summaries / 上下文 meta 一律禁止
+- log/app.log 由 main.py 的 FileHandler 幂等挂载(重复 create_app 不重复追加 handler);model_ctx(main_agent 每次模型调用:两层预算/条数/估算/逐条消息)与 history_ctx(understand/classify 分层历史读出:摘要/滑窗/估算)是单行 JSON 日志,grep 友好
 
-## 当前状态(2026-09-21)
+## 当前状态(2026-09-23)
 - 2026-09-21:ch06 评审 Minor backlog 闭环——M3 规则 13 限定「可用工具含 query_faq 时」/ M4 §5 表第 3/5/7 行补字面钉 / M5 chat_visible 节点内钉(每步 astream 带 tag)/ M6 nodes.py 中部 import 归位;M1(历史 token 裁剪)/M2(订单 NS 碰撞)/M7(工具选择非确定)按评审标注记档不修;全量 pytest **530 passed**;**验收 4 浏览器人工点验四项全过**(订单卡/退款表单/旧卡失效/引用弹层,截图实证),ch06 全部验收关闭
 - ch06 完成:正式版分流器上线——understand_query 指代消解(历史完整轮 + active_order 辅助 + 订单号来源校验)/ classify_intent 八类两字段(纯 intent ROUTE_TABLE)/ refund 子流程(refund_scope 三分支 → refund_prepare 缺单 interrupt 挂起订单选单 → refund_policy 扩写+多查询统一重排+置信闸)/ POST /v1/chat/resume(锁内校验 404/409)/ create_refund 动作 / 前端 order_selector 订单卡 + refund_form 退款表单;probe 真模型验证 24/24 intent + 3 多轮剧本 0 失败;R2 milvus_store 首连竞态加锁修复;全量 pytest **520 passed**
+- ch07 完成:会话上下文三层管理——历史按「层1 原文滑窗(预算 70%)/ 层2 截短投影(assistant 答复留开头)/ 摘要多段投影」拼装,understand/classify 共享分层 history_block,旧 checkpoint 只读对齐 db_id(对齐失败整轮放弃不猜);log 节点盖章 db_id → 层1 降级锚点前移 → 层2 超预算 ensure_future 异步摘要;输入 token 闸(tool_context_too_long)+ 启动预算自检(装不下稳态开销打 critical 不阻断)+ 工具结果 token 截断;只读接口 GET /api/conversations 与 /{id}/messages;聊天页会话侧栏(列表/切换/历史回载,失联静默降级);DDL conversation_summaries 外键级联(db/init/05-ddl.sql)。probe 真模型实测:摘要标注 3/3、意图 24/24、默认窗口 20 轮无降级零级联、演示 13000 窗口降级+摘要级联全现;新增配置 MODEL_CONTEXT_WINDOW / MAX_USER_INPUT_TOKENS / TOOL_RESULT_MAX_TOKENS / SUMMARY_PROJECTION_TOKENS / HISTORY_TARGET_TURNS / STEADY_TOKENS_PER_TURN / SUMMARY_MAX_CHARS / SAFETY_MARGIN_TOKENS(.env.example 注释列),RERANK_TOP_N 全仓改名 RERANK_TOP_K,UNDERSTAND_HISTORY_TURNS 退役;全量 pytest **570 passed**
 - ch05 完成:聊天主链路切换 LangGraph 图驱动(SSE 协议不变 + suggest_actions 帧),spec §13 验收 11 条集成钉 + SQLite checkpoint 文件级持久化验证全绿,全量 pytest 443 passed;ch04 的 R7 忠实度 1.0 / 覆盖 0.970 / 库外拒答 1.0 成果保留
 - 运行入口不变(docker compose up -d → uv run uvicorn app.main:create_app --factory);图工作记忆落 data/checkpoints.db(.gitignore 的 data/ 规则已覆盖);DeepSeek 端点 stream_usage 已联调核实(流式 usage 正常返回)
