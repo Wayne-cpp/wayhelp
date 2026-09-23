@@ -7,7 +7,6 @@ from typing import Any, Callable
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
-from langchain_core.messages import SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
@@ -42,6 +41,7 @@ from app.services import rag_eval as rag_eval_service
 from app.services.rag_eval import ReportCorruptError
 from app.services.chat_service import ChatService
 from app.services.kb_admin import DEFAULT_DOCS_DIR, KbAdminError
+from app.services.summarizer import SummaryRunner
 from app.store_db import DbSessionStore
 from app.tools.business import build_tools
 
@@ -101,6 +101,15 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     # 最小日志配置(master 裁决):生产侧 root 无 handler 时 wayhelp.graph 的 INFO
     # 日志(retrieve/confidence_gate 等)无处输出;basicConfig 幂等,已配环境无副作用
     logging.basicConfig()
+    log_dir = Path(__file__).resolve().parent.parent / "log"
+    log_dir.mkdir(exist_ok=True)
+    target = str(log_dir / "app.log")
+    root = logging.getLogger()
+    if not any(isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == target
+               for h in root.handlers):
+        fh = logging.FileHandler(target, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        root.addHandler(fh)
     logging.getLogger("wayhelp.graph").setLevel(logging.INFO)
     settings = settings or Settings()
     if model is None:
@@ -119,8 +128,24 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
         # (spec §13 验收 3/10:消息/低置信入池/动作端点全链路写同一 DB 账本)
         runtime = replace(runtime, store=DbSessionStore(
             runtime.session_factory, settings.max_message_chars))
-    if count_tokens_approximately([SystemMessage(content=SERVICE_SYSTEM_PROMPT)]) >= settings.max_input_tokens:
-        raise RuntimeError("system prompt alone exhausts the input token budget")
+    # ch07 启动预算自检(替代旧 system-prompt 探针):按真实工具面实测 SYS_TOKENS,
+    # 打全分量预算日志;装不下一轮 steady 开销打 critical 交运维决策,不阻断启动
+    from app.graph.agent_node import suggest_options
+    from app.services.token_budget import compute_budget, measure_sys_tokens
+    from app.tools.business import build_graph_tools
+    probe_tools = [*build_graph_tools("sys-probe", "", None, settings, with_faq=True).tools,
+                   suggest_options]
+    context_budget = compute_budget(settings, measure_sys_tokens(SERVICE_SYSTEM_PROMPT, probe_tools))
+    logging.getLogger("wayhelp.graph").info(
+        "context budget window=%d output=%d user_input=%d peak=%d fixed=%d sys=%d avail=%d total=%d l1=%d l2=%d",
+        settings.model_context_window, settings.max_output_tokens,
+        settings.max_user_input_tokens, context_budget.peak, context_budget.fixed,
+        context_budget.sys_tokens, context_budget.avail, context_budget.total,
+        context_budget.layer1, context_budget.layer2)
+    if not context_budget.sufficient:
+        logging.getLogger("wayhelp.graph").critical(
+            "上下文预算不足:total=%d < steady=%d,请调大 MODEL_CONTEXT_WINDOW 或调小固定开销",
+            context_budget.total, settings.steady_tokens_per_turn)
 
     from app.chains.extract_chain import build_extract_prompt
 
@@ -130,10 +155,12 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     ):
         raise RuntimeError("extraction few-shot prompt alone exhausts the input token budget")
 
+    summary_runner = SummaryRunner(runtime.store, model, settings)
     service = ChatService(runtime.store, model, settings, SERVICE_SYSTEM_PROMPT,
                           session_factory=runtime.session_factory)
     deps = GraphDeps(model=model, settings=settings, retriever=runtime.retriever,
-                     store=runtime.store, system_prompt=SERVICE_SYSTEM_PROMPT)
+                     store=runtime.store, system_prompt=SERVICE_SYSTEM_PROMPT,
+                     context_budget=context_budget, summary_runner=summary_runner)
     if not owns_runtime:  # 测试/嵌入路径:内存 checkpointer 即刻可用
         service.set_graph(build_chat_graph(deps, InMemorySaver()))
 
@@ -146,6 +173,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
         else:
             yield
         await app.state.job_runner.close()
+        await app.state.summary_runner.aclose()
         if owns_runtime and runtime.retriever is not None:
             runtime.retriever.close()
 
@@ -154,6 +182,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.state.model = model
     app.state.store = runtime.store
     app.state.chat_service = service
+    app.state.summary_runner = summary_runner
     app.state.session_factory = runtime.session_factory
     app.state.embed = runtime.embed
     app.state.kb_store = runtime.kb_store

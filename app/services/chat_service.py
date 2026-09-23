@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator, Union
 
 from langchain_core.messages import AIMessageChunk
 
-from app.chains.chat_chain import check_input_budget
+from app.chains.chat_chain import check_user_input
 from app.config import Settings
 from app.errors import (
     AppError, MessageTooLongError, ResumeConflictError, SessionNotFoundError,
@@ -135,7 +135,7 @@ class ChatService:
     async def prepare(self, user_id: str, session_id: str | None, message: str) -> PreparedTurn:
         if len(message) > self._settings.max_message_chars:
             raise MessageTooLongError("message exceeds MAX_MESSAGE_CHARS")
-        check_input_budget(self._system_prompt, message, self._settings.max_input_tokens)
+        check_user_input(message, self._settings.max_user_input_tokens)
         if session_id is None:
             sid = await self._store.create(user_id)
         else:

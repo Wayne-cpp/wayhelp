@@ -73,6 +73,8 @@ class SummaryRunner:
         for task in self._inflight.values():
             task.cancel()
         for task in self._inflight.values():
-            with contextlib.suppress(Exception):
+            # CancelledError 在 3.8+ 是 BaseException,suppress(Exception) 拦不住;
+            # 不补这行的话 lifespan 关停取消 in-flight 摘要时会穿透炸掉收尾段
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._inflight.clear()

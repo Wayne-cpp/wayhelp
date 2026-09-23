@@ -98,11 +98,11 @@ async def test_overlong_input_no_session_created():
     assert store._sessions == {}
 
 
-async def test_input_token_budget_gate_in_prepare():
-    """check_input_budget 早闸:系统提示 + 当前输入超预算时,建会话前即拒绝。"""
-    service, store, _ = make_service([BUSINESS], max_input_tokens=5)
+async def test_prepare_user_input_token_gate():
+    """check_user_input 早闸:输入本身超 MAX_USER_INPUT_TOKENS(§4 尺),建会话前即拒绝。"""
+    service, store, _ = make_service([BUSINESS])
     with pytest.raises(MessageTooLongError):
-        await service.prepare(TEST_USER_ID, None, "一段肯定远超五个 token 的输入文本")
+        await service.prepare(TEST_USER_ID, None, "汉" * 2001)  # 默认 max_user_input_tokens=2000
     assert store._sessions == {}
 
 
