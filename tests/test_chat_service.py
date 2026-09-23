@@ -5,7 +5,6 @@ empty_response 帧、query_faq 场景)。SSE 帧协议契约见 test_chat_api_to
 锁释放/aclose 的 HTTP 层契约见 test_chat_api 既有用例。
 """
 import asyncio
-import json
 import logging
 import uuid
 
@@ -224,23 +223,23 @@ async def test_agent_budget_answer_delta():
         "hi", AGENT_BUDGET_ANSWER]
 
 
-# ---- 工具往返与落库 envelope ----
+# ---- 工具往返与落库(ch07 Task 10 定稿:tool 行不落 messages 表)----
 
-@pytest.mark.xfail(reason="ch07 Task 4:validate_turn 停收 tool 行,graph 落库不再有 tool 行;"
-                         "本用例随 Task 10 _to_stored 定稿后改写摘除")
-async def test_stored_tool_envelope_keeps_real_error_code():
-    """落库 tool 行 envelope 的 error_code 必须是 executor 的真实码
-    (unknown_tool / invalid_args),不得一律写 tool_error。"""
+async def test_stored_multi_tool_call_assistant_without_tool_rows():
+    """多工具调用轮落库形态:单条 assistant(content=None,带全部 tool_calls)+
+    最终答复;tool 结果不落 messages 表,executor 真实错误码走 SSE tool_end 帧
+    (帧契约见 test_chat_api_tools)。"""
     ghost = {"name": "ghost_tool", "args": "{\"x\": \"1\"}", "id": "call_1", "index": 0}
     bad = {"name": "query_order", "args": "{\"order_id\": {}}", "id": "call_2", "index": 1}
     service, store, _ = make_service([BUSINESS, [("tool", [ghost, bad])], ["最终答复"]])
     turn = await service.prepare(TEST_USER_ID, None, "两个工具调用")
     events = [e async for e in service.stream(turn)]
     assert any(isinstance(e, DoneEvent) for e in events)  # 工具失败不阻断本轮
-    tool_rows = [m for m in await store.snapshot(turn.session_id) if m.role == "tool"]
-    assert len(tool_rows) == 2
-    codes = {m.tool_call_id: json.loads(m.content)["error_code"] for m in tool_rows}
-    assert codes == {"call_1": "unknown_tool", "call_2": "invalid_args"}
+    rows = await store.snapshot(turn.session_id)
+    assert [m.role for m in rows] == ["user", "assistant", "assistant"]
+    assert rows[1].content is None and rows[1].tool_calls is not None
+    assert {c["id"] for c in rows[1].tool_calls} == {"call_1", "call_2"}
+    assert rows[2].content == "最终答复"
 
 
 # ---- 提交与取消 ----

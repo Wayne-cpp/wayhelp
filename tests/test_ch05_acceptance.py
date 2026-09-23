@@ -298,9 +298,11 @@ async def test_a10_multi_step_persisted_as_groups(db_session_factory):
             rows = (s.query(Message).filter_by(conversation_id=int(sid))
                     .order_by(Message.id).all())
             roles = [r.role for r in rows]
-            assert roles == ["user", "assistant", "tool", "assistant", "tool", "assistant"]
-            assert rows[1].tool_calls[0]["id"] == "c1" and rows[2].tool_call_id == "c1"
-            assert rows[3].tool_calls[0]["id"] == "c2" and rows[4].tool_call_id == "c2"
+            # ch07 Task 10:tool 行不落库;assistant 带 tool_calls/content=None 成组
+            assert roles == ["user", "assistant", "assistant", "assistant"]
+            assert rows[1].tool_calls[0]["id"] == "c1" and rows[1].content is None
+            assert rows[2].tool_calls[0]["id"] == "c2" and rows[2].content is None
+            assert rows[3].content == "查好了。" and rows[3].tool_calls is None
     await asyncio.to_thread(_check)
 
 

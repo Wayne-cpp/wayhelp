@@ -111,8 +111,6 @@ async def test_commit_turn_returns_source_message_id():
     assert r1.source_message_id.isdecimal() and r2.source_message_id.isdecimal()
 
 
-@pytest.mark.xfail(reason="ch07 Task 4:validate_turn 停收 tool 行;本用例的 tool 行 envelope "
-                         "契约随 Task 10 _to_stored 定稿后改写摘除", raises=ValueError)
 async def test_validate_turn_accepts_multiple_tool_groups():
     s = InMemorySessionStore(10, 100, 8000)
     sid = await s.create("u")
@@ -120,12 +118,10 @@ async def test_validate_turn_accepts_multiple_tool_groups():
         StoredMessage("user", "先查订单再查物流"),
         StoredMessage("assistant", None, tool_calls=[
             {"name": "query_order", "args": {"order_id": "1001"}, "id": "c1", "type": "tool_call"}]),
-        StoredMessage("tool", "env1", tool_call_id="c1"),
         StoredMessage("assistant", None, tool_calls=[
             {"name": "query_logistics", "args": {"order_id": "1001"}, "id": "c2", "type": "tool_call"}]),
-        StoredMessage("tool", "env2", tool_call_id="c2"),
         StoredMessage("assistant", "订单已发货,派送中"),
-    ])  # 不抛异常即通过
+    ])  # 不抛异常即通过(ch07:多组 tool_calls 的中间 assistant 合法,tool 行不落库)
 
 
 async def test_validate_turn_rejects_dangling_second_group():

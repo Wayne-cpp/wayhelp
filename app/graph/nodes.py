@@ -33,9 +33,13 @@ from app.prompts.service import (
 from app.prompts.understand import UNDERSTAND_PROMPT
 from app.services import orders
 from app.services.context_layers import (
-    build_layered_view, needs_reconcile, reconcile_checkpoint_ids, render_history_text,
+    build_layered_view, evaluate_degrade, needs_reconcile, reconcile_checkpoint_ids,
+    render_history_text,
 )
-from app.sessions import ContextMeta, LowConfidenceRecord, StoredMessage
+from app.services.token_budget import compute_budget, measure_sys_tokens
+from app.sessions import (
+    ContextMeta, LowConfidenceRecord, PersistedTurn, StoredMessage,
+)
 
 logger = logging.getLogger("wayhelp.graph")
 
@@ -504,19 +508,19 @@ def build_fixed_nodes() -> dict:
             "other_fallback": other_fallback}
 
 
-def _to_stored(turn_messages, settings) -> list[StoredMessage]:
-    """本轮消息 → 落库行;临时 SystemMessage 不落库。"""
-    out: list[StoredMessage] = []
-    for m in turn_messages:
+def _to_stored(turn_messages) -> PersistedTurn:
+    """本轮消息 → 落库行 + checkpoint 索引映射(spec §6);tool 结果不落库。"""
+    stored: list[StoredMessage] = []
+    indexes: list[int] = []
+    for i, m in enumerate(turn_messages):
         if isinstance(m, HumanMessage):
-            out.append(StoredMessage("user", m.content))
+            stored.append(StoredMessage("user", m.content))
+            indexes.append(i)
         elif isinstance(m, AIMessage):
-            out.append(StoredMessage("assistant", m.content or None,
-                                     tool_calls=m.tool_calls or None))
-        elif isinstance(m, ToolMessage):
-            # Task 9 前移:tool 行不落库;Task 10 将改 PersistedTurn + 盖章
-            continue
-    return out
+            stored.append(StoredMessage("assistant", m.content or None,
+                                        tool_calls=m.tool_calls or None))
+            indexes.append(i)
+    return PersistedTurn(stored, indexes)
 
 
 def _build_low_conf(state, cid: int | None) -> LowConfidenceRecord | None:
@@ -549,17 +553,45 @@ def build_log_node(deps: GraphDeps):
     async def log_turn(state, config):
         writer = get_stream_writer()
         sid = config["configurable"]["thread_id"]
-        stored = _to_stored(state["turn_messages"], deps.settings)
+        stored_pack = _to_stored(state["turn_messages"])
         cid = int(sid) if sid.isdecimal() else None
         low_conf = _build_low_conf(state, cid)
         commit_task = asyncio.ensure_future(
-            deps.store.commit_turn(sid, stored, low_confidence=low_conf))
+            deps.store.commit_turn(sid, stored_pack.stored, low_confidence=low_conf))
         try:
             result = await asyncio.shield(commit_task)  # 取消时等事务落地
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):
                 await commit_task
             raise
+        # 盖章:落库行 id 按索引映射写回 checkpoint 消息(additional_kwargs.db_id)
+        stamped = list(state["turn_messages"])
+        for row_id, msg_idx in zip(result.message_ids, stored_pack.checkpoint_indexes):
+            m = stamped[msg_idx]
+            stamped[msg_idx] = m.model_copy(update={
+                "additional_kwargs": {**m.additional_kwargs, "db_id": int(row_id)}})
+        user_id = (config.get("configurable") or {}).get("user_id", "")
+        try:  # 上下文维护失败不阻塞本轮回复(锚点下轮再试)
+            meta = await deps.store.get_context_meta(sid, user_id)
+            budget = deps.context_budget or compute_budget(
+                deps.settings, measure_sys_tokens(deps.system_prompt, []))
+            merged = [*state["messages"], *stamped]
+            new_l1 = evaluate_degrade(merged, meta.layer1_from, budget.layer1)
+            if new_l1 is not None:
+                moved = await deps.store.move_layer1_from(sid, user_id, new_l1)
+                if moved:
+                    logger.info("层1 降级 session=%s %s→%d", sid,
+                                meta.layer1_from if meta.layer1_from is not None else "-",
+                                new_l1)
+                    meta = replace(meta, layer1_from=new_l1)
+            view = build_layered_view(merged, meta, deps.settings)
+            if view.l2_tokens > budget.layer2:
+                logger.info("summary trigger session=%s 层2 约 %d token > 预算 %d",
+                            sid, view.l2_tokens, budget.layer2)
+                if deps.summary_runner is not None:
+                    deps.summary_runner.maybe_trigger(sid, user_id)
+        except Exception:
+            logger.exception("context maintenance failed session=%s", sid)
         # 提交成功后才发 citations / suggest_actions(失败不得发按钮或成功终帧)
         if _should_cite(state):
             writer(ev_citations(state["evidence"]))
@@ -571,7 +603,7 @@ def build_log_node(deps: GraphDeps):
                     state.get("route"), state.get("retrieval_status"),
                     state.get("agent_steps"), state.get("agent_tokens"),
                     state.get("token_accounting"))
-        out = {"messages": state["turn_messages"],
+        out = {"messages": stamped,
                "source_message_id": result.source_message_id,
                "node_trace": [*state["node_trace"], {"node": "log"}]}
         oc = state.get("order_context")

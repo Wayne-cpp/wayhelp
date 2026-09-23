@@ -794,7 +794,10 @@ async def test_log_commits_and_returns_source_message_id():
     st["turn_messages"].append(AIMessage(content="您好"))
     out = await _log_graph(store).ainvoke(st, config=_config(sid))
     assert out["source_message_id"]  # commit 成功后才返回
-    assert out["messages"] == st["turn_messages"]  # 此刻才追加跨轮历史
+    # 此刻才追加跨轮历史,且每行盖 db_id(与落库行一一对应,ch07 Task 10)
+    assert [(m.type, m.content) for m in out["messages"]] == \
+        [("human", "你好"), ("ai", "您好")]
+    assert [m.additional_kwargs.get("db_id") for m in out["messages"]] == [1, 2]
     snap = await store.snapshot(sid)
     assert [m.role for m in snap] == ["user", "assistant"]
 
@@ -870,3 +873,19 @@ async def test_log_updates_active_order_only_with_order_context():
     st2["turn_messages"].append(AIMessage(content="您好"))
     out2 = await _log_graph(store).ainvoke(st2, config=_config(sid))
     assert "active_order" not in out2 or out2.get("active_order") is None
+
+
+# ── ch07 Task 10:log 节点 PersistedTurn / 盖章 / 降级 / 摘要触发 ──
+
+def test_to_stored_persisted_turn_no_tool_rows():
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import _to_stored
+    tm = [HumanMessage(content="问"),
+          AIMessage(content="", tool_calls=[{"name": "query_order", "args": {},
+                                             "id": "c1", "type": "tool_call"}]),
+          ToolMessage(content="大结果JSON", tool_call_id="c1", name="query_order"),
+          AIMessage(content="答")]
+    pack = _to_stored(tm)
+    assert [m.role for m in pack.stored] == ["user", "assistant", "assistant"]
+    assert pack.checkpoint_indexes == [0, 1, 3]          # ToolMessage 不落库,索引跳 2
+    assert pack.stored[1].tool_calls and pack.stored[1].content is None
