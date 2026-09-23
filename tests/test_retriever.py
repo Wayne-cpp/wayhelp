@@ -204,7 +204,7 @@ def test_executor_retries_retryable_knowledge_error():
         raise RetryableKnowledgeError("boom")
 
     ex = ToolExecutor(ToolRegistry([flaky]), timeout_seconds=5, max_retries=2,
-                      max_result_chars=4000)
+                      max_result_tokens=1200)
     # 注:计划原文 call dict 缺 "type": "tool_call",langchain 会把整个信封当
     # args 校验(缺 q → ValidationError,工具体不执行);补上信封字段,断言不变。
     outcome = asyncio.run(ex.execute({"name": "flaky", "args": {"q": "x"}, "id": "1",
@@ -228,7 +228,7 @@ def test_executor_no_retry_on_plain_error():
         raise ValueError("auth failed")
 
     ex = ToolExecutor(ToolRegistry([broken]), timeout_seconds=5, max_retries=2,
-                      max_result_chars=4000)
+                      max_result_tokens=1200)
     outcome = asyncio.run(ex.execute({"name": "broken", "args": {"q": "x"}, "id": "1",
                                       "type": "tool_call"}))
     assert outcome.record.error_code == "tool_error"

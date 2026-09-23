@@ -97,7 +97,12 @@ async def test_tool_context_too_long_is_final_frame_no_commit():
                                    0.9, 0.5, False, None, passthrough_plan(q),
                                    {"dense": 1, "bm25": 1, "fused": 1})
 
-    settings = make_settings(max_input_tokens=200, max_tool_result_chars=100000)
+    # ch07 Task 9:守卫换尺 build_agent_context 的 guard_tokens =
+    # model_context_window - max_output_tokens(默认 65536 窗口下本用例的长证据
+    # 不再超限)。参照 tests/test_context_maintenance.py 的 _tiny_settings 手法
+    # 收小窗口,让 guard 真的超限;原意图不变:error 帧收尾 + 不落库 commit。
+    settings = make_settings(model_context_window=4000, max_output_tokens=2000,
+                             max_tool_result_chars=100000)
     store = InMemorySessionStore(10, 10, 100)
     model = ScriptedChatModel(scripts=[KNOWLEDGE, GEN, ["不应发生的回答"]])
     service, store = _service(model, settings=settings, store=store,
