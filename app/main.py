@@ -33,6 +33,7 @@ from app.errors import (
 )
 from app.prompts.service import SERVICE_SYSTEM_PROMPT
 from app.routers.chat import router as chat_router
+from app.routers.conversations import router as conversations_router
 from app.routers.extract import router as extract_router
 from app.routers.jobs import router as jobs_router
 from app.routers.kb import router as kb_router
@@ -193,6 +194,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.state.retriever = runtime.retriever
     app.state.kb_docs_dir = DEFAULT_DOCS_DIR
     app.include_router(chat_router)
+    app.include_router(conversations_router)
     app.include_router(extract_router)
     app.include_router(kb_router)
     app.include_router(jobs_router)

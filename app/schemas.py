@@ -188,3 +188,19 @@ class AfterSaleExtraction(BaseModel):
     intent: Intent = Field(description="诉求类型")
     expectation: Expectation | None = Field(default=None, description="期望方案;未表达则为 null")
     summary: str = Field(description="一句话问题摘要")
+
+
+class ConversationItemOut(BaseModel):
+    id: str
+    status: str
+    created_at: str | None
+    updated_at: str | None
+    preview: str | None
+    summarized: bool
+
+
+class ConversationMessageOut(BaseModel):
+    id: str
+    role: str
+    content: str
+    created_at: str | None
