@@ -29,6 +29,14 @@ def test_new_turn_state_resets_temp_fields_but_keeps_cross_turn():
     assert "messages" not in st and "active_order" not in st  # 跨轮字段不重置
 
 
+def test_new_turn_state_resets_history_fields():
+    """ch07 Task 8:分层历史四字段是每轮临时态,进 new_turn_state 重置清单。"""
+    s = new_turn_state("q")
+    assert s["history_block"] == "" and s["history_layer1"] == []
+    assert s["history_layer2"] == [] and s["history_summary"] is None
+    assert "messages" not in s  # 跨轮保留契约不变
+
+
 def test_new_turn_state_resets_all_transients():
     st = new_turn_state("退货政策是什么")
     assert st["raw_query"] == "退货政策是什么" and st["resolved_query"] == ""

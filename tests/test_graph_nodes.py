@@ -133,8 +133,10 @@ class _UnderstandModel:
 
 
 def _understand_graph(model):
+    # ch07 Task 8:understand 历史段读 store 锚点,须传真存储(历史消息由用例盖 db_id)
     nodes = build_front_nodes(GraphDeps(model=model, settings=make_settings(),
-                                        retriever=None, store=None))
+                                        retriever=None,
+                                        store=InMemorySessionStore(10, 100, 8000)))
     g = StateGraph(ChatGraphState)
     g.add_node("understand_query", nodes["understand_query"])
     g.add_edge(START, "understand_query")
@@ -156,8 +158,10 @@ async def test_understand_first_turn_skips_llm():
 async def test_understand_resolves_coreference_with_history():
     model = _UnderstandModel(['{"resolved_query": "保温杯能退吗"}'])
     st = new_turn_state("它能退吗")
-    st["messages"] = [HumanMessage(content="我想买保温杯"),
-                      AIMessage(content="可以的,保温杯 89 元。")]
+    st["messages"] = [HumanMessage(content="我想买保温杯",
+                                   additional_kwargs={"db_id": 1}),
+                      AIMessage(content="可以的,保温杯 89 元。",
+                                additional_kwargs={"db_id": 2})]
     out = await _understand_graph(model).ainvoke(st, config=_cfg())
     assert out["resolved_query"] == "保温杯能退吗"
     assert out["understanding_degraded"] is False
@@ -166,7 +170,8 @@ async def test_understand_resolves_coreference_with_history():
 async def test_understand_passthrough_marker_and_blank():
     model = _UnderstandModel(['{"resolved_query": ""}'])
     st = new_turn_state("订单 1111-1001 到哪了")
-    st["messages"] = [HumanMessage(content="你好"), AIMessage(content="您好!")]
+    st["messages"] = [HumanMessage(content="你好", additional_kwargs={"db_id": 1}),
+                      AIMessage(content="您好!", additional_kwargs={"db_id": 2})]
     out = await _understand_graph(model).ainvoke(st, config=_cfg())
     assert out["resolved_query"] == "订单 1111-1001 到哪了"  # 空串 = 透传
 
@@ -180,7 +185,8 @@ async def test_understand_parse_failure_and_model_error_degrade():
                     raise ConnectionError("x")
             model = _Boom()
         st = new_turn_state("它呢")
-        st["messages"] = [HumanMessage(content="前一句"), AIMessage(content="答")]
+        st["messages"] = [HumanMessage(content="前一句", additional_kwargs={"db_id": 1}),
+                          AIMessage(content="答", additional_kwargs={"db_id": 2})]
         out = await _understand_graph(model).ainvoke(st, config=_cfg())
         assert out["resolved_query"] == "它呢" and out["understanding_degraded"] is True
 
@@ -188,7 +194,9 @@ async def test_understand_parse_failure_and_model_error_degrade():
 async def test_understand_rejects_hallucinated_order_id():
     model = _UnderstandModel(['{"resolved_query": "订单 1111-1002 能退吗"}'])
     st = new_turn_state("它能退吗")  # 原文与 active_order 都没有 1111-1002
-    st["messages"] = [HumanMessage(content="看看保温杯"), AIMessage(content="好的")]
+    st["messages"] = [HumanMessage(content="看看保温杯",
+                                   additional_kwargs={"db_id": 1}),
+                      AIMessage(content="好的", additional_kwargs={"db_id": 2})]
     out = await _understand_graph(model).ainvoke(st, config=_cfg())
     assert out["resolved_query"] == "它能退吗" and out["understanding_degraded"] is True
 
@@ -196,7 +204,8 @@ async def test_understand_rejects_hallucinated_order_id():
 async def test_understand_uses_validated_active_order_and_clears_stale():
     model = _UnderstandModel(['{"resolved_query": "订单 1111-1001 能退吗"}'])
     st = new_turn_state("这单能退吗")
-    st["messages"] = [HumanMessage(content="选了订单"), AIMessage(content="好的")]
+    st["messages"] = [HumanMessage(content="选了订单", additional_kwargs={"db_id": 1}),
+                      AIMessage(content="好的", additional_kwargs={"db_id": 2})]
     st["active_order"] = {"order_id": "1111-1001", "source_message_id": "3"}
     out = await _understand_graph(model).ainvoke(st, config=_cfg())
     assert out["resolved_query"] == "订单 1111-1001 能退吗"
@@ -208,14 +217,80 @@ async def test_understand_uses_validated_active_order_and_clears_stale():
     assert out2["active_order"] is None
 
 
-def test_history_turns_cuts_complete_turns():
-    from app.graph.nodes import _history_turns
-    msgs = [HumanMessage(content="u1"), AIMessage(content="a1"),
-            HumanMessage(content="u2"), AIMessage(content="a2"),
-            HumanMessage(content="u3")]
-    turns = _history_turns(msgs, 6)
-    assert [t[0].content for t in turns] == ["u1", "u2"]  # 末尾未成轮不切
-    assert [t[0].content for t in _history_turns(msgs, 1)] == ["u2"]
+# ── ch07 Task 8:understand/classify 共享分层历史 ──
+# (_history_turns/_render_history 退役,旧 test_history_turns_cuts_complete_turns 随之删除)
+
+from app.sessions import InMemorySessionStore, StoredMessage
+from tests.conftest import FakeStreamModel
+
+
+def _ch07_deps(store, model):
+    return GraphDeps(model=model, settings=make_settings(), retriever=None,
+                     store=store, system_prompt="SYS")
+
+
+async def _seed_one_turn(store):
+    """store 落一轮对话,返回 (sid, 盖了 db_id 的 checkpoint 消息)。"""
+    sid = await store.create("u1")
+    r = await store.commit_turn(sid, [StoredMessage("user", "订单A1001怎么了"),
+                                      StoredMessage("assistant", "在处理")])
+    stamped = [HumanMessage(content="订单A1001怎么了",
+                            additional_kwargs={"db_id": int(r.message_ids[0])}),
+               AIMessage(content="在处理",
+                         additional_kwargs={"db_id": int(r.message_ids[1])})]
+    return sid, stamped
+
+
+async def test_understand_writes_shared_layered_history(caplog):
+    store = InMemorySessionStore(10, 100, 8000)
+    sid, stamped = await _seed_one_turn(store)
+    nodes = build_front_nodes(_ch07_deps(store, FakeStreamModel([])))
+    state = {"messages": stamped, "raw_query": "那它呢", "node_trace": [],
+             "active_order": None}
+    with caplog.at_level(logging.INFO, logger="wayhelp.graph"):
+        out = await nodes["understand_query"](
+            state, {"configurable": {"thread_id": sid, "user_id": "u1"}})
+    assert "订单A1001" in out["history_block"]        # 层1 全量渲染进共享历史块
+    assert out["history_layer1"] and out["history_summary"] is None
+    assert "history_ctx" in caplog.text                # 全量可观测日志
+
+
+async def test_understand_short_circuit_only_when_truly_empty():
+    store = InMemorySessionStore(10, 100, 8000)
+    sid = await store.create("u1")
+
+    class _NoCall:
+        async def ainvoke(self, messages, **kw):
+            raise AssertionError("空历史不得调模型")
+
+    nodes = build_front_nodes(_ch07_deps(store, _NoCall()))
+    state = {"messages": [], "raw_query": "你好", "node_trace": [],
+             "active_order": None}
+    out = await nodes["understand_query"](
+        state, {"configurable": {"thread_id": sid, "user_id": "u1"}})
+    assert out["resolved_query"] == "你好" and out["history_block"] == ""
+
+
+async def test_classify_prompt_carries_history_block():
+    captured = []
+
+    class _Spy(FakeStreamModel):
+        async def ainvoke(self, msgs, **kw):
+            captured.append(msgs[0].content)
+            return await super().ainvoke(msgs, **kw)
+
+    nodes = build_front_nodes(_ch07_deps(InMemorySessionStore(10, 100, 8000),
+                                         _Spy([])))
+    # classify 首行 get_stream_writer():langgraph 1.2.11 裸调炸,经编译图驱动(既有裁决)
+    g = StateGraph(ChatGraphState)
+    g.add_node("classify_intent", nodes["classify_intent"])
+    g.add_edge(START, "classify_intent")
+    g.add_edge("classify_intent", END)
+    out = await g.compile().ainvoke({"resolved_query": "退款",
+                           "history_block": "对话历史:\n用户:订单A1001怎么了",
+                           "node_trace": []})
+    assert any("订单A1001" in p for p in captured)    # 分类 prompt 带共享历史块
+    assert out["route"] == "business"                 # 罐头「订单」分类照常
 
 
 from app.knowledge.retriever import (

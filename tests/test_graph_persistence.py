@@ -21,7 +21,8 @@ async def test_sqlite_checkpoint_survives_reopen(tmp_path):
     db = str(tmp_path / "cp.db")
     store = InMemorySessionStore(10, 100, 8000)
     sid = await store.create("u1")  # 脚手架(Task 13 裁决①同因,经裁决 C):直接
-    cfg = {"configurable": {"thread_id": sid}}  # ainvoke 不经 prepare,真 store 须预创建会话
+    # ch07 Task 8:understand 第二轮经 store 对齐 checkpoint 记录,须带归属 user_id
+    cfg = {"configurable": {"thread_id": sid, "user_id": "u1"}}
     async with AsyncSqliteSaver.from_conn_string(db) as cp:
         graph = build_chat_graph(_deps(
             ScriptedChatModel(scripts=[['{"intent":"闲聊","confidence":0.9}']]),

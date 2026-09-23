@@ -26,6 +26,10 @@ class ChatGraphState(TypedDict, total=False):
     raw_query: str
     resolved_query: str
     understanding_degraded: bool
+    history_block: str                # ch07:render_history_text 输出(understand 组装,classify 复用)
+    history_layer2: list              # ch07:层2 渲染消息(Task 9 main_agent 拼装)
+    history_layer1: list              # ch07:层1 原文消息(Task 9 main_agent 拼装)
+    history_summary: str | None       # ch07:早期摘要投影(Task 9 对话背景)
     intent: str | None
     intent_confidence: float | None      # 只记录不路由(D5)
     refund_mode: str | None              # general | order_specific | clarify(仅 refund 分支)
@@ -55,6 +59,10 @@ def new_turn_state(raw_query: str) -> dict:
         "raw_query": raw_query,
         "resolved_query": "",
         "understanding_degraded": False,
+        "history_block": "",
+        "history_layer2": [],
+        "history_layer1": [],
+        "history_summary": None,
         "intent": None,
         "intent_confidence": None,
         "refund_mode": None,

@@ -27,4 +27,7 @@ intent 八类定义(单选):
 用户:今天天气真好 → {"intent": "闲聊", "confidence": 0.9}
 用户:吧啦吧啦随便说点啥 → {"intent": "其他", "confidence": 0.3}
 
+对话历史(仅供参考,分类对象是最后的用户问题):
+{history_block}
+
 用户问题:{query}"""

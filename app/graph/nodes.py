@@ -32,7 +32,10 @@ from app.prompts.service import (
 )
 from app.prompts.understand import UNDERSTAND_PROMPT
 from app.services import orders
-from app.sessions import LowConfidenceRecord, StoredMessage
+from app.services.context_layers import (
+    build_layered_view, needs_reconcile, reconcile_checkpoint_ids, render_history_text,
+)
+from app.sessions import ContextMeta, LowConfidenceRecord, StoredMessage
 from app.tool_envelope import wrap
 
 logger = logging.getLogger("wayhelp.graph")
@@ -45,6 +48,8 @@ class GraphDeps:
     retriever: Any   # KnowledgeRetriever | None(测试可注假检索器)
     store: Any       # SessionStore 协议(log 节点用;生产装配必连)
     system_prompt: str = ""  # Task 13 装配传 SERVICE_SYSTEM_PROMPT
+    context_budget: Any = None  # ch07 ContextBudget(Task 9/10 消费;None 时按需现算)
+    summary_runner: Any = None  # ch07 SummaryRunner(Task 10 消费;触发后台分段摘要)
 
 
 def parse_intent_output(text: str) -> tuple[str, float | None] | None:
@@ -119,28 +124,6 @@ def route_by_intent(state) -> str:
     return state["route"]
 
 
-def _history_turns(messages, max_turns: int) -> list:
-    """按 HumanMessage 切轮,取最近 max_turns 个完整轮(轮末须有后续消息;末尾未成轮不切)。"""
-    turns: list[list] = []
-    for m in messages:
-        if isinstance(m, HumanMessage):
-            turns.append([m])
-        elif turns:
-            turns[-1].append(m)
-    return [t for t in turns if len(t) >= 2][-max_turns:]
-
-
-def _render_history(turns) -> str:
-    lines: list[str] = []
-    for t in turns:
-        for m in t:
-            if isinstance(m, HumanMessage):
-                lines.append(f"用户:{m.content}")
-            elif isinstance(m, AIMessage) and m.content:
-                lines.append(f"助手:{m.content}")
-    return "\n".join(lines)
-
-
 def build_front_nodes(deps: GraphDeps) -> dict:
     async def understand_query(state, config):
         trace = [*state["node_trace"], {"node": "understand_query"}]
@@ -154,14 +137,42 @@ def build_front_nodes(deps: GraphDeps) -> dict:
                 active = None
             else:
                 active_summary = orders.order_summary(o)
-        turns = _history_turns(state.get("messages") or [],
-                               6)  # understand_history_turns 已退役(ch07 Task 2);Task 8 重写历史段时删除
-        if not turns and active_summary is None:
+        sid = (config.get("configurable") or {}).get("thread_id", "")
+        messages = list(state.get("messages") or [])
+        stamped_back = None
+        meta = ContextMeta(None, None, None)
+        if messages:  # 有历史才读锚点/对齐(首轮零 store 访问)
+            meta = await deps.store.get_context_meta(sid, user_id)
+            if needs_reconcile(messages):
+                records = await deps.store.list_checkpoint_records(sid, user_id) or []
+                reconciled = reconcile_checkpoint_ids(messages, records)
+                if reconciled is None:
+                    logger.info("context_reconcile_failed session=%s reason=align", sid)
+                    messages = []  # 对齐失败不猜 ID,历史整轮放弃(spec §2)
+                else:
+                    messages = stamped_back = reconciled
+        view = build_layered_view(messages, meta, deps.settings)
+        history_block = render_history_text(view)
+        logger.info("history_ctx %s", json.dumps({
+            "session": sid, "summary": view.summary,
+            "window": [{"role": m.type,
+                        "content": m.content if isinstance(m.content, str) else None,
+                        "db_id": (m.additional_kwargs or {}).get("db_id")}
+                       for m in [*view.layer2_rendered, *view.layer1]],
+            "est": {"l1": view.l1_tokens, "l2": view.l2_tokens,
+                    "summary": view.summary_tokens}}, ensure_ascii=False))
+        base = {"history_block": history_block,
+                "history_layer2": view.layer2_rendered,
+                "history_layer1": view.layer1,
+                "history_summary": view.summary}
+        if stamped_back is not None:
+            base["messages"] = stamped_back  # 同 .id 原地替换,把 db_id 写回 checkpoint
+        if not history_block and active_summary is None:
             return {"resolved_query": state["raw_query"], "active_order": active,
-                    "node_trace": trace}
+                    "node_trace": trace, **base}
         block_parts = []
-        if turns:
-            block_parts.append("对话历史:\n" + _render_history(turns))
+        if history_block:
+            block_parts.append(history_block)
         if active_summary:
             block_parts.append("已确认会话订单:" + active_summary)
         prompt = (UNDERSTAND_PROMPT
@@ -185,13 +196,17 @@ def build_front_nodes(deps: GraphDeps) -> dict:
             logger.warning("node=understand_query 降级透传: %s", type(exc).__name__)
             return {"resolved_query": state["raw_query"], "understanding_degraded": True,
                     "active_order": active,
-                    "node_trace": [*trace[:-1], {"node": "understand_query", "degraded": True}]}
+                    "node_trace": [*trace[:-1], {"node": "understand_query", "degraded": True}],
+                    **base}
         logger.info("node=understand_query resolved=%r", resolved[:60])
-        return {"resolved_query": resolved, "active_order": active, "node_trace": trace}
+        return {"resolved_query": resolved, "active_order": active,
+                "node_trace": trace, **base}
 
     async def classify_intent(state):
         writer = get_stream_writer()
-        prompt = INTENT_PROMPT.replace("{query}", state["resolved_query"])
+        prompt = (INTENT_PROMPT
+                  .replace("{history_block}", state.get("history_block") or "(无对话历史)")
+                  .replace("{query}", state["resolved_query"]))
         try:
             resp = await deps.model.ainvoke([HumanMessage(content=prompt)])
         except Exception as exc:  # 网络故障不是分类结果
