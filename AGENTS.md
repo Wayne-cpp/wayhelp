@@ -15,7 +15,7 @@
 
 ## 红线与坑(都踩过)
 - 本机代理会 502:访问本机服务一律 `curl --noproxy '*'`
-- 单 Uvicorn worker(内存作业注册表 + Milvus Lite 文件独占);pkill 模式会匹配自身 shell 命令行,用 `pgrep -f '[u]vicorn --factory'` 方括号技巧
+- 单 Uvicorn worker(内存作业注册表 + Milvus Lite 文件独占);pkill/pgrep -f 模式会匹配自身 shell 命令行——`[u]vicorn` 方括号技巧只在命令行不含该字面量时有效,复合命令里嵌着模式照样自匹配(已三次踩坑);进程判断以端口监听为准(`ss -tlnp | grep :8000`)
 - 改 knowledge_docs 已导入文档:ingest_docs 拒绝覆盖(不覆盖旧知识),唯一路径 `POST /kb/api/rebuild`(服内执行);ingest/mine 等直写 `./data` 库的 CLI 须先停服
 - 评估(make eval-rag 或 /rag-eval 重跑)约 25 分钟/轮、烧 API 额度;产物 rag_eval.json 与时间戳归档均不入库
 - faith_cases 台账:status 取中文值 未解决/已解决/无需解决;「已解决」=确认真编造且已修(复发自动打回未解决),「无需解决」=裁判误判;`eval_id` 列存 case 编号(如 E40),不是 run_id

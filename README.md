@@ -11,7 +11,7 @@ SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,�
 docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversations/messages/tickets + 灌 faq seed)
 # 已有 ch06 数据卷的老库升级(不得删卷;docker 首启自动含 db/init/05-ddl.sql,新装可跳过):
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch07-ddl.sql
-uv run pytest                 # 测试 570 条(DB 用例需 Docker 在线)
+uv run pytest                 # 测试 576 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
@@ -155,6 +155,6 @@ curl --noproxy '*' -X POST http://127.0.0.1:8000/v1/chat/action \
 - 输入闸与自检:拼装超出窗口预算回固定话术 tool_context_too_long;启动时按真实工具面实测 SYS_TOKENS 打全分量预算日志,装不下一轮稳态开销打 critical(不阻断启动)
 - 会话侧栏:聊天页左侧多会话列表(切换 / 历史回载),数据来自只读接口 `GET /api/conversations` 与 `GET /api/conversations/{id}/messages`;接口失联静默降级,不阻塞聊天
 - 日志(log/app.log,FileHandler 幂等挂):`history_ctx`(understand/classify 每轮读出分层历史:摘要 + 滑窗逐条 role/content/db_id + 分层 token 估算)与 `model_ctx`(main_agent 每次模型调用:层1/层2 预算、条数、估算与逐条消息)均为单行 JSON,grep 友好;另有 `层1 降级`、`summary trigger/start/done/skip/failed` 运维事件线
-- 数据库:新增 conversation_summaries 表(会话外键级联删除);老库升级见「运行」节(sql/ch07-ddl.sql,docker 首启自动含 db/init/05-ddl.sql)
+- 数据库:conversations/messages 账本——prepare 先落库本轮用户消息(中断挂起轮不丢问句),log 节点幂等补 assistant 行(user_row_id 防重插);新增 conversation_summaries 表(会话外键级联删除);老库升级见「运行」节(sql/ch07-ddl.sql,docker 首启自动含 db/init/05-ddl.sql)
 - 新增环境变量(默认值见 .env.example 注释):MODEL_CONTEXT_WINDOW(65536)/ MAX_USER_INPUT_TOKENS / TOOL_RESULT_MAX_TOKENS / SUMMARY_PROJECTION_TOKENS / HISTORY_TARGET_TURNS / STEADY_TOKENS_PER_TURN / SUMMARY_MAX_CHARS / SAFETY_MARGIN_TOKENS;RERANK_TOP_N 全仓改名 RERANK_TOP_K,UNDERSTAND_HISTORY_TURNS 退役
 - probe(烧额度、手跑不进 pytest):`uv run python evals/probe_summary.py`(摘要标注样例)、`uv run python evals/probe_context.py`(20+ 轮长跑:默认窗口零降级零摘要 / 小窗口触发层1 降级 + 摘要级联)
