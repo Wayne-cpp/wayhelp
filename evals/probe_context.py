@@ -62,6 +62,16 @@ def main() -> int:
         assert not degraded and not triggered and not done, "默认窗口 20 轮不该触发降级/摘要"
     else:
         assert degraded and triggered and done, "演示配置应出现完整级联"
+    # ch07 Task 16:回载含首问——轮1 若因缺单 interrupt 被后续消息取代,prepare 先落库
+    # 保证账本与回载仍含首问(A1001 不再从 MySQL 侧消失)
+    with httpx.Client(trust_env=False) as client:
+        r = client.get(f"{BASE}/api/conversations/{sid}/messages",
+                       params={"user_id": USER}, timeout=30)
+        r.raise_for_status()
+        reloaded = [m["content"] for m in r.json() if m["role"] == "user"]
+    assert reloaded and reloaded[0] == SCRIPT[0], \
+        f"回载首问应为 {SCRIPT[0]!r},实际 {reloaded[:1]!r}"
+    print(f"回载消息含首问: {reloaded[0][:24]}…(共 {len(reloaded)} 条 user 行)")
     print("末轮回答(人工核对是否答对早期订单):", ans)
     return 0
 

@@ -81,8 +81,10 @@ class SessionStore(Protocol):
     async def create(self, user_id: str) -> str: ...
     async def exists(self, session_id: str, user_id: str) -> bool: ...
     async def snapshot(self, session_id: str) -> list[StoredMessage]: ...
+    async def append_user_message(self, session_id: str, content: str) -> str: ...
     async def commit_turn(self, session_id: str, messages: list[StoredMessage],
-                          low_confidence: LowConfidenceRecord | None = None) -> CommitTurnResult: ...
+                          low_confidence: LowConfidenceRecord | None = None,
+                          user_row_id: int | None = None) -> CommitTurnResult: ...
     async def get_context_meta(self, session_id: str, user_id: str) -> ContextMeta: ...
     async def list_conversations(self, user_id: str) -> list[ConversationItem]: ...
     async def list_messages(self, session_id: str, user_id: str) -> list[ConversationMessage] | None: ...
@@ -130,6 +132,15 @@ def _turns(messages: list[StoredMessage]) -> list[list[StoredMessage]]:
     return [t for t in turns if len(t) >= 2]
 
 
+def _trim_cut(messages: list[StoredMessage]) -> int | None:
+    """超限裁剪的前缀长度:第二个完整轮起始 user 的下标(含其前无回复的悬垂用户行,
+    ch07 Task 16 prepare 先落库后悬垂行合法存在);不足两个完整轮 → None
+    (始终保留最新完整轮)。"""
+    starts = [i for i, m in enumerate(messages) if m.role == "user"]
+    complete = [s for s, e in zip(starts, [*starts[1:], len(messages)]) if e - s >= 2]
+    return complete[1] if len(complete) >= 2 else None
+
+
 class InMemorySessionStore:
     def __init__(self, max_sessions: int, max_messages_per_session: int,
                  max_message_chars: int, max_tool_calls_per_turn: int = 5):
@@ -160,29 +171,41 @@ class InMemorySessionStore:
     async def snapshot(self, session_id: str) -> list[StoredMessage]:
         return list(self._sessions[session_id])
 
+    async def append_user_message(self, session_id: str, content: str) -> str:
+        """ch07 Task 16:prepare 阶段先落库本轮用户消息(中断轮不丢),返回行 id。"""
+        if len(content) > self._max_chars:
+            raise ValueError("message text exceeds MAX_MESSAGE_CHARS")
+        self._sessions[session_id].append(StoredMessage("user", content))
+        self._msg_seq += 1
+        self._ids.setdefault(session_id, []).append(self._msg_seq)
+        return str(self._msg_seq)
+
     async def commit_turn(self, session_id: str, messages: list[StoredMessage],
-                          low_confidence: LowConfidenceRecord | None = None) -> CommitTurnResult:
+                          low_confidence: LowConfidenceRecord | None = None,
+                          user_row_id: int | None = None) -> CommitTurnResult:
         validate_turn(messages, self._max_tool_calls)
         for m in messages:
             if m.content is not None and len(m.content) > self._max_chars and m.role != "tool":
                 raise ValueError("message text exceeds MAX_MESSAGE_CHARS")
         if low_confidence is not None:  # 校验全过后才入池,与 DB 侧同成同败语义一致
             self.low_confidence.append(low_confidence)
+        new_rows = list(messages[1:]) if user_row_id is not None else list(messages)
         msgs = self._sessions[session_id]
-        msgs.extend(messages)
+        msgs.extend(new_rows)
         limit = max(self._max_messages, self._max_tool_calls + 3)
         while len(msgs) > limit:
-            turns = _turns(msgs)
-            if len(turns) <= 1:
+            cut = _trim_cut(msgs)
+            if cut is None:
                 break  # 始终保留最新完整 turn
-            n = len(turns[0])
-            del msgs[:n]
-            del self._ids[session_id][:n]  # 逐行 id 同步裁前段
-        ids = []
-        for _ in messages:  # 校验全过后才分配,与入池同点
+            del msgs[:cut]
+            del self._ids[session_id][:cut]  # 逐行 id 同步裁前段(含悬垂用户行)
+        new_ids: list[int] = []
+        for _ in new_rows:  # 校验全过后才分配,与入池同点
             self._msg_seq += 1
-            ids.append(str(self._msg_seq))
-        self._ids.setdefault(session_id, []).extend(int(i) for i in ids)
+            new_ids.append(self._msg_seq)
+        self._ids.setdefault(session_id, []).extend(new_ids)
+        row_ids = [user_row_id, *new_ids] if user_row_id is not None else new_ids
+        ids = [str(i) for i in row_ids]
         return CommitTurnResult(ids[0], ids)
 
     async def get_context_meta(self, session_id: str, user_id: str) -> ContextMeta:

@@ -52,9 +52,15 @@ class ChatGraphState(TypedDict, total=False):
     node_trace: list[dict]
 
 
-def new_turn_state(raw_query: str) -> dict:
+def new_turn_state(raw_query: str, user_db_id: int | str | None = None) -> dict:
     """每轮图调用的显式输入:全部临时字段重置(messages/active_order 键刻意缺席:
-    前者保留 checkpoint 历史,后者是跨轮订单焦点,ch06 spec §10)。"""
+    前者保留 checkpoint 历史,后者是跨轮订单焦点,ch06 spec §10)。
+    ch07 Task 16:user_db_id = prepare 阶段落库的本轮用户行 id,进图即盖章
+    (db_id 显式传递,禁止内容对齐);log_turn 据此幂等 commit 只补 assistant 行。"""
+    first = HumanMessage(content=raw_query)
+    if user_db_id is not None:
+        first = first.model_copy(
+            update={"additional_kwargs": {"db_id": int(user_db_id)}})
     return {
         "raw_query": raw_query,
         "resolved_query": "",
@@ -80,7 +86,7 @@ def new_turn_state(raw_query: str) -> dict:
         "agent_tokens": 0,
         "token_accounting": "none",
         "final_text": "",
-        "turn_messages": [HumanMessage(content=raw_query)],
+        "turn_messages": [first],
         "source_message_id": None,
         "node_trace": [],
     }

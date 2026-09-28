@@ -75,22 +75,44 @@ class DbSessionStore:
                 for r in rows
             ]
 
+    async def append_user_message(self, session_id: str, content: str) -> str:
+        """ch07 Task 16:prepare 阶段先落库本轮用户消息(中断轮不丢),返回行 id。"""
+        return await asyncio.to_thread(self._append_user_sync, session_id, content)
+
+    def _append_user_sync(self, session_id: str, content: str) -> str:
+        from app.errors import SessionNotFoundError
+        if len(content) > self._max_chars:
+            raise ValueError("message text exceeds MAX_MESSAGE_CHARS")
+        cid = _as_db_id(session_id)
+        if cid is None:
+            raise SessionNotFoundError("session not found")
+        with self._sf() as s:
+            row = Message(conversation_id=cid, role="user", content=content)
+            s.add(row)
+            s.commit()
+            return str(row.id)
+
     async def commit_turn(self, session_id: str, messages: list[StoredMessage],
-                          low_confidence: LowConfidenceRecord | None = None) -> CommitTurnResult:
+                          low_confidence: LowConfidenceRecord | None = None,
+                          user_row_id: int | None = None) -> CommitTurnResult:
         validate_turn(messages, max_tool_calls=64)  # DB 侧结构校验;数量上限由编排层把关
-        ids = await asyncio.to_thread(self._commit_sync, session_id, messages, low_confidence)
+        ids = await asyncio.to_thread(self._commit_sync, session_id, messages,
+                                      low_confidence, user_row_id)
         return CommitTurnResult(ids[0], ids)
 
     def _commit_sync(self, session_id: str, messages: list[StoredMessage],
-                     low_confidence: LowConfidenceRecord | None = None) -> list[str]:
+                     low_confidence: LowConfidenceRecord | None = None,
+                     user_row_id: int | None = None) -> list[str]:
         cid = int(session_id)
         with self._sf() as s:
+            # ch07 Task 16:prepare 已落库并盖章的用户行不重复插,只补其余行
             rows = [Message(conversation_id=cid, role=m.role, content=m.content,
                             tool_calls=m.tool_calls, tool_call_id=m.tool_call_id)
-                    for m in messages]
+                    for m in (messages[1:] if user_row_id is not None else messages)]
             s.add_all(rows)
             s.flush()  # 同事务内统一取全部 messages.id;失败整体回滚,不暴露半成品
-            ids = [str(r.id) for r in rows]
+            ids = ([str(user_row_id)] if user_row_id is not None else []) \
+                + [str(r.id) for r in rows]
             s.execute(update(Conversation).where(Conversation.id == cid)
                       # 截断微秒:MySQL DATETIME(0) 对显式小数值四舍五入进位,会把本写
                       # 拔高到下一秒,反超稍后 CREATE 行的 CURRENT_TIMESTAMP(截断)秒值,

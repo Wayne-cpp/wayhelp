@@ -142,7 +142,9 @@ async def test_classify_upstream_error_no_commit_lock_released():
     err = [e for e in events if isinstance(e, ErrorEvent)]
     assert err and err[0].code == "upstream_error"
     assert not any(isinstance(e, DoneEvent) for e in events)
-    assert await store.snapshot(turn.session_id) == []
+    # ch07 Task 16:失败轮不提交 assistant 行,但 prepare 先落库的用户行保留(账本语义)
+    assert [(m.role, m.content) for m in await store.snapshot(turn.session_id)] == [
+        ("user", "hi")]
     assert turn.lock_key not in service._locks._locks
 
 
@@ -154,7 +156,9 @@ async def test_agent_upstream_error_after_partial_delta():
     assert deltas == ["部分"]
     assert [e.code for e in events if isinstance(e, ErrorEvent)] == ["upstream_error"]
     assert not any(isinstance(e, DoneEvent) for e in events)
-    assert await store.snapshot(turn.session_id) == []
+    # ch07 Task 16:失败轮不提交 assistant 行,但 prepare 先落库的用户行保留(账本语义)
+    assert [(m.role, m.content) for m in await store.snapshot(turn.session_id)] == [
+        ("user", "hi")]
     assert turn.lock_key not in service._locks._locks
 
 
@@ -186,7 +190,9 @@ async def test_bind_tools_failure_internal_error_lock_released():
     turn = await service.prepare(TEST_USER_ID, None, "hi")
     events = [e async for e in service.stream(turn)]
     assert [e.code for e in events if isinstance(e, ErrorEvent)] == ["internal_error"]
-    assert await store.snapshot(turn.session_id) == []
+    # ch07 Task 16:失败轮不提交 assistant 行,但 prepare 先落库的用户行保留(账本语义)
+    assert [(m.role, m.content) for m in await store.snapshot(turn.session_id)] == [
+        ("user", "hi")]
     assert turn.lock_key not in service._locks._locks
 
 
@@ -199,7 +205,9 @@ async def test_output_too_long_cancels_no_commit():
     events = [e async for e in service.stream(turn)]
     codes = [e.code for e in events if isinstance(e, ErrorEvent)]
     assert codes == ["output_too_long"]
-    assert await store.snapshot(turn.session_id) == []
+    # ch07 Task 16:失败轮不提交 assistant 行,但 prepare 先落库的用户行保留(账本语义)
+    assert [(m.role, m.content) for m in await store.snapshot(turn.session_id)] == [
+        ("user", "hi")]
 
 
 async def test_finish_reason_length_is_failure():
@@ -207,7 +215,9 @@ async def test_finish_reason_length_is_failure():
     turn = await service.prepare(TEST_USER_ID, None, "hi")
     events = [e async for e in service.stream(turn)]
     assert any(isinstance(e, ErrorEvent) and e.code == "output_too_long" for e in events)
-    assert await store.snapshot(turn.session_id) == []
+    # ch07 Task 16:失败轮不提交 assistant 行,但 prepare 先落库的用户行保留(账本语义)
+    assert [(m.role, m.content) for m in await store.snapshot(turn.session_id)] == [
+        ("user", "hi")]
 
 
 async def test_agent_budget_answer_delta():
@@ -302,7 +312,10 @@ async def test_cancel_before_commit_no_partial_turn():
     with pytest.raises(asyncio.CancelledError):
         await task
     turn = holder["turn"]
-    assert await store.snapshot(turn.session_id) == []
+    # ch07 Task 16:取消不提交半轮的语义收窄为「不提交 assistant 行」;
+    # prepare 先落库的用户行保留(账本语义)
+    assert [(m.role, m.content) for m in await store.snapshot(turn.session_id)] == [
+        ("user", "hi")]
     assert turn.lock_key not in service._locks._locks
 
 

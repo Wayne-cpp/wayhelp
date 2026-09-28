@@ -556,8 +556,16 @@ def build_log_node(deps: GraphDeps):
         stored_pack = _to_stored(state["turn_messages"])
         cid = int(sid) if sid.isdecimal() else None
         low_conf = _build_low_conf(state, cid)
+        # ch07 Task 16:本轮用户行 prepare 已落库并盖章 → commit 幂等,只补 assistant 行
+        # (resume 完成路径同样成立:盖章随图输入经 interrupt/checkpoint 存活)
+        first = state["turn_messages"][0]
+        prepared_user_id = None
+        if isinstance(first, HumanMessage):
+            v = (first.additional_kwargs or {}).get("db_id")
+            prepared_user_id = int(v) if v is not None else None
         commit_task = asyncio.ensure_future(
-            deps.store.commit_turn(sid, stored_pack.stored, low_confidence=low_conf))
+            deps.store.commit_turn(sid, stored_pack.stored, low_confidence=low_conf,
+                                   user_row_id=prepared_user_id))
         try:
             result = await asyncio.shield(commit_task)  # 取消时等事务落地
         except asyncio.CancelledError:

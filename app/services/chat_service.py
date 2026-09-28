@@ -115,6 +115,7 @@ class PreparedTurn:
     lock_key: str
     user_id: str = ""
     resume_command: Any = None   # langgraph Command;resume 路径传 Command 不传 dict
+    user_db_id: str | None = None  # ch07 Task 16:prepare 已落库的本轮用户行 id(显式传递)
     released: bool = False
 
 
@@ -143,7 +144,14 @@ class ChatService:
             if not await self._store.exists(sid, user_id):
                 raise SessionNotFoundError("session not found")
         await self._locks.acquire(sid)
-        return PreparedTurn(sid, message, sid, user_id=user_id)
+        try:
+            # ch07 Task 16:先落库用户消息再跑图——interrupt 挂起被新消息取代、
+            # 上游失败、客户端断开,本轮问句都不丢(账本语义);失败则释锁不占
+            user_db_id = await self._store.append_user_message(sid, message)
+        except Exception:
+            self._locks.release(sid)
+            raise
+        return PreparedTurn(sid, message, sid, user_id=user_id, user_db_id=user_db_id)
 
     async def prepare_resume(self, user_id: str, session_id: str,
                              interrupt_id: str, order_id: str) -> PreparedTurn:
@@ -192,7 +200,7 @@ class ChatService:
             config = {"configurable": {"thread_id": turn.session_id,
                                        "user_id": turn.user_id}}
             graph_input = (turn.resume_command if turn.resume_command is not None
-                           else new_turn_state(turn.user_text))
+                           else new_turn_state(turn.user_text, user_db_id=turn.user_db_id))
             try:
                 async for mode, payload in self._graph.astream(
                         graph_input, config,

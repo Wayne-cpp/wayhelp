@@ -46,12 +46,14 @@ class SlowCommitStore(InMemorySessionStore):
         self.entered = entered
         self.commit_done = False
 
-    async def commit_turn(self, session_id, messages, low_confidence=None):
+    async def commit_turn(self, session_id, messages, low_confidence=None,
+                          user_row_id=None):
         from app.sessions import CommitTurnResult  # noqa: F401  (返回类型参照)
         self.entered.set()
         await asyncio.sleep(0.3)
         result = await super().commit_turn(session_id, messages,
-                                           low_confidence=low_confidence)
+                                           low_confidence=low_confidence,
+                                           user_row_id=user_row_id)
         self.commit_done = True
         return result
 
@@ -114,5 +116,7 @@ async def test_tool_context_too_long_is_final_frame_no_commit():
     assert isinstance(events[-1], ErrorEvent)  # error 帧收尾(SSE 层等价于 error 后无 [DONE])
     assert not any(isinstance(e, DoneEvent) for e in events)
     assert len(model.scripts) == 1  # 预算前置:agent 一次模型调用都没发起
-    assert await store.snapshot(turn.session_id) == []  # 不产生多余提交
+    # ch07 Task 16:失败轮不提交 assistant 行(无完整轮),但 prepare 先落库的用户行保留
+    assert [(m.role, m.content) for m in await store.snapshot(turn.session_id)] == [
+        ("user", "查政策")]
     assert turn.lock_key not in service._locks._locks

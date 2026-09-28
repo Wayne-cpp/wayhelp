@@ -14,7 +14,8 @@ from tests.conftest import ScriptedChatModel, make_settings
 
 
 class _StubStore:
-    async def commit_turn(self, sid, messages, low_confidence=None):
+    async def commit_turn(self, sid, messages, low_confidence=None, user_row_id=None):
+        # user_row_id:ch07 Task 16 log 幂等 commit 参数(直跑图无 prepare 盖章 → None)
         return CommitTurnResult(source_message_id="1")
 
 
