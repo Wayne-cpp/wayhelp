@@ -121,16 +121,13 @@ def test_query_faq_rebuilding_goes_tool_error():
 
 
 def test_turn_toolset_satisfies_legacy_list_contract():
-    """T7→T9 间 ChatService 仍把 factory 结果直喂 ToolRegistry 并做真值判断,
-    TurnToolset 须满足列表协议(可迭代/可取长/按下标/空集为假)。"""
+    """TurnToolset 保留列表协议供测试运行时装配;旧 ToolRegistry 契约已于 ch08 退役。"""
     from app.tools.business import RetrievalTrace, TurnToolset
-    from app.tools.executor import ToolRegistry
     ts = build_tools(None, 1)
     assert len(ts) == 5
     assert ts[0].name == "query_order"
-    reg = ToolRegistry(ts)
-    assert {t.name for t in reg.tools} == {"query_order", "query_product",
-                                           "query_logistics", "query_faq", "create_ticket"}
+    assert {t.name for t in ts} == {"query_order", "query_product",
+                                    "query_logistics", "query_faq", "create_ticket"}
     assert not TurnToolset([], RetrievalTrace())   # make_runtime(tools=[]) 空工具集路径
 
 

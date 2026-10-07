@@ -190,51 +190,6 @@ def test_retryable_mapping():
     assert _as_retryable(ValueError("bad")) is None
 
 
-def test_executor_retries_retryable_knowledge_error():
-    import asyncio
-    from langchain_core.tools import tool
-    from app.tools.executor import ToolExecutor, ToolRegistry
-
-    calls = {"n": 0}
-
-    @tool
-    def flaky(q: str) -> str:
-        """t"""
-        calls["n"] += 1
-        raise RetryableKnowledgeError("boom")
-
-    ex = ToolExecutor(ToolRegistry([flaky]), timeout_seconds=5, max_retries=2,
-                      max_result_tokens=1200)
-    # 注:计划原文 call dict 缺 "type": "tool_call",langchain 会把整个信封当
-    # args 校验(缺 q → ValidationError,工具体不执行);补上信封字段,断言不变。
-    outcome = asyncio.run(ex.execute({"name": "flaky", "args": {"q": "x"}, "id": "1",
-                                      "type": "tool_call"}))
-    assert outcome.record.ok is False
-    assert outcome.record.error_code == "tool_unavailable"
-    assert calls["n"] == 3  # 1 + 2 次重试
-
-
-def test_executor_no_retry_on_plain_error():
-    import asyncio
-    from langchain_core.tools import tool
-    from app.tools.executor import ToolExecutor, ToolRegistry
-
-    calls = {"n": 0}
-
-    @tool
-    def broken(q: str) -> str:
-        """t"""
-        calls["n"] += 1
-        raise ValueError("auth failed")
-
-    ex = ToolExecutor(ToolRegistry([broken]), timeout_seconds=5, max_retries=2,
-                      max_result_tokens=1200)
-    outcome = asyncio.run(ex.execute({"name": "broken", "args": {"q": "x"}, "id": "1",
-                                      "type": "tool_call"}))
-    assert outcome.record.error_code == "tool_error"
-    assert calls["n"] == 1
-
-
 # ─── 闸门置信信号(四策略评估选拔,胜者冻结进配置)─────────────────────────────
 
 

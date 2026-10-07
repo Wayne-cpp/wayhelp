@@ -4,7 +4,6 @@ import pytest
 
 from app.config import Settings
 from app.knowledge.state import KnowledgeStateHolder
-from app.main import AppRuntime
 from app.sessions import InMemorySessionStore
 from app.tools.business import MOCK_TOOLS, RetrievalTrace, TurnToolset
 
@@ -29,6 +28,8 @@ class UserBoundMemoryStore(InMemorySessionStore):
 
 
 def make_runtime(tools=None, store=None):
+    # ch08:延迟 import——模块级会经 app.main → agent_node 拖断整个 conftest 收集
+    from app.main import AppRuntime
     return AppRuntime(
         store=store or UserBoundMemoryStore(1000, 100, 8000),
         toolset_factory=lambda sid: TurnToolset(
