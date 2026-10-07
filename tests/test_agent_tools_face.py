@@ -43,3 +43,49 @@ async def test_invalid_batch_write_not_last_recovers(db_session_factory):
     with db_session_factory() as s:
         rows = s.query(ToolAuditLog).filter(ToolAuditLog.tool_call_id.in_(["c1", "c2"])).all()
     assert len(rows) == 2 and {r.status for r in rows} == {"校验拦下"}
+
+
+import pytest
+from pydantic import BaseModel, Field
+
+from app.tools.catalog import ToolSpec
+from app.tools.executor import ToolFace
+from app.graph.agent_node import fit_face_to_budget
+from app.tools.builtin import scan_builtin_specs
+
+
+class _Big(BaseModel):
+    order_id: str = Field(min_length=1, max_length=64)
+
+
+def _fat_mcp(name: str, chars: int) -> ToolSpec:
+    return ToolSpec(name=name, description="长" * chars,
+                    args_schema=_Big.model_json_schema(), args_model=_Big,
+                    source="mcp", permission="read", ownership="order",
+                    mcp_server="logistics", budget_priority=10)
+
+
+def test_fit_trims_low_priority_first():
+    core = [s for s in scan_builtin_specs() if s.name in ("query_order", "query_product")]
+    ticket = [s for s in scan_builtin_specs() if s.name == "create_ticket"]
+    face = ToolFace([*core, *ticket, _fat_mcp("query_logistics", 3000)])
+    aborts = []
+    new_face, tools, budget, schema_est = fit_face_to_budget(
+        face, [], make_settings(model_context_window=19000), "sys",
+        lambda c, m: aborts.append(c))
+    names = [s.name for s in new_face.specs]
+    assert "query_logistics" not in names          # 最低优先级先剔
+    assert {"query_order", "query_product"} <= set(names)  # 核心必留
+    assert not aborts
+
+
+def test_fit_aborts_when_core_alone_overflows():
+    core = [s for s in scan_builtin_specs() if s.name == "query_order"]
+    face = ToolFace(core)
+    settings = make_settings(model_context_window=120)  # 连核心都装不下
+
+    def _abort(code, msg):
+        raise RuntimeError(code)
+
+    with pytest.raises(RuntimeError, match="tool_context_too_long"):
+        fit_face_to_budget(face, [], settings, "sys" * 500, _abort)

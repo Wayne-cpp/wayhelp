@@ -106,6 +106,47 @@ def _ctx_msg(m) -> dict:
             "db_id": (m.additional_kwargs or {}).get("db_id")}
 
 
+_BUDGET_CACHE: dict[tuple, tuple[int, object]] = {}  # 工具签名 → (sys_tokens, ContextBudget)
+
+
+def _face_budget(settings, system_prompt: str, tools: list):
+    sig = tuple(sorted(t.name for t in tools))
+    hit = _BUDGET_CACHE.get(sig)
+    if hit is None:
+        sys_tokens = measure_sys_tokens(system_prompt, tools)
+        hit = (sys_tokens, compute_budget(settings, sys_tokens))
+        if len(_BUDGET_CACHE) >= 32:
+            _BUDGET_CACHE.clear()
+        _BUDGET_CACHE[sig] = hit
+    return hit
+
+
+def fit_face_to_budget(face, extra_tools: list, settings, system_prompt: str, abort):
+    """ch08 动态预算(spec §1.5):按本轮实际工具面重算;不足按 budget_priority 升序
+    剔非核心条目;核心仍装不下经 abort 抛出,不带超预算工具面调模型。"""
+    def _tools() -> list:
+        return [*face.as_langchain_tools(), *extra_tools] if face.specs else list(extra_tools)
+
+    tools = _tools()
+    if not tools:
+        budget = compute_budget(settings, measure_sys_tokens(system_prompt, tools))
+        return face, tools, budget, 0
+    sys_tokens, budget = _face_budget(settings, system_prompt, tools)
+    while not budget.sufficient:
+        removable = sorted((s for s in face.specs if s.budget_priority < 100),
+                           key=lambda s: (s.budget_priority, s.name))
+        if not removable:
+            abort("tool_context_too_long", "工具面超出上下文预算")
+            raise RuntimeError("abort must raise")  # 防御:abort 契约是抛出不返回
+        drop = removable[0]
+        logger.warning("tool face 超预算,剔除 %s(priority=%d)",
+                       drop.name, drop.budget_priority)
+        face = ToolFace([s for s in face.specs if s.name != drop.name])
+        tools = _tools()
+        sys_tokens, budget = _face_budget(settings, system_prompt, tools)
+    return face, tools, budget, measure_sys_tokens("", tools)   # 第四值:仅工具 schema
+
+
 def build_agent_node(deps: GraphDeps):
     settings = deps.settings
 
@@ -144,11 +185,14 @@ def build_agent_node(deps: GraphDeps):
         executor = ToolExecutor(face, settings,
                                 session_factory=deps.session_factory,
                                 mcp=deps.mcp_gateway)
-        tools = [*face.as_langchain_tools(), suggest_options] if face.specs else []
+        def _face_abort(code: str, msg: str):
+            writer(ev_error(code, msg))
+            raise TurnAbortError(code)
+
+        face, tools, budget, schema_est = fit_face_to_budget(
+            face, [suggest_options] if face.specs else [], settings, deps.system_prompt,
+            _face_abort)
         model = deps.model.bind_tools(tools) if tools else deps.model
-        budget = deps.context_budget or compute_budget(
-            deps.settings, measure_sys_tokens(deps.system_prompt, tools))
-        schema_est = measure_sys_tokens("", tools)
         evidence_text = _evidence_text(state["evidence"])
         order_text = _order_context_text(state.get("order_context"))
         context_extra = "\n\n".join(t for t in (evidence_text, order_text) if t) or None
@@ -229,7 +273,8 @@ def build_agent_node(deps: GraphDeps):
             background_text = "\n\n".join(bg_parts) or None
             context = build_agent_context(deps.system_prompt, layer2, layer1,
                                           turn_messages, background_text,
-                                          settings.model_context_window - settings.max_output_tokens)
+                                          settings.model_context_window
+                                          - settings.max_output_tokens - schema_est)
             if context is None:
                 _abort("tool_context_too_long", "工具结果超出上下文预算")
             logger.info("model_ctx %s", json.dumps({
