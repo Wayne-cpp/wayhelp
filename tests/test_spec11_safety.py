@@ -1,9 +1,10 @@
 """spec §11 安全网测试(Task 13 按图语义重接):提交 shield 窗口 / 释锁 / 上下文预算。
 
-性质归属:取消不提交半轮与同 session 串行 → test_chat_service;写工单唯一通道
-的归属/消息校验 → test_chat_action;写工具 shield → test_tools。
-旧「聊天中建单后模型失败/取消仍保留工单」场景退役:聊天图零建单副作用,
-create_ticket/query_faq 均不在 Agent 注册表内。
+性质归属:取消不提交半轮与同 session 串行 → test_chat_service;动作端点
+建单/退款的归属/消息校验 → test_chat_action;写工具 shield → test_tools。
+旧「聊天中建单后模型失败/取消仍保留工单」场景退役(ch08 语义已变):
+create_ticket 已进 business 工具面,但写调用 park 成 pending_ticket 走
+ticket_preview 确认流,不经模型直执行;query_faq 仍在 business 面。
 """
 
 import asyncio

@@ -1,6 +1,6 @@
 # wayhelp — 电商智能客服
 
-SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,后端走「模型定工具 → 执行 → 结果回灌 → 收敛作答」,回答逐 token 吐出,聊天气泡带工具轨迹徽章;ch03 起叠加 Milvus 向量语义检索,FAQ/政策类问题先查知识库;ch04 起升级四策略混合检索与重排,回答带 [n] 引用角标可回原文,证据不足固定话术拒答并入低置信池;ch05 起聊天主链路由 LangGraph Workflow 图编排,投诉/建工单改为前端独立按钮 + 动作端点;ch06 起图换正式版分流器(指代消解 → 八类意图纯 intent 路由 → 退款/售后确定性子流程:缺订单号 interrupt 挂起出订单卡、选单 resume 续跑、扩写多查询统一重排 + 置信闸),订单数据为按用户命名空间实例化的确定性 mock。ch07 起会话历史按三层窗口管理(摘要投影 + 层2 截短 + 层1 原文滑窗,超预算后台异步摘要),聊天页带会话侧栏(多会话切换/历史回载)。单轮工具调用上限 MAX_TOOL_CALLS_PER_TURN(默认 5)。
+SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,后端走「模型定工具 → 执行 → 结果回灌 → 收敛作答」,回答逐 token 吐出,聊天气泡带工具轨迹徽章;ch03 起叠加 Milvus 向量语义检索,FAQ/政策类问题先查知识库;ch04 起升级四策略混合检索与重排,回答带 [n] 引用角标可回原文,证据不足固定话术拒答并入低置信池;ch05 起聊天主链路由 LangGraph Workflow 图编排,投诉/建工单改为前端独立按钮 + 动作端点;ch06 起图换正式版分流器(指代消解 → 八类意图纯 intent 路由 → 退款/售后确定性子流程:缺订单号 interrupt 挂起出订单卡、选单 resume 续跑、扩写多查询统一重排 + 置信闸),订单数据为按用户命名空间实例化的确定性 mock。ch07 起会话历史按三层窗口管理(摘要投影 + 层2 截短 + 层1 原文滑窗,超预算后台异步摘要),聊天页带会话侧栏(多会话切换/历史回载)。ch08 起工具层即插即用:内置工具装饰器自登记,物流/售后查询拆到两个独立进程 MCP Server(每轮动态发现,主服不重启),建工单走前端预览卡确认流,全量工具调用落审计台账。单轮工具调用上限 MAX_TOOL_CALLS_PER_TURN(默认 5)。
 
 ## 环境
 - `uv sync`(自动建 Python 3.12 虚拟环境)
@@ -11,7 +11,9 @@ SSE 流式客服聊天 + 模型自选工具 + 向量知识库:用户问一句,�
 docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversations/messages/tickets + 灌 faq seed)
 # 已有 ch06 数据卷的老库升级(不得删卷;docker 首启自动含 db/init/05-ddl.sql,新装可跳过):
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch07-ddl.sql
-uv run pytest                 # 测试 576 条(DB 用例需 Docker 在线)
+# 已有 ch07 数据卷的老库升级(不得删卷;docker 首启自动含 db/init/06-ddl.sql,新装可跳过):
+docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch08-ddl.sql
+uv run pytest                 # 测试 616 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
@@ -158,3 +160,22 @@ curl --noproxy '*' -X POST http://127.0.0.1:8000/v1/chat/action \
 - 数据库:conversations/messages 账本——prepare 先落库本轮用户消息(中断挂起轮不丢问句),log 节点幂等补 assistant 行(user_row_id 防重插);新增 conversation_summaries 表(会话外键级联删除);老库升级见「运行」节(sql/ch07-ddl.sql,docker 首启自动含 db/init/05-ddl.sql)
 - 新增环境变量(默认值见 .env.example 注释):MODEL_CONTEXT_WINDOW(65536)/ MAX_USER_INPUT_TOKENS / TOOL_RESULT_MAX_TOKENS / SUMMARY_PROJECTION_TOKENS / HISTORY_TARGET_TURNS / STEADY_TOKENS_PER_TURN / SUMMARY_MAX_CHARS / SAFETY_MARGIN_TOKENS;RERANK_TOP_N 全仓改名 RERANK_TOP_K,UNDERSTAND_HISTORY_TURNS 退役
 - probe(烧额度、手跑不进 pytest):`uv run python evals/probe_summary.py`(摘要标注样例)、`uv run python evals/probe_context.py`(20+ 轮长跑:默认窗口零降级零摘要 / 小窗口触发层1 降级 + 摘要级联)
+
+## MCP Server(ch08 新增)
+
+- 工具层即插即用:内置工具在 `app/tools/builtin/` 装饰器自登记(query_order / query_product / query_faq / create_ticket);物流与售后查询拆到两个独立进程业务 MCP Server,主服每轮动态发现、发现即用
+- 起 Server(各自独立进程,默认端口 8101 / 8102,可用 `WAYHELP_MCP_LOGISTICS_PORT` / `WAYHELP_MCP_AFTER_SALES_PORT` 覆盖):
+
+```bash
+uv run python -m app.mcp_servers.logistics_server    # 物流:query_logistics
+uv run python -m app.mcp_servers.after_sales_server  # 售后:query_warranty / query_return_progress
+# 或等价 make 目标:
+make mcp-logistics       # 起物流 MCP Server(:8101)
+make mcp-after-sales     # 起售后 MCP Server(:8102)
+```
+
+- 主服接入:`.env` 配 `MCP_LOGISTICS_URL=http://127.0.0.1:8101/mcp` 与 `MCP_AFTER_SALES_URL=http://127.0.0.1:8102/mcp`(留空 = 不接入);其余新变量 MCP_DISCOVERY_TIMEOUT_SECONDS / TOOL_WRITE_TIMEOUT_SECONDS / TOOL_TIMEOUT_OVERRIDES / AUDIT_RESULT_MAX_CHARS 见 .env.example 注释
+- 动态发现,主服不重启:每轮装配工具面时按 Server 现问现拿(get_tools),单个 Server 超时(默认 2 秒)跳过不拖聊天;Server 重启只影响当轮发现,下一轮自然恢复,加新工具同样无需动主服;只放行「零参数 / 仅必填字符串 order_id」两种形态的工具,未知 Server 默认拒绝(权限只认本地能力策略,不看 Server 自报)
+- 建工单双通道:前端按钮走 `POST /v1/chat/action`(点按即确认);图内 create_ticket 走确认流——模型发起 → ticket_preview 预览卡 → `POST /v1/chat/resume` 带 decision(confirm / cancel),确认才真正建单、取消不建(参数只信服务端快照)
+- 全量工具调用(内置 / MCP / 写确认)同走统一执行引擎,落 tool_audit_logs 审计台账;写超时按「已发未必未成」处理且绝不重试,tool_write_idempotency 收敛重复提交
+- 红线:本机有代理时访问本机服务一律 `curl --noproxy '*'`;起 uvicorn 与 MCP Server 前加 `no_proxy=127.0.0.1,localhost`
