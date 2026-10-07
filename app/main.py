@@ -135,9 +135,9 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     # 打全分量预算日志;装不下一轮 steady 开销打 critical 交运维决策,不阻断启动
     from app.graph.agent_node import suggest_options
     from app.services.token_budget import compute_budget, measure_sys_tokens
-    from app.tools.business import build_graph_tools
-    probe_tools = [*build_graph_tools("sys-probe", "", None, settings, with_faq=True).tools,
-                   suggest_options]
+    from app.tools.builtin import scan_builtin_specs
+    from app.tools.executor import ToolFace
+    probe_tools = [*ToolFace(scan_builtin_specs()).as_langchain_tools(), suggest_options]
     context_budget = compute_budget(settings, measure_sys_tokens(SERVICE_SYSTEM_PROMPT, probe_tools))
     logging.getLogger("wayhelp.graph").info(
         "context budget window=%d output=%d user_input=%d peak=%d fixed=%d sys=%d avail=%d total=%d l1=%d l2=%d",

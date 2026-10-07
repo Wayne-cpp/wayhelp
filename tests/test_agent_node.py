@@ -2,6 +2,7 @@
 # 注:main_agent 首行即取 writer,裸调在 langgraph 1.2.11 抛 RuntimeError——
 # 按 Task 8 裁决经编译图驱动(与 test_graph_nodes._gate_graph 同式),断言与 plan 一致。
 import json
+from dataclasses import replace
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -11,7 +12,15 @@ from app.graph.agent_node import build_agent_node
 from app.graph.nodes import GraphDeps
 from app.graph.state import ChatGraphState, new_turn_state
 from app.prompts.service import REFUSAL_ANSWER
+from app.tools.builtin import scan_builtin_specs
+from app.tools.catalog import ToolCatalog
 from tests.conftest import TEST_USER_ID, FakeStreamModel, make_settings
+
+# ch08:main_agent 工具面来自目录,GraphDeps 不带 catalog 会装配出空面;
+# 本文件统一注入共享目录(ToolCatalog 只读注册表、ToolSpec frozen,跨用例共享安全)
+_CATALOG = ToolCatalog()
+for _spec in scan_builtin_specs():
+    _CATALOG.register(_spec)
 
 
 def _tool_chunk(name, args, call_id):
@@ -20,7 +29,10 @@ def _tool_chunk(name, args, call_id):
 
 
 def _agent_graph(deps):
-    """main_agent 包进最小编译图返回(START → main_agent → END)。"""
+    """main_agent 包进最小编译图返回(START → main_agent → END)。
+    直连构造不带 catalog 的 deps 在此统一补目录(漏斗注入,等价于逐构造点传参)。"""
+    if deps.catalog is None:
+        deps = replace(deps, catalog=_CATALOG)
     g = StateGraph(ChatGraphState)
     g.add_node("main_agent", build_agent_node(deps))
     g.add_edge(START, "main_agent")
@@ -46,21 +58,23 @@ async def test_one_step_converge():
     assert out["turn_messages"][-1].content == "订单 1001 已发货。"
 
 
-async def test_multi_step_order_then_logistics():
-    st = new_turn_state("订单 1111-1001 到哪了,先查订单再查物流")
-    st.update({"resolved_query": "订单 1111-1001 到哪了,先查订单再查物流",
+async def test_multi_step_order_then_product():
+    # ch08:query_logistics 内置已下线(物流由 MCP Server 接管),多步链改订单→商品
+    st = new_turn_state("订单 1111-1001 买的是什么,先查订单再查商品")
+    st.update({"resolved_query": "订单 1111-1001 买的是什么,先查订单再查商品",
                "route": "business"})
     node = _agent([
         _tool_chunk("query_order", {"order_id": "1111-1001"}, "c1"), ("then", [
-            _tool_chunk("query_logistics", {"order_id": "1111-1001"}, "c2"), ("then", [
-                "订单已发货,物流派送中。"])]),
+            _tool_chunk("query_product", {"product_name": "保温杯"}, "c2"), ("then", [
+                "订单已完成,商品是保温杯。"])]),
     ])
     out = await node.ainvoke(st, config=_cfg(TEST_USER_ID))
     assert out["agent_steps"] == 3
     tools = [m for m in out["turn_messages"] if m.type == "tool"]
-    assert [t.name for t in tools] == ["query_order", "query_logistics"]
+    assert [t.name for t in tools] == ["query_order", "query_product"]
     assert "1111-1001" in tools[0].content  # 真实工具结果喂回
-    assert out["final_text"] == "订单已发货,物流派送中。"
+    assert "保温杯" in tools[1].content
+    assert out["final_text"] == "订单已完成,商品是保温杯。"
 
 
 async def test_clarify_question_is_plain_convergence():
@@ -180,7 +194,8 @@ async def test_fixed_fallback_counts_toward_output_cap():
 # ---- ch06 Task 6:分支绑定 / query_faq 收尾 / order_context / 申请退款 ----
 
 async def test_business_branch_binds_faq_and_refund_branch_not():
-    # 经 main_agent 节点直驱:检查 model.received_tools / registry 行为
+    # 经 main_agent 节点直驱:检查 model.received_tools;ch08 分支矩阵(spec §1.4)——
+    # business 全量内置(含 create_ticket,无 query_logistics);refund 过闸仅两查 + suggest
     model = FakeStreamModel(["答复。"])
     deps = GraphDeps(model=model, settings=make_settings(), retriever=None, store=None)
     g = _agent_graph(deps)
@@ -189,7 +204,7 @@ async def test_business_branch_binds_faq_and_refund_branch_not():
                "intent": "商品咨询"})
     await g.ainvoke(st, config=_cfg())
     assert model.received_tools[0] == ["query_order", "query_product",
-                                       "query_logistics", "query_faq", "suggest_options"]
+                                       "query_faq", "create_ticket", "suggest_options"]
     st2 = new_turn_state("这单能退吗")
     st2.update({"resolved_query": "订单 1111-1001 能退吗", "route": "refund",
                 "intent": "退款退货", "refund_mode": "order_specific",
@@ -203,7 +218,7 @@ async def test_business_branch_binds_faq_and_refund_branch_not():
     await _agent_graph(GraphDeps(model=model2, settings=make_settings(),
                                  retriever=None, store=None)).ainvoke(st2, config=_cfg())
     assert model2.received_tools[0] == ["query_order", "query_product",
-                                        "query_logistics", "suggest_options"]
+                                        "suggest_options"]
 
 
 async def test_clarify_branch_has_no_tools():

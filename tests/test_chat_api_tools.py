@@ -86,14 +86,11 @@ async def test_tool_frames_over_sse():
 
 
 async def test_tool_end_summary_capped_80():
-    logistics_call = [{"name": "query_logistics",
-                       "args": "{\"order_id\": \"1111-1001\"}",
-                       "id": "call_1", "index": 0}]
-    app = make_app([BUSINESS, [("tool", logistics_call)], ["答"]])
+    app = make_app([BUSINESS, [("tool", ORDER_CALL)], ["答"]])
     _, lines = await post_stream(app, {"user_id": TEST_USER_ID, "message": "hi"})
     frames = parse_frames(lines)
     end = next(f for f in frames if isinstance(f, dict) and f.get("type") == "tool_end")
-    assert len(end["summary"]) == 80  # query_logistics 的 mock JSON 远超 80,必被截断
+    assert len(end["summary"]) == 80  # query_order 的结果 JSON 远超 80,必被截断
 
 
 # ---- suggest_actions 帧(投诉固定回复) ----

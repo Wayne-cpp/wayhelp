@@ -306,27 +306,34 @@ async def test_a10_multi_step_persisted_as_groups(db_session_factory):
     await asyncio.to_thread(_check)
 
 
-# ── 验收 11:聊天 Agent 无建单/转人工权限 ──
+# ── 验收 11:模型想写也写不进库(ch08:非法批次整批拦下零执行;确认流另钉)──
 
 async def test_a11_agent_has_no_write_power(db_session_factory):
     app = _make_app(
         [['{"intent":"订单","confidence":0.9}'],  # a11 特例:售后会走 refund 临时链落 gate_fallback,本用例只验写权限
          [("tool", [{"index": 0, "name": "create_ticket", "id": "c9",
-                     "args": '{"description":"x","ticket_type":"投诉"}'}])],
+                     "args": '{"description":"x","ticket_type":"投诉"}'},
+                    {"index": 1, "name": "query_order", "id": "q1",
+                     "args": '{"order_id":"1111-1001"}'}])],  # 写不在末位:非法批次
          [("tool", [{"index": 0, "name": "suggest_options", "id": "s1",
                      "args": '{"options":["转人工","建工单"],"ticket_type":"投诉"}'}])],
          ["建议您点击下方按钮。"]],
         db_sf=db_session_factory)
     async with await _client(app) as client:
         frames, sid = await _turn(client, "我现在就要你帮我建工单并转人工")
-        ends = [f for f in frames if isinstance(f, dict) and f["type"] == "tool_end"]
-        assert ends[0]["ok"] is False  # 伪造 create_ticket → unknown_tool
-        sug = [f for f in frames if isinstance(f, dict) and f["type"] == "suggest_actions"]
-        assert len(sug) == 1  # 伪工具建议正常发出
+    types = _types(frames)
+    assert types[0] == "session" and types[-1] == "[DONE]"  # 模型重组后正常收敛(Task 10 世界同样成立)
+    assert "tool_start" not in types and "tool_end" not in types  # 整批拦下:零执行零工具帧
+    sug = [f for f in frames if isinstance(f, dict) and f["type"] == "suggest_actions"]
+    assert len(sug) == 1  # 伪工具建议正常发出
+    assert [o["action"] for o in sug[0]["options"]] == ["transfer_human", "create_ticket"]
 
     def _check():
-        from app.models import Conversation, Ticket
+        from app.models import Conversation, Ticket, ToolAuditLog
         with db_session_factory() as s:
             assert s.query(Ticket).count() == 0  # 没写库
             assert s.get(Conversation, int(sid)).status == "进行中"  # 没置已转人工
+            rows = s.query(ToolAuditLog).filter(
+                ToolAuditLog.tool_call_id.in_(["c9", "q1"])).all()  # 拦下而非执行:逐 call 审计
+            assert len(rows) == 2 and {r.status for r in rows} == {"校验拦下"}
     await asyncio.to_thread(_check)

@@ -25,8 +25,11 @@ from app.services.orders import order_summary
 from app.services.token_budget import (
     compute_budget, estimate_messages, estimate_tokens, measure_sys_tokens,
 )
-from app.tools.business import build_graph_tools
-from app.tools.executor import ToolExecutor, ToolRegistry
+from app.tools.builtin.faq import FaqRetrievalTrace
+from app.tools.catalog import TurnContext, canonical_args_sha
+from app.tools.executor import (
+    PendingWrite, ToolExecutor, ToolFace, batch_violation,
+)
 
 logger = logging.getLogger("wayhelp.graph")
 
@@ -111,24 +114,41 @@ def build_agent_node(deps: GraphDeps):
         user_id = (config.get("configurable") or {}).get("user_id", "")
         route = state.get("route")
         refund_mode = state.get("refund_mode")
-        toolset = None
+        sid = (config.get("configurable") or {}).get("thread_id", "")
+        faq_trace: FaqRetrievalTrace | None = None
         if refund_mode == "clarify":
-            tools = []
+            face = ToolFace([])
         else:
-            toolset = build_graph_tools(user_id, state["resolved_query"],
-                                        deps.retriever if route == "business" else None,
-                                        settings, with_faq=(route == "business"))
-            tools = [*toolset.tools, suggest_options]
-        registry = ToolRegistry(tools)  # 注册表无 create_ticket:伪造调用 → unknown_tool
-        executor = ToolExecutor(registry, settings.tool_timeout_seconds,
-                                settings.tool_max_retries, settings.tool_result_max_tokens,
-                                write_tools=set(),  # 聊天图内无写工具
-                                tool_policies={"query_faq": (settings.knowledge_tool_timeout_seconds,
-                                                             settings.tool_max_retries)})
-        model = deps.model.bind_tools(registry.tools) if tools else deps.model
+            builtin = {s.name: s for s in deps.catalog.specs()} if deps.catalog else {}
+            if route == "business":
+                picked = list(builtin.values())      # 全量内置(含 create_ticket)
+                faq_trace = FaqRetrievalTrace()
+            else:  # refund 过闸:query_order/query_product + MCP(无 faq/写)
+                picked = [builtin[n] for n in ("query_order", "query_product")
+                          if n in builtin]
+            seen = {s.name for s in picked}
+            mcp_specs = await deps.mcp_gateway.discover() if deps.mcp_gateway else []
+            for s in mcp_specs:
+                if s.name in seen:
+                    logger.warning("mcp tool %s 与既有工具重名,本轮拒进工具面", s.name)
+                    continue
+                picked.append(s)
+                seen.add(s.name)
+            face = ToolFace(picked)
+        ctx = TurnContext(user_id=user_id,
+                          conversation_id=int(sid) if str(sid).isdecimal() else None,
+                          resolved_query=state["resolved_query"],
+                          retriever=deps.retriever if route == "business" else None,
+                          settings=settings, session_factory=deps.session_factory,
+                          faq_trace=faq_trace)
+        executor = ToolExecutor(face, settings,
+                                session_factory=deps.session_factory,
+                                mcp=deps.mcp_gateway)
+        tools = [*face.as_langchain_tools(), suggest_options] if face.specs else []
+        model = deps.model.bind_tools(tools) if tools else deps.model
         budget = deps.context_budget or compute_budget(
             deps.settings, measure_sys_tokens(deps.system_prompt, tools))
-        schema_est = measure_sys_tokens("", registry.tools)
+        schema_est = measure_sys_tokens("", tools)
         evidence_text = _evidence_text(state["evidence"])
         order_text = _order_context_text(state.get("order_context"))
         context_extra = "\n\n".join(t for t in (evidence_text, order_text) if t) or None
@@ -158,26 +178,25 @@ def build_agent_node(deps: GraphDeps):
                     "node_trace": trace}
 
         def _faq_ok_fields() -> dict:
-            if toolset is None or toolset.faq_trace.status != "ok":
+            if faq_trace is None or faq_trace.status != "ok":
                 return {}
             return {"retrieval_status": "ok",
-                    "retrieval_result": snapshot_retrieval(toolset.faq_trace.result),
-                    "evidence": toolset.faq_trace.evidence or []}
+                    "retrieval_result": snapshot_retrieval(faq_trace.result),
+                    "evidence": faq_trace.evidence or []}
 
         def _effective_order_context():
             if state.get("order_context"):
                 return state["order_context"]
-            snaps = toolset.order_snapshots if toolset else []
-            distinct = {s["order_id"]: s for s in snaps}
+            distinct = {s["order_id"]: s for s in ctx.order_snapshots}
             if len(distinct) == 1:
                 oid, snap = next(iter(distinct.items()))
                 if oid in state["raw_query"] or oid in state["resolved_query"]:
-                    return snap  # 仅用户本轮明确提及的唯一订单可建焦点(spec §6.6)
+                    return snap
             return None
 
         def _faq_terminal(kind: str):
             nonlocal visible_chars
-            ft = toolset.faq_trace
+            ft = faq_trace
             if kind == "refusal":
                 text = REFUSAL_ANSWER
                 extra = {"retrieval_status": "low_confidence",
@@ -308,10 +327,18 @@ def build_agent_node(deps: GraphDeps):
                 out["order_context"] = _effective_order_context()
                 return out
 
+            violation = batch_violation(calls, face)
+            if violation is not None:
+                turn_messages.append(AIMessage(content="".join(text_parts), tool_calls=calls))
+                msgs = await executor.mark_invalid_batch(calls, ctx, violation)
+                turn_messages.extend(msgs)
+                trace.append({"node": "main_agent", "invalid_batch": violation})
+                continue  # 零执行回灌,让模型重组合法批次(spec §2 批次契约)
+
             turn_messages.append(AIMessage(content="".join(text_parts), tool_calls=calls))
-            faq_terminal: str | None = None  # "refusal" | "unavailable"
+            faq_terminal: str | None = None
             for call in calls:
-                if faq_terminal is not None:  # 补齐同组剩余 ToolMessage,不执行
+                if faq_terminal is not None:
                     turn_messages.append(ToolMessage(
                         content="知识检索未过闸,本调用未执行", tool_call_id=call["id"],
                         name=call["name"], status="error"))
@@ -319,23 +346,37 @@ def build_agent_node(deps: GraphDeps):
                 if call["name"] == "suggest_options":
                     msg, actions = _handle_suggest_options(call, state.get("order_context"))
                     if actions is not None:
-                        suggested = actions  # 多次合法建议以最后一组替换
+                        suggested = actions
                     turn_messages.append(msg)
                     continue
+                spec = face.get(call["name"])
+                if spec is not None and spec.permission == "write":
+                    # 批次契约已保证写调用在最后;park 成 pending_ticket 转确认流(spec §5)
+                    pending = PendingWrite(tool_call_id=call["id"], name=call["name"],
+                                           args=call["args"],
+                                           args_sha256=canonical_args_sha(call["args"]))
+                    trace.append({"node": "main_agent", "pending_write": call["name"]})
+                    return {"turn_messages": turn_messages,
+                            "pending_ticket": {"tool_call_id": pending.tool_call_id,
+                                               "name": pending.name, "args": pending.args,
+                                               "args_sha256": pending.args_sha256},
+                            "agent_steps": steps, "agent_tokens": spent,
+                            "token_accounting": accounting,
+                            "suggested_actions": suggested, "node_trace": trace}
                 writer(ev_tool_start(call))
-                outcome = await executor.execute(call)
-                logger.info("node=main_agent tool %s ok=%s err=%s",
-                            outcome.record.name, outcome.record.ok, outcome.record.error_type)
+                outcome = await executor.execute(call, ctx)
+                logger.info("node=main_agent tool %s ok=%s err=%s audit=%s",
+                            outcome.record.name, outcome.record.ok,
+                            outcome.record.error_type, outcome.record.audit_status)
                 writer(ev_tool_end(call["id"], call["name"], outcome.record.ok,
                                    outcome.message.content[:80]))
                 if outcome.record.error_code:
                     outcome.message.additional_kwargs["error_code"] = outcome.record.error_code
                 turn_messages.append(outcome.message)
-                if call["name"] == "query_faq" and toolset is not None:
-                    ft = toolset.faq_trace
-                    if outcome.record.error_code or ft.status in ("low_confidence",
-                                                                  "unavailable", "tool_error"):
-                        faq_terminal = ("refusal" if ft.status == "low_confidence"
+                if call["name"] == "query_faq" and faq_trace is not None:
+                    if outcome.record.error_code or faq_trace.status in (
+                            "low_confidence", "unavailable", "tool_error"):
+                        faq_terminal = ("refusal" if faq_trace.status == "low_confidence"
                                         and not outcome.record.error_code else "unavailable")
             if faq_terminal is not None:
                 return _faq_terminal(faq_terminal)

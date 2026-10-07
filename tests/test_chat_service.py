@@ -180,12 +180,18 @@ async def test_bind_tools_failure_internal_error_lock_released():
         def bind_tools(self, tools, **kwargs):
             raise RuntimeError("bind boom")
 
+    # ch08:目录装配后面非空才会调 bind_tools;不带 catalog 的空面永远不触发 boom
+    from app.tools.builtin import scan_builtin_specs
+    from app.tools.catalog import ToolCatalog
+    catalog = ToolCatalog()
+    for spec in scan_builtin_specs():
+        catalog.register(spec)
     settings = make_settings()
     store = InMemorySessionStore(10, 10, 100)
     model = BindBoomModel(scripts=[BUSINESS, ["答"]])
     service = ChatService(store, model, settings, SYSTEM)
     deps = GraphDeps(model=model, settings=settings, retriever=None,
-                     store=store, system_prompt=SYSTEM)
+                     store=store, system_prompt=SYSTEM, catalog=catalog)
     service.set_graph(build_chat_graph(deps, InMemorySaver()))
     turn = await service.prepare(TEST_USER_ID, None, "hi")
     events = [e async for e in service.stream(turn)]
