@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 import logging
@@ -149,6 +150,15 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
             "上下文预算不足:total=%d < steady=%d,请调大 MODEL_CONTEXT_WINDOW 或调小固定开销",
             context_budget.total, settings.steady_tokens_per_turn)
 
+    # ch08 工具目录与 MCP 网关(spec §1.5):内置启动登记;MCP 每轮现问现拿
+    from app.services.mcp_gateway import McpGateway
+    from app.tools.builtin import scan_builtin_specs
+    from app.tools.catalog import ToolCatalog
+    tool_catalog = ToolCatalog()
+    for _spec in scan_builtin_specs():
+        tool_catalog.register(_spec)
+    mcp_gateway = McpGateway(settings)
+
     from app.chains.extract_chain import build_extract_prompt
 
     if (
@@ -162,7 +172,9 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
                           session_factory=runtime.session_factory)
     deps = GraphDeps(model=model, settings=settings, retriever=runtime.retriever,
                      store=runtime.store, system_prompt=SERVICE_SYSTEM_PROMPT,
-                     context_budget=context_budget, summary_runner=summary_runner)
+                     context_budget=context_budget, summary_runner=summary_runner,
+                     catalog=tool_catalog, mcp_gateway=mcp_gateway,
+                     session_factory=runtime.session_factory)
     if not owns_runtime:  # 测试/嵌入路径:内存 checkpointer 即刻可用
         service.set_graph(build_chat_graph(deps, InMemorySaver()))
 
@@ -176,6 +188,10 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
             yield
         await app.state.job_runner.close()
         await app.state.summary_runner.aclose()
+        from app.tools.executor import PENDING_WRITE_TASKS
+        if PENDING_WRITE_TASKS:
+            await asyncio.gather(*PENDING_WRITE_TASKS, return_exceptions=True)
+        await app.state.mcp_gateway.close()
         if owns_runtime and runtime.retriever is not None:
             runtime.retriever.close()
 
@@ -186,6 +202,8 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.state.chat_service = service
     app.state.summary_runner = summary_runner
     app.state.session_factory = runtime.session_factory
+    app.state.tool_catalog = tool_catalog
+    app.state.mcp_gateway = mcp_gateway
     app.state.embed = runtime.embed
     app.state.kb_store = runtime.kb_store
     # 直接构造的 AppRuntime 可不带 holder(测试/嵌入):装配补默认,KB 端点不炸

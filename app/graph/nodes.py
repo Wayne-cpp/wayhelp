@@ -53,6 +53,9 @@ class GraphDeps:
     system_prompt: str = ""  # Task 13 装配传 SERVICE_SYSTEM_PROMPT
     context_budget: Any = None  # ch07 ContextBudget(Task 9/10 消费;None 时按需现算)
     summary_runner: Any = None  # ch07 SummaryRunner(Task 10 消费;触发后台分段摘要)
+    catalog: Any = None          # ch08 ToolCatalog(main_agent 工具面装配)
+    mcp_gateway: Any = None      # ch08 McpGateway(每轮 MCP 发现;None = 未配置)
+    session_factory: Any = None  # ch08 审计/写确认用
 
 
 def parse_intent_output(text: str) -> tuple[str, float | None] | None:
