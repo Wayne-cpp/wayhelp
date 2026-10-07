@@ -178,15 +178,7 @@ from dataclasses import asdict
 from app.services import orders as _orders
 
 
-@dataclass
-class FaqRetrievalTrace:
-    """图专用 query_faq 的单轮显式 interface;首轮调用写一次,后续走缓存。"""
-    calls: int = 0
-    status: str = "not_called"   # ok | low_confidence | unavailable | tool_error
-    result: RetrievalResult | None = None
-    evidence: list[dict] | None = None
-    error_code: str | None = None
-    _cached: str | None = None
+from app.tools.builtin.faq import FaqRetrievalTrace  # noqa: F401  (已迁至 builtin/faq.py)
 
 
 @dataclass
