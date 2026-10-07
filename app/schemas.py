@@ -73,11 +73,13 @@ class ChatStreamRequest(BaseModel):
 
 
 class ChatResumeRequest(BaseModel):
-    """ch06(spec §9.1):按 interrupt ID 恢复挂起轮并绑定所选订单。"""
+    """ch06(spec §9.1)+ ch08(spec §5.3):按 interrupt ID 恢复挂起轮。
+    order_selector 必须带 order_id;ticket_preview 必须带 decision(服务端锁内分派)。"""
     user_id: str
     session_id: str
     interrupt_id: str = Field(min_length=1, max_length=128)
-    order_id: str = Field(min_length=1, max_length=64)
+    order_id: str | None = Field(default=None, min_length=1, max_length=64)
+    decision: Literal["confirm", "cancel"] | None = None
 
     @field_validator("user_id")
     @classmethod

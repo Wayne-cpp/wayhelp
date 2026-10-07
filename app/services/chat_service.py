@@ -163,9 +163,11 @@ class ChatService:
         return PreparedTurn(sid, message, sid, user_id=user_id, user_db_id=user_db_id)
 
     async def prepare_resume(self, user_id: str, session_id: str,
-                             interrupt_id: str, order_id: str) -> PreparedTurn:
-        """ch06(spec §9.1):锁内核验 pending interrupt/候选/订单归属,失败释锁。
-        409 必须服务端自校验——LangGraph 对不匹配 resume ID 是静默忽略,不报错。"""
+                             interrupt_id: str, order_id: str | None = None,
+                             decision: str | None = None) -> PreparedTurn:
+        """ch06(spec §9.1)+ ch08(spec §5.3):锁内核验 pending interrupt 并按类型分派。
+        409 必须服务端自校验——LangGraph 对不匹配 resume ID 是静默忽略,不报错。
+        已消费/不存在的 interrupt_id 一律 409,不查幂等表(它只供内部恢复)。"""
         from langgraph.types import Command
         from app.services.orders import get_order
         if not await self._store.exists(session_id, user_id):
@@ -180,19 +182,28 @@ class ChatService:
                     if intr.id == interrupt_id:
                         match = intr
             value = getattr(match, "value", None) or {}
-            if match is None or value.get("type") != "order_selector":
-                raise ResumeConflictError("no matching pending order selection")
-            candidates = {o.get("order_id") for o in value.get("orders") or []}
-            if order_id not in candidates:
-                raise ResumeConflictError("order not in pending candidates")
-            if get_order(user_id, order_id) is None:
-                raise SessionNotFoundError("session not found")  # 404 不泄露
+            itype = value.get("type")
+            if match is None or itype not in ("order_selector", "ticket_preview"):
+                raise ResumeConflictError("no matching pending interrupt")
+            if itype == "order_selector":
+                if not order_id:
+                    raise ResumeConflictError("order_selector requires order_id")
+                candidates = {o.get("order_id") for o in value.get("orders") or []}
+                if order_id not in candidates:
+                    raise ResumeConflictError("order not in pending candidates")
+                if get_order(user_id, order_id) is None:
+                    raise SessionNotFoundError("session not found")  # 404 不泄露
+                resume_value = {"order_id": order_id}
+            else:
+                if decision not in ("confirm", "cancel"):
+                    raise ResumeConflictError("ticket_preview requires decision")
+                resume_value = {"decision": decision}  # 只带决策;参数只信快照
         except Exception:
             self._locks.release(session_id)
             raise
         return PreparedTurn(session_id=session_id, user_text="", lock_key=session_id,
                             user_id=user_id,
-                            resume_command=Command(resume={interrupt_id: {"order_id": order_id}}))
+                            resume_command=Command(resume={interrupt_id: resume_value}))
 
     def release_turn(self, turn: PreparedTurn) -> None:
         if turn.released:
