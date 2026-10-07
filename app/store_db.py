@@ -1,5 +1,4 @@
 import asyncio
-from datetime import datetime
 
 from sqlalchemy import func, select, update
 
@@ -114,10 +113,10 @@ class DbSessionStore:
             ids = ([str(user_row_id)] if user_row_id is not None else []) \
                 + [str(r.id) for r in rows]
             s.execute(update(Conversation).where(Conversation.id == cid)
-                      # 截断微秒:MySQL DATETIME(0) 对显式小数值四舍五入进位,会把本写
-                      # 拔高到下一秒,反超稍后 CREATE 行的 CURRENT_TIMESTAMP(截断)秒值,
-                      # 令 list_conversations 的 updated_at DESC 序在秒边界反转
-                      .values(updated_at=datetime.now().replace(microsecond=0)))
+                      # 一律走 DB 时钟:与 created_at 的 DEFAULT CURRENT_TIMESTAMP 同一
+                      # 钟域,Python 侧写值在容器与主机时区不一致时会反超新建行,
+                      # 令 list_conversations 的 updated_at DESC 序反转
+                      .values(updated_at=func.now()))
             if low_confidence is not None:
                 s.add(LowConfidenceQuestion(
                     conversation_id=low_confidence.conversation_id,
