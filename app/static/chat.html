@@ -482,6 +482,51 @@
     color: var(--muted);
   }
 
+  /* ─── 工单预览卡(ch08 spec §5):复用订单卡 token,确认/取消按钮组 ── */
+  .order-card.ticket-card { cursor: default; }  /* 卡体是容器非按钮,交互在按钮组 */
+  .order-card.ticket-card:hover {  /* 中和 .order-card:hover 的可点暗示 */
+    border-color: var(--border-soft);
+    background: var(--surface);
+  }
+  .ticket-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .ticket-line {
+    font-size: var(--text-sm);
+    color: var(--fg-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .ticket-btns { display: flex; gap: var(--space-2); margin-top: var(--space-1); }
+  .ticket-confirm, .ticket-cancel {
+    padding: 7px 14px;
+    border-radius: var(--radius-pill);
+    font-size: var(--text-sm);
+    transition: background var(--motion-fast) var(--ease-standard),
+                border-color var(--motion-fast) var(--ease-standard);
+  }
+  .ticket-cancel {
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    color: var(--fg-2);
+  }
+  .ticket-cancel:hover:not(:disabled) {
+    background: var(--surface-warm);
+    border-color: var(--fg-2);
+  }
+  .ticket-confirm {
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    color: var(--accent-on);
+  }
+  .ticket-confirm:hover:not(:disabled) { background: var(--accent-hover); }
+  .ticket-confirm:disabled, .ticket-cancel:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
   /* ─── 退款申请表单层(ch06 spec §12)──────────────────────────── */
   .refund-mask {
     position: fixed; inset: 0; z-index: 60;
@@ -765,6 +810,7 @@
   var streaming = false;
   var suggestionsEl = null;
   var orderGroups = [];   // 页面上未消费的订单卡组;新消息发出即全部失效
+  var ticketGroups = [];  // 页面上未消费的工单预览卡;新消息发出即全部失效
   var refundForm = null;  // 当前打开的退款表单层,同时最多一个
   // 用户上翻阅读历史时,流式输出不再强行拽回底部
   var stickToBottom = true;
@@ -830,7 +876,9 @@
   }
 
   var TOOL_LABELS = { query_order: "查订单", query_product: "查商品",
-    query_logistics: "查物流", query_faq: "查常见问题", create_ticket: "创建工单" };
+    query_logistics: "查物流", query_faq: "查常见问题",
+    query_warranty: "查在保", query_return_progress: "查退货进度",
+    create_ticket: "建工单" };
 
   function addBadge(badgesEl, badgeById, id, name) {
     var badge = document.createElement("span");
@@ -1081,11 +1129,11 @@
     card.classList.add("picked");
     addSystemHint("已选择订单 " + captured.order_id);
     setStreaming(true); // resume 轮同样独占会话,输入区锁定
-    resumeStream(captured, ui);
+    resumeStream(captured, ui, { order_id: captured.order_id });
   }
 
-  // 点卡 resume:输出追加到原挂起轮的助手区域,不新开用户气泡(spec §12)
-  async function resumeStream(captured, ui) {
+  // 点卡/预览卡 resume:输出追加到原挂起轮的助手区域,不新开用户气泡(spec §12)
+  async function resumeStream(captured, ui, extra) {
     var row = ui.row, bubble = ui.bubble;
     row.classList.add("streaming");
     bubble.style.display = ""; // 还原挂起时藏起的空气泡
@@ -1094,7 +1142,7 @@
       var resp = await fetch("/v1/chat/resume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(captured) // 恰四字段:user_id/session_id/interrupt_id/order_id
+        body: JSON.stringify(Object.assign({}, captured, extra)) // 基础身份 + 本轮补充:订单卡 order_id / 预览卡 decision
       });
       if (resp.status === 409) {
         // 旧卡/已恢复卡/重复点击:服务端锁内已判定失效
@@ -1124,6 +1172,73 @@
       setStreaming(false);
       scrollToBottom();
     }
+  }
+
+  /* ─── 工单预览卡(ch08 spec §5):create_ticket 确认流,confirm/cancel resume ── */
+  function disableTicketCards(group) {
+    var btns = group.querySelectorAll(".ticket-confirm, .ticket-cancel");
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+  }
+
+  function expireTicketCards() {
+    // 与订单卡同理:新消息发出 = 会话前进,页面上未消费旧预览卡前端先失效
+    ticketGroups.forEach(disableTicketCards);
+    ticketGroups = [];
+  }
+
+  function renderTicketPreview(ui, evt) {
+    var group = document.createElement("div");
+    group.className = "order-cards ticket-cards";
+    group.setAttribute("data-od-id", "ticket-preview");
+    var card = document.createElement("div");
+    card.className = "order-card ticket-card";
+    // 捕获生成时身份:resume 不得从全局当前会话猜(比照订单卡 spec §12)
+    var captured = { user_id: userId, session_id: sessionId,
+                     interrupt_id: evt.interrupt_id };
+    var title = document.createElement("div");
+    title.className = "ticket-title";
+    title.textContent = "工单预览";
+    var typeLine = document.createElement("div");
+    typeLine.className = "ticket-line";
+    typeLine.textContent = "工单类型：" + (evt.ticket_type || ""); // 字段全部 textContent,模型输出不进 innerHTML
+    var descLine = document.createElement("div");
+    descLine.className = "ticket-line";
+    descLine.textContent = "问题描述：" + (evt.description || "");
+    var btns = document.createElement("div");
+    btns.className = "ticket-btns";
+    var confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "ticket-confirm";
+    confirmBtn.textContent = "确认提交";
+    var cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "ticket-cancel";
+    cancelBtn.textContent = "取消";
+    confirmBtn.addEventListener("click", function () {
+      decideTicket(group, captured, "confirm", ui);
+    });
+    cancelBtn.addEventListener("click", function () {
+      decideTicket(group, captured, "cancel", ui);
+    });
+    btns.appendChild(confirmBtn);
+    btns.appendChild(cancelBtn);
+    card.appendChild(title);
+    card.appendChild(typeLine);
+    card.appendChild(descLine);
+    card.appendChild(btns);
+    group.appendChild(card);
+    ui.col.appendChild(group);
+    ticketGroups.push(group);
+    scrollToBottom();
+  }
+
+  function decideTicket(group, captured, decision, ui) {
+    if (streaming) return;
+    ticketGroups = ticketGroups.filter(function (g) { return g !== group; });
+    disableTicketCards(group);  // 全组 disable:防双击/换选
+    addSystemHint(decision === "confirm" ? "已确认提交工单" : "已取消建单");
+    setStreaming(true); // resume 轮同样独占会话,输入区锁定
+    resumeStream(captured, ui, { decision: decision });
   }
 
   /* ─── 退款申请表单层(ch06 spec §12):订单号只读回填,原因固定六类 ── */
@@ -1282,7 +1397,7 @@
   }
 
   // 读取一轮 SSE 流并分发到轮次 UI 上下文 ui;send 与 resume 共用。
-  // 挂起轮(order_selector 帧后紧跟 DONE)返回 suspended=true,无正文。
+  // 挂起轮(order_selector / ticket_preview 帧后紧跟 DONE)返回 suspended=true,无正文。
   async function readChatStream(resp, ui) {
     var reader = resp.body.getReader();
     var decoder = new TextDecoder();
@@ -1322,6 +1437,9 @@
         } else if (evt.type === "order_selector") {
           out.suspended = true;
           renderOrderCards(ui, evt);   // 卡组渲染进当前助手纵列,等待点选
+        } else if (evt.type === "ticket_preview") {
+          out.suspended = true;
+          renderTicketPreview(ui, evt); // 预览卡渲染进当前助手纵列,等待确认/取消
         } else if (evt.type === "error") {
           failRow(ui.row, ui.bubble, evt.message || "出错了，请稍后再试");
         }
@@ -1336,6 +1454,7 @@
 
     removeSuggestions();
     expireOrderCards(); // 新消息发出,页面上未消费旧订单卡前端先失效
+    expireTicketCards(); // 工单预览卡同理,新消息发出即失效
     inputEl.value = "";
     inputEl.style.height = "auto";
     stickToBottom = true; // 用户主动发言,视图跟随到底
@@ -1432,6 +1551,7 @@
 
   function clearMessageList() {
     orderGroups = [];   // DOM 清空,未消费订单卡引用一并丢弃
+    ticketGroups = [];  // 工单预览卡同理(历史回载不带卡)
     closeRefundForm();
     messagesEl.innerHTML = "";
     suggestionsEl = null;

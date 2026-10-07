@@ -87,6 +87,15 @@ def test_chat_page_order_selector_and_refund_form():
         assert needle in html
 
 
+def test_chat_page_ticket_preview_card():
+    from pathlib import Path
+    html = (Path(__file__).parent.parent / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    for needle in ("ticket_preview", "renderTicketPreview", "decideTicket",
+                   "确认提交", "取消", "decision", "/v1/chat/resume",
+                   "查在保", "查退货进度"):
+        assert needle in html
+
+
 def test_chat_page_has_sidebar_and_conversation_api():
     from pathlib import Path
     html = (Path(__file__).resolve().parent.parent
