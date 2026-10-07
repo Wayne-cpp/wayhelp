@@ -44,16 +44,16 @@ def test_truncate_to_tokens():
 
 
 def test_budget_acceptance_numbers():
-    b = compute_budget(_settings(), sys_tokens=1901)
-    assert (b.peak, b.fixed, b.avail) == (3750, 4601, 5649)
-    assert (b.total, b.layer1, b.layer2) == (5649, 3954, 1695)
+    b = compute_budget(_settings(), sys_tokens=1883)
+    assert (b.peak, b.fixed, b.avail) == (3750, 4583, 5667)
+    assert (b.total, b.layer1, b.layer2) == (5667, 3966, 1701)
     assert b.sufficient
 
 
 def test_budget_min_arm_and_clamp():
-    b = compute_budget(_settings(model_context_window=65536), sys_tokens=1901)
+    b = compute_budget(_settings(model_context_window=65536), sys_tokens=1883)
     assert b.total == 20 * 300                       # 想留住的轮数 × 稳态 取小
-    tiny = compute_budget(_settings(model_context_window=5000), sys_tokens=1901)
+    tiny = compute_budget(_settings(model_context_window=5000), sys_tokens=1883)
     assert tiny.avail >= 0 and not tiny.sufficient   # 一轮装不下 → 自检报警语义
 
 

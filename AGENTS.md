@@ -29,7 +29,7 @@
 - 全量 pytest 的 DB 依赖:dbfixtures 用 .env 的 TEST_ADMIN_DATABASE_URL(root@127.0.0.1 TCP)建 wayhelp_test 库;若本机是原生 mysqld 而非 Docker,root 走 auth_socket 会 1698 拒连、fixture 入口直接 exit(3)——要么起 docker compose,要么给 root 开 TCP 密码授权(wayhelp 账号只有 wayhelp 库权限,不够)
 - uvicorn 起服:shell 有代理变量(http_proxy→7890 等)且无 no_proxy 时,milvus-lite 内嵌 gRPC 会被劫持进代理(GOAWAY)→ 启动契约探针误判 rebuild_required、检索整轮不可用;起服命令前加 `no_proxy=127.0.0.1,localhost`(curl 访问本机服务仍须另加 --noproxy '*')
 - ch07 起账本行契约:messages 表只收 user/assistant 行,tool 结果行不落库(`sessions.validate_turn` 拒收,turn 中间只许带 tool_calls 的 assistant 行);工具调用轨迹仍在 assistant.tool_calls,工具结果只在 token 截断后进模型上下文
-- 上下文 token 唯一估算尺 `app/services/token_budget.py`(estimate_tokens / estimate_messages / compute_budget 窗口倒推):一切预算、层1降级、摘要触发的判断只准用这把尺,不许另立字符数/条数启发式;演示配置验收数字 AVAIL=5649、层1=3954、层2=1695 有测试钉死
+- 上下文 token 唯一估算尺 `app/services/token_budget.py`(estimate_tokens / estimate_messages / compute_budget 窗口倒推):一切预算、层1降级、摘要触发的判断只准用这把尺,不许另立字符数/条数启发式;演示配置验收数字 AVAIL=5667、层1=3966、层2=1701 有测试钉死
 - 上下文锚点/摘要全部事务 CAS 单调前移(layer1_from 只前不回退;摘要段 CAS 追加 + in-flight 防重入 + 失败不挪锚点);绕过 store 的 CAS 方法直改 conversation_summaries / 上下文 meta 一律禁止
 - log/app.log 由 main.py 的 FileHandler 幂等挂载(重复 create_app 不重复追加 handler);model_ctx(main_agent 每次模型调用:两层预算/条数/估算/逐条消息)与 history_ctx(understand/classify 分层历史读出:摘要/滑窗/估算)是单行 JSON 日志,grep 友好
 
