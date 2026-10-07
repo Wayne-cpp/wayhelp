@@ -165,3 +165,28 @@ def test_ch07_context_defaults():
     assert s.safety_margin_tokens == 550
     assert not hasattr(s, "understand_history_turns")
     assert not hasattr(s, "rerank_top_n")
+
+
+def test_ch08_defaults():
+    s = Settings(_env_file=None, openai_base_url="http://t", openai_api_key="k",
+                 model_name="m", database_url="mysql+pymysql://u:p@h/d")
+    assert s.mcp_logistics_url == "" and s.mcp_after_sales_url == ""
+    assert s.mcp_discovery_timeout_seconds == 2
+    assert s.tool_write_timeout_seconds == 10
+    assert s.tool_timeout_overrides == {}
+    assert s.audit_result_max_chars == 2000
+
+
+def test_tool_timeout_overrides_parses_json():
+    s = Settings(_env_file=None, openai_base_url="http://t", openai_api_key="k",
+                 model_name="m", database_url="mysql+pymysql://u:p@h/d",
+                 tool_timeout_overrides='{"query_product": 0.001}')
+    assert s.tool_timeout_overrides == {"query_product": 0.001}
+
+
+def test_tool_timeout_overrides_rejects_bad_json():
+    import pytest
+    with pytest.raises(Exception):
+        Settings(_env_file=None, openai_base_url="http://t", openai_api_key="k",
+                 model_name="m", database_url="mysql+pymysql://u:p@h/d",
+                 tool_timeout_overrides="{not json")

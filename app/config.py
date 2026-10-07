@@ -65,6 +65,24 @@ class Settings(BaseSettings):
     safety_margin_tokens: int = Field(default=550, ge=0)
     intent_model_name: str | None = None       # reserved,未接线(双模型 cascade 明确不在本章范围);None = 复用主模型(D5)
     refund_expand_enabled: bool = True         # order_specific 扩写开关(§6.4)
+    # ch08 工具系统(spec §6.1)
+    mcp_logistics_url: str = ""          # 例 http://127.0.0.1:8101/mcp;空 = 不接入
+    mcp_after_sales_url: str = ""        # 例 http://127.0.0.1:8102/mcp;空 = 不接入
+    mcp_discovery_timeout_seconds: float = Field(default=2, gt=0)  # 每轮按 Server 发现超时,超时即跳过
+    tool_write_timeout_seconds: float = Field(default=10, gt=0)    # 写路径超时(超时≠没执行,绝不重试)
+    tool_timeout_overrides: dict[str, float] = Field(default_factory=dict)  # JSON 按名覆盖等待期限(运维 knob/故障注入)
+    audit_result_max_chars: int = Field(default=2000, gt=0)        # 审计 result_summary 截断
+
+    @field_validator("tool_timeout_overrides", mode="before")
+    @classmethod
+    def _parse_overrides(cls, v):
+        if isinstance(v, str):
+            import json as _json
+            raw = _json.loads(v or "{}")
+            if not isinstance(raw, dict):
+                raise ValueError("TOOL_TIMEOUT_OVERRIDES 必须是 JSON 对象")
+            return {str(k): float(x) for k, x in raw.items()}
+        return v
 
     def has_rerank_key(self) -> bool:
         return bool(self.rerank_api_key.strip() or self.embedding_api_key.strip())
