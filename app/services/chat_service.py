@@ -73,8 +73,17 @@ class OrderSelectorEvent:
     orders: list[dict]
 
 
+@dataclass(frozen=True)
+class TicketPreviewEvent:
+    """ch08(spec §5):图挂起后绑定 interrupt ID 的工单预览帧。"""
+    interrupt_id: str
+    ticket_type: str
+    description: str
+
+
 ChatEvent = Union[SessionEvent, DeltaEvent, ToolStartEvent, ToolEndEvent, DoneEvent,
-                  ErrorEvent, CitationsEvent, SuggestActionsEvent, OrderSelectorEvent]
+                  ErrorEvent, CitationsEvent, SuggestActionsEvent, OrderSelectorEvent,
+                  TicketPreviewEvent]
 
 
 class SessionLockRegistry:
@@ -245,6 +254,11 @@ class ChatService:
                 if value.get("type") == "order_selector":
                     yield OrderSelectorEvent(interrupt_id=intr.id,
                                              orders=value.get("orders") or [])
+                    return
+                if value.get("type") == "ticket_preview":
+                    yield TicketPreviewEvent(interrupt_id=intr.id,
+                                             ticket_type=value.get("ticket_type") or "",
+                                             description=value.get("description") or "")
                     return
 
     @staticmethod

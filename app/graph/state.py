@@ -43,6 +43,7 @@ class ChatGraphState(TypedDict, total=False):
     low_conf_source: str | None          # retrieval_low_conf | self_check
     low_conf_reason: dict | None
     suggested_actions: list[dict]
+    pending_ticket: dict | None         # ch08:park 的写调用快照(ticket_confirm 消费)
     agent_steps: int
     agent_tokens: int
     token_accounting: str                # none | usage | estimated | mixed
@@ -82,6 +83,7 @@ def new_turn_state(raw_query: str, user_db_id: int | str | None = None) -> dict:
         "low_conf_source": None,
         "low_conf_reason": None,
         "suggested_actions": [],
+        "pending_ticket": None,
         "agent_steps": 0,
         "agent_tokens": 0,
         "token_accounting": "none",

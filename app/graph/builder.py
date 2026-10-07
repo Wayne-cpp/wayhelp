@@ -6,7 +6,8 @@ from langgraph.graph import END, START, StateGraph
 from app.graph.agent_node import build_agent_node
 from app.graph.nodes import (
     GraphDeps, build_fixed_nodes, build_front_nodes, build_knowledge_nodes,
-    build_log_node, build_refund_nodes, route_after_gate, route_after_prepare,
+    build_log_node, build_refund_nodes, build_ticket_confirm_node,
+    route_after_agent, route_after_gate, route_after_prepare,
     route_by_intent, route_refund_mode,
 )
 from app.graph.state import ChatGraphState
@@ -29,6 +30,7 @@ def build_chat_graph(deps: GraphDeps, checkpointer):
     g.add_node("chitchat_reply", fixed["chitchat_reply"])
     g.add_node("other_fallback", fixed["other_fallback"])
     g.add_node("main_agent", build_agent_node(deps))
+    g.add_node("ticket_confirm", build_ticket_confirm_node(deps))
     g.add_node("log", build_log_node(deps))
 
     g.add_edge(START, "understand_query")
@@ -48,8 +50,12 @@ def build_chat_graph(deps: GraphDeps, checkpointer):
     g.add_conditional_edges(
         "refund_policy", route_after_gate,
         {"main_agent": "main_agent", "gate_fallback": "gate_fallback"})
-    for node in ("main_agent", "gate_fallback", "complaint_reply", "chitchat_reply",
+    for node in ("gate_fallback", "complaint_reply", "chitchat_reply",
                  "other_fallback"):
         g.add_edge(node, "log")
+    g.add_conditional_edges(
+        "main_agent", route_after_agent,
+        {"ticket_confirm": "ticket_confirm", "log": "log"})
+    g.add_edge("ticket_confirm", "main_agent")
     g.add_edge("log", END)
     return g.compile(checkpointer=checkpointer)

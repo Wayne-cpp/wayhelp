@@ -40,6 +40,8 @@ from app.services.token_budget import compute_budget, measure_sys_tokens
 from app.sessions import (
     ContextMeta, LowConfidenceRecord, PersistedTurn, StoredMessage,
 )
+from app.tools.catalog import TurnContext
+from app.tools.executor import PendingWrite, ToolExecutor, ToolFace
 
 logger = logging.getLogger("wayhelp.graph")
 
@@ -624,3 +626,44 @@ def build_log_node(deps: GraphDeps):
         return out
 
     return log_turn
+
+
+# ── ch08 工单确认(spec §5):main_agent park 写调用 → 预览 interrupt → confirm/cancel ──
+
+def route_after_agent(state) -> str:
+    return "ticket_confirm" if state.get("pending_ticket") else "log"
+
+
+def build_ticket_confirm_node(deps: GraphDeps):
+    async def ticket_confirm(state, config):
+        pending = state["pending_ticket"]
+        trace = [*state["node_trace"], {"node": "ticket_confirm"}]
+        # 挂起:帧由驱动层在图结束后按 pending interrupt 发射,节点不发 SSE
+        selected = interrupt({"type": "ticket_preview",
+                              "tool_call_id": pending["tool_call_id"],
+                              "ticket_type": pending["args"].get("ticket_type"),
+                              "description": pending["args"].get("description")})
+        decision = (selected or {}).get("decision")
+        sid = config["configurable"]["thread_id"]
+        user_id = (config.get("configurable") or {}).get("user_id", "")
+        ctx = TurnContext(user_id=user_id,
+                          conversation_id=int(sid) if str(sid).isdecimal() else None,
+                          resolved_query=state.get("resolved_query", ""),
+                          retriever=None, settings=deps.settings,
+                          session_factory=deps.session_factory)
+        spec = deps.catalog.get(pending["name"]) if deps.catalog else None
+        executor = ToolExecutor(ToolFace([spec] if spec else []), deps.settings,
+                                session_factory=deps.session_factory,
+                                mcp=deps.mcp_gateway)
+        pending_write = PendingWrite(tool_call_id=pending["tool_call_id"],
+                                     name=pending["name"], args=pending["args"],
+                                     args_sha256=pending["args_sha256"])
+        if decision == "confirm":
+            # 只信 checkpoint 快照参数;客户端 resume 字段一律不采用(spec §5.3)
+            outcome = await executor.execute_confirmed(pending_write, ctx)
+        else:
+            outcome = await executor.deny_write(pending_write, ctx, "用户取消")
+        return {"turn_messages": [*state["turn_messages"], outcome.message],
+                "pending_ticket": None, "node_trace": trace}
+
+    return ticket_confirm
