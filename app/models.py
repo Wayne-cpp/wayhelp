@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     Boolean, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func,
 )
-from sqlalchemy.dialects.mysql import BIGINT, INTEGER
+from sqlalchemy.dialects.mysql import BIGINT, INTEGER, TINYINT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -167,3 +167,31 @@ class FaithCase(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     resolution: Mapped[str | None] = mapped_column(String(300), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ToolAuditLog(Base):
+    __tablename__ = "tool_audit_logs"
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int | None] = mapped_column(BIGINT(unsigned=True), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(128))
+    tool_source: Mapped[str] = mapped_column(Enum("builtin", "mcp", name="tool_source"))
+    mcp_server: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    arguments: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        Enum("成功", "失败", "超时", "校验拦下", "权限拒绝", name="tool_audit_status"))
+    error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    retry_count: Mapped[int] = mapped_column(TINYINT(unsigned=True), default=0)
+    duration_ms: Mapped[int | None] = mapped_column(INTEGER(unsigned=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ToolWriteIdempotency(Base):
+    __tablename__ = "tool_write_idempotency"
+
+    idempotency_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    arguments_sha256: Mapped[str] = mapped_column(String(64))
+    ticket_no: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

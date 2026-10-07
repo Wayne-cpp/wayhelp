@@ -43,3 +43,16 @@ def check_ch07_tables(engine) -> None:
     if missing or "conversation_summaries" not in tables:
         raise RuntimeError(
             "缺少 ch07 会话上下文表结构,请先执行:mysql wayhelp < sql/ch07-ddl.sql")
+
+
+_CH08_TABLES = ("tool_audit_logs", "tool_write_idempotency")
+
+
+def check_ch08_tables(engine) -> None:
+    """缺 ch08 表(审计/幂等)启动失败并提示升级命令。"""
+    with engine.connect() as conn:
+        tables = {r[0] for r in conn.execute(text("SHOW TABLES"))}
+    missing = [t for t in _CH08_TABLES if t not in tables]
+    if missing:
+        raise RuntimeError(
+            f"缺少 ch08 表 {missing}:请先执行 mysql wayhelp < sql/ch08-ddl.sql")
