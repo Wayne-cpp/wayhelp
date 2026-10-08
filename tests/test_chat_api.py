@@ -1,14 +1,19 @@
 import asyncio
+import dataclasses
 import json
 
 import httpx
 import pytest
+from langchain_core.messages import AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
 
 from app.main import create_app
+from app.models import Ticket, ToolAuditLog, ToolWriteIdempotency
 from app.routers.chat import event_stream
 from tests.conftest import (
     TEST_USER_ID,
     FakeStreamModel,
+    ScriptedChatModel,
     UserBoundMemoryStore,
     make_runtime,
     make_settings,
@@ -227,3 +232,77 @@ async def test_concurrent_resume_only_one_wins(db_session_factory):
         # 锁已释放:后续新消息可正常进入
         frames2, _ = await _turn(client, "你好", sid)
         assert "[DONE]" in _types(frames2)
+
+
+# ── ch08 spec §6.2「幂等与并发」:并发 confirm 同一 ticket_preview 只赢一票 ──
+
+_TICKET_CONFIRM_SCRIPTS = [
+    ['{"intent":"订单","confidence":0.9}'],          # classify(首轮 understand 跳过)
+    [("tool", [{"index": 0, "name": "create_ticket", "id": "w1",
+                "args": '{"description":"商品有质量问题,要求换货","ticket_type":"售后"}'}])],
+]
+
+
+class _TicketEchoModel(ScriptedChatModel):
+    """确认轮回声模型:main_agent 收到 create_ticket 的 ToolMessage 后,答复如实带上
+    系统返回的真实工单号(生产提示词要求转述工单号;随机号无法罐头预置,故按输入回声)。"""
+
+    @staticmethod
+    def _echo_ticket_no(messages) -> str | None:
+        for msg in reversed(messages):
+            content = getattr(msg, "content", "")
+            if getattr(msg, "type", "") == "tool" and isinstance(content, str) \
+                    and '"ticket_no"' in content:
+                try:
+                    return json.loads(content)["ticket_no"]
+                except ValueError:
+                    return None
+        return None
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        ticket_no = self._echo_ticket_no(messages)
+        if ticket_no is not None:
+            yield ChatGenerationChunk(message=AIMessageChunk(
+                content=f"已提交工单,工单号 {ticket_no}"))
+            return
+        async for chunk in super()._astream(messages, stop, run_manager, **kwargs):
+            yield chunk
+
+
+async def test_concurrent_confirm_only_one_wins(db_session_factory):
+    """并发 confirm 同一挂起工单卡:恰好一单落库、一条成功审计,败者在锁内
+    重新校验后按旧契约 409(spec §6.2「并发 confirm 只有一个事务建票」)。"""
+    runtime = dataclasses.replace(make_runtime(tools=[]),
+                                  session_factory=db_session_factory)
+    app = create_app(settings=make_settings(),
+                     model=_TicketEchoModel(scripts=list(_TICKET_CONFIRM_SCRIPTS)),
+                     runtime=runtime)
+    async with await _client(app) as client:
+        frames, sid = await _turn(client, "帮我建个工单")
+        assert _types(frames) == ["session", "ticket_preview", "[DONE]"]
+        body = {"user_id": TEST_USER_ID, "session_id": sid,
+                "interrupt_id": frames[1]["interrupt_id"], "decision": "confirm"}
+        r1, r2 = await asyncio.gather(
+            client.post("/v1/chat/resume", json=body),
+            client.post("/v1/chat/resume", json=body))
+        assert sorted([r1.status_code, r2.status_code]) == [200, 409]
+        loser = r1 if r1.status_code == 409 else r2
+        assert loser.json()["error"]["code"] == "resume_conflict"  # 旧契约 409
+        winner = r2 if loser is r1 else r1
+        win_frames = parse_frames(
+            [ln for ln in winner.text.splitlines() if ln.strip()])
+        assert win_frames[0]["type"] == "session" and win_frames[-1] == "[DONE]"
+        assert "ticket_preview" not in _types(win_frames)    # 恢复成功不重发卡
+        answer = "".join(f.get("content", "") for f in win_frames
+                         if isinstance(f, dict) and f["type"] == "delta")
+    with db_session_factory() as s:
+        tickets = s.query(Ticket).all()
+        assert len(tickets) == 1                             # 只赢一票:恰好一单
+        assert tickets[0].conversation_id == int(sid)
+        assert tickets[0].ticket_no in answer                # 答复工单号=落库行
+        idem = s.query(ToolWriteIdempotency).all()
+        assert len(idem) == 1 and idem[0].ticket_no == tickets[0].ticket_no
+        audits = s.query(ToolAuditLog).filter_by(tool_name="create_ticket").all()
+        # 败者在 prepare_resume 锁内重验即 409(未进图、零执行)→ 无第二条审计
+        assert [a.status for a in audits] == ["成功"]
+        assert audits[0].conversation_id == int(sid)
