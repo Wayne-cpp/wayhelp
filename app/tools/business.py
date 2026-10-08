@@ -97,7 +97,7 @@ class TurnToolset:
         return {t.name: t for t in self.tools}
 
     # T7→T9 桥接:ChatService 在 T9 前仍把 factory 结果当 list 消费
-    # (ToolRegistry 迭代 / `if tools` 真值判断),补齐列表协议保持全链不红
+    # (迭代 / `if tools` 真值判断 / 下标),补齐列表协议保持全链不红
     def __iter__(self):
         return iter(self.tools)
 

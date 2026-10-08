@@ -108,6 +108,8 @@ def _ctx_msg(m) -> dict:
 
 _BUDGET_CACHE: dict[tuple, tuple[int, object]] = {}  # 工具签名 → (sys_tokens, ContextBudget)
 
+_CORE_PRIORITY_FLOOR = 100  # budget_priority >= 此值视为核心工具,超预算剔除豁免;语义见 catalog.py budget_priority 注释
+
 
 def _face_budget(settings, system_prompt: str, tools: list):
     sig = tuple(sorted(t.name for t in tools))
@@ -133,7 +135,7 @@ def fit_face_to_budget(face, extra_tools: list, settings, system_prompt: str, ab
         return face, tools, budget, 0
     sys_tokens, budget = _face_budget(settings, system_prompt, tools)
     while not budget.sufficient:
-        removable = sorted((s for s in face.specs if s.budget_priority < 100),
+        removable = sorted((s for s in face.specs if s.budget_priority < _CORE_PRIORITY_FLOOR),
                            key=lambda s: (s.budget_priority, s.name))
         if not removable:
             abort("tool_context_too_long", "工具面超出上下文预算")

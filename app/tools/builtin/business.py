@@ -3,7 +3,6 @@ query_logistics 已下线,物流查询由 MCP Server 接管(spec §4.1)。"""
 import json
 import random
 from dataclasses import asdict
-from datetime import datetime, timedelta
 
 from pydantic import BaseModel, Field
 

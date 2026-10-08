@@ -2,7 +2,6 @@
 六步管线:查目录 → JSON Schema 校验 → 权限闸 → 归属把门 → 分发(超时/重试)→ 格式化。
 写操作只由 execute_confirmed 分发(用户确认后),不自动重试;超时按「已发未必未成」。"""
 import asyncio
-import contextlib
 import json
 import logging
 import time

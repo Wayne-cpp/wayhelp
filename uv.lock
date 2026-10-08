@@ -2078,7 +2078,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "jieba", specifier = ">=0.42.1" },
     { name = "langchain-core", specifier = ">=0.3" },
-    { name = "langchain-mcp-adapters", specifier = ">=0.1" },
+    { name = "langchain-mcp-adapters", specifier = ">=0.1,<1" },
     { name = "langchain-openai", specifier = ">=0.3" },
     { name = "langgraph", specifier = ">=1.0.8,<2" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1" },
