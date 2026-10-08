@@ -1070,7 +1070,7 @@
     scrollToBottom();
   }
 
-  /* ─── 订单选择器卡组(ch06 spec §12):捕获式身份 + resume 追加原轮 ── */
+  /* ─── 订单选择器卡组(ch06 spec §12):捕获式身份;resume 底部新开助手消息 ── */
   function disableOrderCards(group) {
     var cards = group.querySelectorAll(".order-card");
     for (var i = 0; i < cards.length; i++) cards[i].disabled = true;
@@ -1113,7 +1113,7 @@
       card.appendChild(line);
       card.appendChild(meta);
       card.addEventListener("click", function () {
-        pickOrder(group, card, captured, ui);
+        pickOrder(group, card, captured);
       });
       group.appendChild(card);
     });
@@ -1122,22 +1122,50 @@
     scrollToBottom();
   }
 
-  function pickOrder(group, card, captured, ui) {
+  function pickOrder(group, card, captured) {
     if (streaming) return;
     orderGroups = orderGroups.filter(function (g) { return g !== group; });
     disableOrderCards(group);  // 全组 disable:防双击/换选
     card.classList.add("picked");
-    addSystemHint("已选择订单 " + captured.order_id);
+    stickToBottom = true; // 点卡等同用户发言,视图跟随到底
+    addBubble("user", "选择订单 " + captured.order_id);
     setStreaming(true); // resume 轮同样独占会话,输入区锁定
-    resumeStream(captured, ui, { order_id: captured.order_id });
+    resumeStream(captured, { order_id: captured.order_id });
   }
 
-  // 点卡/预览卡 resume:输出追加到原挂起轮的助手区域,不新开用户气泡(spec §12)
-  async function resumeStream(captured, ui, extra) {
+  // 新建一条底部助手消息的轮次 UI 上下文;send 与 resume 共用
+  function newAssistantTurn() {
+    var row = addBubble("assistant", "");
+    var bubble = row.querySelector(".msg");
+    var badgesEl = document.createElement("div");
+    badgesEl.className = "tool-badges";
+    var badgeById = new Map(); // tool_call_id -> 徽标节点,本轮会话内有效
+    // 徽章条与气泡包进同一纵列(徽章在气泡正上方),不再作为头像旁的第三个 flex 子项被挤窄
+    var col = document.createElement("div");
+    col.className = "msg-col";
+    row.insertBefore(col, bubble);
+    col.appendChild(badgesEl);
+    col.appendChild(bubble);
+    return { row: row, col: col, bubble: bubble,
+             badgesEl: badgesEl, badgeById: badgeById };
+  }
+
+  // 静态徽标:确认提交工单的写调用在图节点内 execute_confirmed,无 tool_start/end 帧可挂
+  function addStaticBadge(badgesEl) {
+    var badge = document.createElement("span");
+    badge.className = "tool-badge ok";
+    badge.innerHTML = '<span class="dot"></span><span class="label"></span>';
+    badge.querySelector(".label").textContent = "调用了 create_ticket";
+    badgesEl.appendChild(badge);
+  }
+
+  // 点卡/预览卡 resume:点按先补用户气泡,答复作为底部全新助手消息追加,不回填原挂起轮
+  async function resumeStream(captured, extra, opts) {
+    var ui = newAssistantTurn();
     var row = ui.row, bubble = ui.bubble;
     row.classList.add("streaming");
-    bubble.style.display = ""; // 还原挂起时藏起的空气泡
     bubble.innerHTML = '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>';
+    if (opts && opts.ticketConfirm) addStaticBadge(ui.badgesEl);
     try {
       var resp = await fetch("/v1/chat/resume", {
         method: "POST",
@@ -1146,9 +1174,7 @@
       });
       if (resp.status === 409) {
         // 旧卡/已恢复卡/重复点击:服务端锁内已判定失效
-        bubble.style.display = "none";
-        bubble.textContent = "";
-        addSystemHint("该选择已失效，请重新描述您的问题");
+        failRow(row, bubble, "该选择已失效，请重新描述您的问题");
         return;
       }
       if (!resp.ok || !resp.body) {
@@ -1160,8 +1186,12 @@
         throw new Error(errText || ("请求失败（" + resp.status + "）"));
       }
       var out = await readChatStream(resp, ui);
-      if (!bubble.textContent) bubble.textContent = "(未收到回复)";
-      if (!row.classList.contains("error")) {
+      if (out.suspended && !row.classList.contains("error")) {
+        if (!bubble.textContent) bubble.style.display = "none"; // resume 再挂起:同 send 挂起处理
+      } else {
+        if (!bubble.textContent) bubble.textContent = "(未收到回复)";
+      }
+      if (!row.classList.contains("error") && !out.suspended) {
         if (out.citations && out.citations.length) renderCitations(bubble, out.citations);
         if (sessionId) addFeedback(ui.col, sessionId, fbReplyIndex++);
       }
@@ -1215,10 +1245,10 @@
     cancelBtn.className = "ticket-cancel";
     cancelBtn.textContent = "取消";
     confirmBtn.addEventListener("click", function () {
-      decideTicket(group, captured, "confirm", ui);
+      decideTicket(group, captured, "confirm");
     });
     cancelBtn.addEventListener("click", function () {
-      decideTicket(group, captured, "cancel", ui);
+      decideTicket(group, captured, "cancel");
     });
     btns.appendChild(confirmBtn);
     btns.appendChild(cancelBtn);
@@ -1227,18 +1257,22 @@
     card.appendChild(descLine);
     card.appendChild(btns);
     group.appendChild(card);
+    // 卡上方 caption:挂起轮气泡无正文时补静态文案,模型已流式出文则保留原文
+    if (!ui.bubble.textContent) ui.bubble.textContent = "请确认工单信息：";
     ui.col.appendChild(group);
     ticketGroups.push(group);
     scrollToBottom();
   }
 
-  function decideTicket(group, captured, decision, ui) {
+  function decideTicket(group, captured, decision) {
     if (streaming) return;
     ticketGroups = ticketGroups.filter(function (g) { return g !== group; });
     disableTicketCards(group);  // 全组 disable:防双击/换选
-    addSystemHint(decision === "confirm" ? "已确认提交工单" : "已取消建单");
+    stickToBottom = true; // 点卡等同用户发言,视图跟随到底
+    addBubble("user", decision === "confirm" ? "确认提交工单" : "取消建单");
     setStreaming(true); // resume 轮同样独占会话,输入区锁定
-    resumeStream(captured, ui, { decision: decision });
+    resumeStream(captured, { decision: decision },
+                 decision === "confirm" ? { ticketConfirm: true } : null);
   }
 
   /* ─── 退款申请表单层(ch06 spec §12):订单号只读回填,原因固定六类 ── */
@@ -1459,19 +1493,8 @@
     inputEl.style.height = "auto";
     stickToBottom = true; // 用户主动发言,视图跟随到底
     addBubble("user", text);
-    var row = addBubble("assistant", "");
-    var bubble = row.querySelector(".msg");
-    var badgesEl = document.createElement("div");
-    badgesEl.className = "tool-badges";
-    var badgeById = new Map(); // tool_call_id -> 徽标节点,本轮会话内有效
-    // 徽章条与气泡包进同一纵列(徽章在气泡正上方),不再作为头像旁的第三个 flex 子项被挤窄
-    var col = document.createElement("div");
-    col.className = "msg-col";
-    row.insertBefore(col, bubble);
-    col.appendChild(badgesEl);
-    col.appendChild(bubble);
-    var ui = { row: row, col: col, bubble: bubble,
-               badgesEl: badgesEl, badgeById: badgeById };
+    var ui = newAssistantTurn();
+    var row = ui.row, bubble = ui.bubble;
     row.classList.add("streaming");
     // 首个 token 到达前显示"正在输入"指示;textContent 赋值会自动将其替换
     bubble.innerHTML = '<span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>';
@@ -1495,13 +1518,14 @@
 
       var out = await readChatStream(resp, ui);
       if (out.suspended && !row.classList.contains("error")) {
-        bubble.style.display = "none"; // 挂起轮无正文,藏起空气泡等 resume 追加
+        // 挂起轮无正文则藏起空气泡;工单预览卡已写入「请确认工单信息:」caption,有内容则保留
+        if (!bubble.textContent) bubble.style.display = "none";
       } else {
         if (!bubble.textContent) bubble.textContent = "(未收到回复)";
       }
       if (!row.classList.contains("error") && !out.suspended) {
         if (out.citations && out.citations.length) renderCitations(bubble, out.citations);
-        if (sessionId) addFeedback(col, sessionId, fbReplyIndex++);
+        if (sessionId) addFeedback(ui.col, sessionId, fbReplyIndex++);
       }
     } catch (err) {
       failRow(row, bubble, err.message);

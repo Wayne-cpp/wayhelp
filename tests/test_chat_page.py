@@ -81,8 +81,9 @@ def test_chat_page_order_selector_and_refund_form():
     html = (Path(__file__).resolve().parent.parent
             / "app" / "static" / "chat.html").read_text(encoding="utf-8")
     # ch06 Task 11:订单选择器卡组 + 退款表单的 needle 钉(Vibe 例外,无 TDD)
+    # 2026-10:点卡改为底部用户气泡「选择订单 …」+ resume 新开助手消息(不再回填原挂起轮)
     for needle in ("order_selector", "interrupt_id", "/v1/chat/resume",
-                   "order-card", "已选择订单", "该选择已失效",
+                   "order-card", "选择订单", "该选择已失效",
                    "refund_form", "create_refund", "七天无理由", "拍错或多拍"):
         assert needle in html
 
@@ -90,8 +91,11 @@ def test_chat_page_order_selector_and_refund_form():
 def test_chat_page_ticket_preview_card():
     from pathlib import Path
     html = (Path(__file__).parent.parent / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    # 2026-10:确认/取消改为底部用户气泡 + resume 新开助手消息 + 静态徽标 + 卡上方 caption
     for needle in ("ticket_preview", "renderTicketPreview", "decideTicket",
                    "确认提交", "取消", "decision", "/v1/chat/resume",
+                   "确认提交工单", "取消建单", "请确认工单信息",
+                   "调用了 create_ticket", "newAssistantTurn",
                    "查在保", "查退货进度"):
         assert needle in html
 
