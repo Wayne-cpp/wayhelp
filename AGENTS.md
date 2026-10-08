@@ -7,7 +7,7 @@
 - `uv sync`;`cp .env.example .env` 填 OPENAI_* 与 EMBEDDING_API_KEY
 - `docker compose up -d`(MySQL,首启自动建表)→ `uv run uvicorn --factory app.main:create_app`
 - 可选:起业务 MCP Server——`make mcp-logistics` / `make mcp-after-sales`(或 `uv run python -m app.mcp_servers.logistics_server` / `after_sales_server`),.env 配 MCP_LOGISTICS_URL / MCP_AFTER_SALES_URL 后图内可用物流/售后工具;每轮动态发现,主服不重启(见 README「MCP Server」节)
-- `uv run pytest`(616 条,需 Docker 在线);页面:`/` 聊天、`/kb` 知识库、`/rag-eval` 评估
+- `uv run pytest`(617 条,需 Docker 在线);页面:`/` 聊天、`/kb` 知识库、`/rag-eval` 评估
 - 细节以 README.md 为准;逐章开发实录在 dev-notes/
 
 ## 目录与约定

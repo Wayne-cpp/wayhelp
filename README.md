@@ -13,13 +13,13 @@ docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversation
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch07-ddl.sql
 # 已有 ch07 数据卷的老库升级(不得删卷;docker 首启自动含 db/init/06-ddl.sql,新装可跳过):
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch08-ddl.sql
-uv run pytest                 # 测试 616 条(DB 用例需 Docker 在线)
+uv run pytest                 # 测试 617 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
 
 ## 工具链(ch02 新增)
-- LangChain `@tool` 五个业务工具(`app/tools/business.py`):`query_order` / `query_product` / `query_logistics`(演示用随机数据,不接真实接口)、`query_faq`(SQL LIKE 查 faq 表)、`create_ticket`(写 tickets 表)
+- LangChain `@tool` 五个业务工具(`app/tools/business.py`):`query_order` / `query_product` / `query_logistics`(演示用随机数据,不接真实接口)、`query_faq`(SQL LIKE 查 faq 表)、`create_ticket`(写 tickets 表)(ch08 起:工具迁 `app/tools/builtin/` 装饰器自登记 + MCP 每轮动态发现,query_logistics 内置下线改由物流 MCP Server 接管,create_ticket 改走预览卡确认流,见下文 MCP Server 节)
 - 基础设施:注册管理、参数 Schema 校验、错误处理、超时重试(`TOOL_TIMEOUT_SECONDS` / `TOOL_MAX_RETRIES`),工具结果截断后回灌模型
 - 聊天页:工具执行前推状态帧,气泡上方显示工具徽章;含工具调用的完整流水落 conversations/messages 表(ch07 起 tool 结果行不再落表,assistant 行仍带 tool_calls,见下文 ch07 节)
 
@@ -143,7 +143,7 @@ curl --noproxy '*' -X POST http://127.0.0.1:8000/v1/chat/action \
 - 图拓扑:`START → understand_query(指代消解:最近 6 个完整轮历史 + active_order 已校验订单摘要辅助,输出订单号须可溯源,失败降级透传不炸轮)→ classify_intent(八类意图,JSON 就 {intent, confidence} 两字段,路由只查写死的 ROUTE_TABLE)`;出口五路:business(物流/订单/商品咨询 → 主力 Agent 按需 query_faq)、refund(退款退货/售后 → refund_scope 三分支)、complaint / chitchat / other(固定节点零模型)
 - refund 子流程:refund_scope 判 general(不选单,直接强制检索)/ order_specific(先 refund_prepare:订单号在问句且唯一 → 直通;缺号或多候选 → `interrupt()` 挂起,驱动层发 order_selector 订单卡;`POST /v1/chat/resume` 按 interrupt_id 续跑,锁内校验归属,错归属 404 不泄露、卡片失效/重放 409)/ clarify(进 Agent 只澄清);refund_policy 强制检索(个案 + 开关 + hybrid_rerank 时扩写至多 4 查询并发、只按 chunk_id 合并后统一重排,扩写支路异常丢弃记 note、base 异常才整轮不可用),过闸进 Agent,卡闸固定话术
 - 订单数据:`app/services/orders.py` 确定性 mock(订单号 {用户命名空间}-{序号},如 1111-1001..1004;get_order/list_orders 归属校验,非本人/不存在均 None;不建订单表、不动 DDL)
-- 聊天 Agent 仍无写权限:图专用 `build_graph_tools` 只产只读工具(query_order/query_logistics 绑当前用户、query_product、无参 query_faq 以本轮 resolved_query 检索且同轮缓存)+ suggest_options 伪工具(擅传 order_id 等未知键回错误);退款单走 `POST /v1/chat/action` 的 create_refund 动作(六类固定原因,落 tickets 表,状态待处理;create_ticket 同端点);模型伪造 create_ticket/create_refund 只回 unknown_tool 不写库
+- 聊天 Agent 仍无写权限:图专用 `build_graph_tools` 只产只读工具(query_order/query_logistics 绑当前用户、query_product、无参 query_faq 以本轮 resolved_query 检索且同轮缓存)+ suggest_options 伪工具(擅传 order_id 等未知键回错误);退款单走 `POST /v1/chat/action` 的 create_refund 动作(六类固定原因,落 tickets 表,状态待处理;create_ticket 同端点);模型伪造 create_ticket/create_refund 只回 unknown_tool 不写库(ch08 起:`build_graph_tools` 退役,工具面改由 ToolCatalog 每轮装配 + 统一执行引擎把门,create_ticket 经预览卡确认流进图;退款单仍只走动作端点,见下文 MCP Server 节)
 - 前端:order_selector 帧渲染订单卡组(点选 → POST /resume,答复追加到原挂起轮;旧卡 disable/失效 409 提示);suggest_actions 的 refund_form 选项出「申请退款」按钮 → 退款表单(订单号服务端绑定只读回填、原因六类下拉)
 - SSE delta 三条件过滤:langgraph_node==main_agent + metadata.tags 含 chat_visible + AIMessageChunk,understand/classify/refund_scope/expand 等节点内部模型调用不外发;citations 帧在 log 提交成功后、DONE 前发,判定看整轮累计可见文本(带工具调用步骤的角标也能出卡)
 - 新增环境变量(config.py 默认值,.env.example 未列):UNDERSTAND_HISTORY_TURNS=6(指代消解历史轮数;ch07 已退役,历史用量改由三层预算公式接管)/ REFUND_EXPAND_ENABLED=true(退款个案扩写开关)/ INTENT_MODEL_NAME=None(reserved 未接线,意图双模型 cascade 明确不做)
