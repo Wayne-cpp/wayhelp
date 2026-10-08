@@ -1,7 +1,6 @@
 """ch08 内置工具自登记(spec §1.2):装饰器挂元数据,启动扫描收集。
 新工具 = 本包内新文件 + @builtin_tool,核心代码零改动。"""
 import importlib
-import pkgutil
 
 from app.tools.catalog import ToolSpec
 
