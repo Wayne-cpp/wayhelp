@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
@@ -184,12 +184,22 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        sched_task = None
+        if owns_runtime and settings.eval_schedule_enabled:
+            # ch09 评估定时(spec §5.5):单 worker 内存 task,不引 APScheduler
+            from app.services.eval_scheduler import eval_scheduler_loop
+            sched_task = asyncio.create_task(
+                eval_scheduler_loop(app.state.job_runner, settings))
         if owns_runtime:  # 生产:SQLite checkpointer 由 lifespan 托管,启停对称
             async with AsyncSqliteSaver.from_conn_string(settings.checkpoint_db_path) as cp:
                 service.set_graph(build_chat_graph(deps, cp))
                 yield
         else:
             yield
+        if sched_task is not None:  # 关闭先 cancel/wait 调度器,再收尾 job runner
+            sched_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await sched_task
         await app.state.job_runner.close()
         await app.state.summary_runner.aclose()
         from app.services.langfuse_tracing import flush_langfuse

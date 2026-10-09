@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     evidence_min_effective_score: float = Field(default=0.0)  # 待校准回填,占位保守值
     evidence_min_confidence: float = Field(default=0.0553)    # 待校准回填(暂沿用 rerank_min_score 冻结值)
     evidence_confidence_version: str = "uncalibrated"
+    # ch09 评估定时(spec §5.5):每日本地时区到点自动跑 eval-rag(烧额度可关);
+    # lifespan 挂单 worker 内存 task,不引 APScheduler
+    eval_schedule_enabled: bool = True
+    eval_schedule_hour: int = Field(default=3, ge=0, le=23)
+    eval_schedule_timezone: str = "Asia/Shanghai"
 
     @field_validator("tool_timeout_overrides", mode="before")
     @classmethod
