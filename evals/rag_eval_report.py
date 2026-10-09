@@ -13,6 +13,7 @@ GENERATION_COUNTERS = ("answerable_total", "answered", "answerable_refused", "ju
                        "faithful", "fabricated", "judge_errors", "d_total", "d_refused",
                        "degraded")
 REPORT_FILENAME = "rag_eval.json"
+CORPUS_MODE_BASELINE = "knowledge_docs_baseline"   # spec §5.5:基线语料只从 knowledge_docs 构建
 
 
 def _bucket_agg(bp: list[dict]) -> dict:
@@ -79,22 +80,27 @@ def new_run_id(now) -> str:
 
 
 def build_rag_eval(*, run_id, ts, elapsed_s, settings, cases, corpus_chunks,
-                   thresholds, test_metrics, gen_agg, faithfulness_cases, gates) -> dict:
+                   thresholds, test_metrics, gen_agg, faithfulness_cases, gates,
+                   corpus_version=None, dataset_version=None,
+                   evidence_confidence_version=None) -> dict:
     test = [c for c in cases if c["split"] == "test"]
     retrieval = {}
     for s in STRATEGIES:
         m = test_metrics[s]
+        overall = {"mrr": m["mrr_at_10"], "recall5": m["section_recall_at_5"],
+                   "evidence_coverage": m["complete_hit_at_10"],
+                   "sr10": m["section_recall_at_10"]}
+        if s == "hybrid_rerank":   # 在线策略臂:eval_runs 指标契约键(Task 11/spec §6)
+            overall["recall_at_10"] = m["section_recall_at_10"]
         retrieval[s] = {
             "threshold": thresholds[s]["threshold"],
             "ungated": bool(thresholds[s].get("ungated")),
-            "overall": {"mrr": m["mrr_at_10"], "recall5": m["section_recall_at_5"],
-                        "evidence_coverage": m["complete_hit_at_10"],
-                        "sr10": m["section_recall_at_10"]},
+            "overall": overall,
             "by_bucket": {b: {"mrr": bb["mrr_at_10"], "recall5": bb["recall5"],
                               "evidence_coverage": bb["evidence_coverage"]}
                           for b, bb in m["by_bucket"].items()},
         }
-        if thresholds[s].get("signal"):   # hybrid_rerank:本轮校准胜出的闸门置信信号
+        if thresholds[s].get("signal"):   # 历史兼容;ch09 起闸门口径冻结为 evidence_confidence
             retrieval[s]["signal"] = thresholds[s]["signal"]
     return {
         "meta": {"run_id": run_id, "ts": ts, "elapsed_s": round(elapsed_s, 1),
@@ -108,7 +114,12 @@ def build_rag_eval(*, run_id, ts, elapsed_s, settings, cases, corpus_chunks,
                  "embedding_model": settings.embedding_model,
                  "rerank_model": settings.rerank_model,
                  "eval_model": settings.model_name,
-                 "judge_model": settings.model_name},
+                 "judge_model": settings.model_name,
+                 # ch09 版本键(spec §5.5):趋势只连接版本相同的轮次
+                 "corpus_mode": CORPUS_MODE_BASELINE,
+                 "corpus_version": corpus_version,
+                 "dataset_version": dataset_version,
+                 "evidence_confidence_version": evidence_confidence_version},
         "retrieval": retrieval,
         "generation": {"online_strategy": "hybrid_rerank",
                        **{s: gen_agg[s] for s in STRATEGIES},
@@ -125,7 +136,9 @@ def validate_rag_eval(data) -> None:
     meta = data["meta"]
     for k in ("run_id", "ts", "total_cases", "calibration_cases", "test_cases",
               "answerable_test_cases", "d_test_cases", "corpus_chunks",
-              "embedding_model", "rerank_model", "eval_model", "judge_model"):
+              "embedding_model", "rerank_model", "eval_model", "judge_model",
+              "corpus_mode", "corpus_version", "dataset_version",
+              "evidence_confidence_version"):
         if k not in meta:
             raise ValueError(f"rag_eval meta 缺 {k}")
     gen = data["generation"]

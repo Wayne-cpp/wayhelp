@@ -13,7 +13,12 @@ calibration split × hybrid_rerank 臂,冻结产物 evals/calibration/evidence_c
 另:评估模型关思考模式(extra_body thinking disabled)——思考模式下合成的
 tool_call 消息缺 reasoning_content 会被 API 400,生产链路回放真实消息不受影响。
 bm25 硬门槛为不设闸原始命中口径(验收本意=BM25 路命中型号,与闸门无关)。
+ch09(Task 10):夜间/手动回归先读冻结 artifact(evals/calibration/
+evidence_confidence.json)并校验与 settings 完全一致,不一致/缺失 → 整轮失败
+不发布;hybrid_rerank 闸门口径 = 生产同一 evidence_confidence()(冻结参数),
+置信信号选拔段仅观测,不再决定闸门;--calibrate-evidence 自身不做该校验。
 """
+import hashlib
 import json
 import math
 import re
@@ -287,6 +292,66 @@ def _finish_evidence_calibration(cases: list[dict], settings: Settings,
     return 0
 
 
+def content_sha256(paths: list[Path]) -> str:
+    """语料内容指纹(spec §5.5):相对 ROOT 路径稳定排序,逐文件 sha256 汇总
+    (相对路径 + 内容哈希一行)后再整体 sha256;64 位 hex,与传入顺序无关。
+    ROOT 外的路径(测试临时目录)退化为绝对路径作排序键,仍稳定。"""
+    def _rel(p: Path) -> str:
+        rp = p.resolve()
+        try:
+            return rp.relative_to(ROOT).as_posix()
+        except ValueError:
+            return rp.as_posix()
+
+    lines = [f"{_rel(p)}\x00{hashlib.sha256(p.read_bytes()).hexdigest()}"
+             for p in sorted(paths, key=_rel)]
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def load_frozen_evidence(path: Path) -> dict:
+    """读冻结 artifact(spec §5.2);缺失/损坏 → SystemExit 整轮失败并提示先跑
+    --calibrate-evidence(校准是回归前置)。只在夜间/手动回归路径调用。"""
+    if not path.is_file():
+        raise SystemExit(f"[frozen] 冻结 artifact 缺失: {path}\n"
+                         "请先跑 uv run python evals/run_retrieval_compare.py"
+                         " --calibrate-evidence,人工评审后把冻结值回填 config.py")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"[frozen] 冻结 artifact 不可读({type(exc).__name__}: {exc});"
+                         "请重跑 --calibrate-evidence 重新生成") from exc
+    if not isinstance(data, dict):
+        raise SystemExit("[frozen] 冻结 artifact 顶层必须是 JSON 对象")
+    return data
+
+
+def check_evidence_frozen(settings, artifact: dict) -> None:
+    """回归前置闸(spec §5.2):artifact 必须与 settings 完全一致(version/权重/
+    有效分下限/阈值),任一不一致或缺失 → SystemExit 非零,整轮失败不发布报告。"""
+    if not isinstance(artifact, dict):
+        raise SystemExit("[frozen] artifact 非对象")
+    weights = artifact.get("weights") if isinstance(artifact.get("weights"), dict) else {}
+    expected = {"version": settings.evidence_confidence_version,
+                "weights.top1": settings.evidence_weight_top1,
+                "weights.count": settings.evidence_weight_count,
+                "weights.margin": settings.evidence_weight_margin,
+                "min_effective_score": settings.evidence_min_effective_score,
+                "threshold": settings.evidence_min_confidence}
+    actual = {"version": artifact.get("version"),
+              "weights.top1": weights.get("top1"),
+              "weights.count": weights.get("count"),
+              "weights.margin": weights.get("margin"),
+              "min_effective_score": artifact.get("min_effective_score"),
+              "threshold": artifact.get("threshold")}
+    mismatched = [k for k in expected if actual[k] != expected[k]]
+    if mismatched:
+        detail = "; ".join(f"{k}: settings={expected[k]!r} artifact={actual[k]!r}"
+                           for k in mismatched)
+        raise SystemExit("[frozen] 冻结 artifact 与 settings 不一致,整轮失败不发布:"
+                         f"{detail}\n请重跑 --calibrate-evidence 并把冻结值回填"
+                         " config.py(两侧必须同源)")
+
+
 _JUDGE_JSON_RE = re.compile(r"\{.*\}", re.S)
 
 
@@ -471,18 +536,21 @@ def _public_row(row: dict) -> dict:
 def _render_md(out: dict) -> str:
     lines = ["# 四策略检索对比 + 生成段 Faithfulness 评估(ch04 T12)", "",
              f"- 时间:{out['ts']};max_d_pass={out['max_d_pass']};"
-             f"语料:{out['corpus']};cases={out['cases_file']}", "",
+             f"语料:{out['corpus']}@{out['corpus_version'][:8]};"
+             f"cases={out['cases_file']}@{out['dataset_version'][:8]}", "",
              "## 校准冻结阈值(calibration 分片 = 每桶奇数编号)", "",
              "| strategy | threshold | D误通过率 | 误拒率 | pass-adj SR@10 |",
              "|---|---|---|---|---|"]
     for strat in STRATEGIES:
         th = out["thresholds"][strat]
         if th.get("ungated"):
-            lines.append(f"| {strat} | ungated(仅观测) | {th['d_pass_rate']:.3f} | "
-                         f"{th['over_refusal_rate']:.3f} | {th['pass_adjusted_recall']:.3f} |")
+            label = "ungated(仅观测)"
+        elif th.get("frozen"):
+            label = f"{th['threshold']:.4f}(冻结)"
         else:
-            lines.append(f"| {strat} | {th['threshold']:.4f} | {th['d_pass_rate']:.3f} | "
-                         f"{th['over_refusal_rate']:.3f} | {th['pass_adjusted_recall']:.3f} |")
+            label = f"{th['threshold']:.4f}"
+        lines.append(f"| {strat} | {label} | {th['d_pass_rate']:.3f} | "
+                     f"{th['over_refusal_rate']:.3f} | {th['pass_adjusted_recall']:.3f} |")
     ungated = [s for s in STRATEGIES if out["thresholds"][s].get("ungated")]
     if ungated:
         lines += ["", "> " + "/".join(ungated) +
@@ -490,18 +558,17 @@ def _render_md(out: dict) -> str:
                   "三项指标为不设闸口径,仅供观测(口径经用户批准 2026-09-16)。"]
     sc = out.get("confidence_signals", {}).get("hybrid_rerank")
     if sc:
-        chosen = out["thresholds"]["hybrid_rerank"].get("signal")
-        lines += ["", "### hybrid_rerank 置信信号选拔(calibration 分片;✓ = 胜出)", "",
+        lines += ["", "### hybrid_rerank 置信信号选拔(calibration 分片;仅观测——"
+                  "ch09 起闸门口径冻结为 evidence_confidence,日常回归不重选)", "",
                   "| signal | threshold | D误通过率 | 误拒率 | pass-adj SR@10 |",
                   "|---|---|---|---|---|---|"]
         for sig, th in sc.items():
-            mark = " ✓" if sig == chosen else ""
             if th.get("ungated"):
-                lines.append(f"| {sig}{mark} | ungated | {th['d_pass_rate']:.3f} | "
+                lines.append(f"| {sig} | ungated | {th['d_pass_rate']:.3f} | "
                              f"{th['over_refusal_rate']:.3f} | "
                              f"{th['pass_adjusted_recall']:.3f} |")
             else:
-                lines.append(f"| {sig}{mark} | {th['threshold']:.4f} | "
+                lines.append(f"| {sig} | {th['threshold']:.4f} | "
                              f"{th['d_pass_rate']:.3f} | {th['over_refusal_rate']:.3f} | "
                              f"{th['pass_adjusted_recall']:.3f} |")
     lines += ["", "## test 分片指标(偶数编号;被拒正例计 0,recall 族只宏平均 A/B/C/E)", "",
@@ -577,6 +644,19 @@ def main(argv: list[str]) -> int:
     if not settings.has_rerank_key():
         print("[compare] rerank/embedding key 均未配置", file=sys.stderr)
         return 2
+    # 版本指纹(spec §5.5):语料=实际导入文档路径+内容汇总哈希;评估集=文件原始字节哈希
+    corpus_version = content_sha256(sorted((ROOT / "knowledge_docs").glob("*.md")))
+    dataset_version = hashlib.sha256(CASES.read_bytes()).hexdigest()
+    frozen_gate: EvidenceGateParams | None = None
+    if not calibrate:   # 夜间/手动回归前置:不重选信号/阈值,读冻结 artifact 并校验一致
+        artifact = load_frozen_evidence(CALIBRATION_DIR / "evidence_confidence.json")
+        check_evidence_frozen(settings, artifact)
+        frozen_gate = EvidenceGateParams(
+            weight_top1=artifact["weights"]["top1"],
+            weight_count=artifact["weights"]["count"],
+            weight_margin=artifact["weights"]["margin"],
+            min_effective_score=artifact["min_effective_score"],
+            threshold=artifact["threshold"], version=artifact["version"])
     main_engine = make_engine(settings.database_url)
     try:  # faith_cases 写主业务库:先只读校验 ch04 表,再做任何远程调用
         check_ch04_tables(main_engine)
@@ -649,19 +729,31 @@ def main(argv: list[str]) -> int:
                         "recall10": section_recall_at_k(c["retrieval"][strat]["paths"],
                                                         c["gt_groups"], 10)}
                        for c in calibration]
-            if strat == "hybrid_rerank":  # 置信信号选拔:四信号同口径竞争
-                winner, th, all_sig = choose_confidence_signal(samples, max_d_pass)
-                thresholds[strat] = {k: v for k, v in th.items() if k != "pareto"}
-                thresholds[strat]["signal"] = winner
-                pareto[strat] = all_sig[winner]["pareto"]
+            if strat == "hybrid_rerank":  # ch09:闸门口径已冻结,选拔仅观测不决定闸门
+                _, _, all_sig = choose_confidence_signal(samples, max_d_pass)
                 signal_choice[strat] = {s: {k: v for k, v in r.items() if k != "pareto"}
                                         for s, r in all_sig.items()}
-                print(f"[compare] {strat}: signal={winner} "
-                      f"threshold={fmt_th(thresholds[strat]['threshold'])} "
-                      f"d_pass={thresholds[strat]['d_pass_rate']:.3f} "
-                      f"over_refusal={thresholds[strat]['over_refusal_rate']:.3f} "
-                      f"par={thresholds[strat]['pass_adjusted_recall']:.3f} "
-                      f"(候选信号 {len(all_sig)} 个)")
+                # 冻结口径指标:置信分 = 生产同一 evidence_confidence(artifact 参数),
+                # 三项率在 calibration 分片上离线施加 artifact threshold
+                conf_samples = [
+                    {"bucket": c["bucket"], "should_refuse": c["should_refuse"],
+                     "top1": evidence_confidence(c["retrieval"][strat]["scores"],
+                                                 frozen_gate),
+                     "recall10": section_recall_at_k(c["retrieval"][strat]["paths"],
+                                                     c["gt_groups"], 10)}
+                    for c in calibration]
+                _, pos, neg = _threshold_candidates(conf_samples)
+                d_rate, over_refusal, par = _score_threshold(pos, neg,
+                                                             frozen_gate.threshold)
+                thresholds[strat] = {"threshold": frozen_gate.threshold, "frozen": True,
+                                     "d_pass_rate": d_rate,
+                                     "over_refusal_rate": over_refusal,
+                                     "pass_adjusted_recall": par}
+                pareto[strat] = _pareto_rows(conf_samples, max_d_pass)
+                print(f"[compare] {strat}: 冻结闸 evidence_confidence"
+                      f"(v={frozen_gate.version}) threshold={frozen_gate.threshold:.4f} "
+                      f"d_pass={d_rate:.3f} over_refusal={over_refusal:.3f} "
+                      f"par={par:.3f}(信号选拔仅观测,{len(all_sig)} 个候选)")
                 continue
             try:
                 thresholds[strat] = choose_strategy_threshold(samples, max_d_pass)
@@ -680,11 +772,11 @@ def main(argv: list[str]) -> int:
                       f"over_refusal={th['over_refusal_rate']:.3f} "
                       f"par={th['pass_adjusted_recall']:.3f} "
                       f"(可行候选 {len(pareto[strat])} 个)")
-        for c in cases:  # 闸值口径:hybrid_rerank 用胜出信号值,其余用 top1
-            for strat in STRATEGIES:
+        for c in cases:  # 闸值口径:hybrid_rerank 用生产同一 evidence_confidence(冻结
+            for strat in STRATEGIES:  # 参数,spec §5.2),其余策略沿用 top1
                 r = c["retrieval"][strat]
-                sig = thresholds[strat].get("signal")
-                r["gate"] = r["signals"][sig] if sig else r["top1"]
+                r["gate"] = (evidence_confidence(r["scores"], frozen_gate)
+                             if strat == "hybrid_rerank" else r["top1"])
         test_cases = [c for c in cases if c["split"] == "test"]
         metrics = {strat: _test_metrics(test_cases, strat, thresholds[strat]["threshold"])
                    for strat in STRATEGIES}
@@ -726,6 +818,8 @@ def main(argv: list[str]) -> int:
             "embedding_model": settings.embedding_model,
             "corpus_chunks": len(chunk_meta), "cases_file": CASES.name,
             "corpus": "knowledge_docs/",
+            "corpus_mode": "knowledge_docs_baseline",
+            "corpus_version": corpus_version, "dataset_version": dataset_version,
             "thresholds": thresholds, "pareto": pareto,
             "confidence_signals": signal_choice,
             "test_metrics": metrics,
@@ -767,7 +861,9 @@ def main(argv: list[str]) -> int:
             run_id=run_id, ts=out["ts"], elapsed_s=time.monotonic() - _t0,
             settings=settings, cases=cases, corpus_chunks=len(chunk_meta),
             thresholds=thresholds, test_metrics=metrics, gen_agg=gen_agg,
-            faithfulness_cases=faith_rows, gates=gates)
+            faithfulness_cases=faith_rows, gates=gates,
+            corpus_version=corpus_version, dataset_version=dataset_version,
+            evidence_confidence_version=settings.evidence_confidence_version)
         validate_rag_eval(report)          # 校验通过才动台账
         if faith_rows:                     # 单事务批量 upsert;失败 → 不发布本轮
             with main_sf() as s:
