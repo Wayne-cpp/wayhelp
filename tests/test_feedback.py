@@ -261,3 +261,29 @@ async def test_feedback_endpoint_contract(db_session_factory):
                          sentiment="down")
         assert r5.status_code == 422
         assert r5.json()["error"]["code"] == "invalid_request"
+
+
+def test_turn_written_by_store_is_feedback_eligible(db_session_factory):
+    """验收回归:生产写路径(commit_turn)落库的最终回答行必须可反馈。
+
+    显式 tool_calls=None 经默认 JSON 列落成 JSON null 而非 SQL NULL,
+    _validate_turn/annotate 的 SQL is_(None) 全落空 → 线上 👎 一律 409。"""
+    from app.sessions import StoredMessage
+    from app.store_db import DbSessionStore
+
+    async def _seed():
+        store = DbSessionStore(db_session_factory, max_message_chars=8000)
+        sid = await store.create("u1")
+        r = await store.commit_turn(sid, [StoredMessage("user", "怎么退货"),
+                                          StoredMessage("assistant", "答复")])
+        return sid, r.message_ids
+    sid, ids = asyncio.run(_seed())
+    out = _submit(db_session_factory, _NoHistoryGraph(),
+                  conversation_id=sid, assistant_message_id=ids[1],
+                  sentiment="down")
+    assert out["status"] == "recorded"
+    with db_session_factory() as s:  # 钉死写入形态:无调用即 SQL NULL
+        row = s.get(Message, int(ids[1]))
+        assert row.tool_calls is None
+        assert s.query(Message).filter(Message.id == int(ids[1]),
+                                       Message.tool_calls.is_(None)).count() == 1

@@ -38,7 +38,7 @@ class Message(Base):
     )
     role: Mapped[str] = mapped_column(Enum("user", "assistant", "tool", name="msg_role"))
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tool_calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    tool_calls: Mapped[list | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
