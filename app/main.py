@@ -15,7 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from app.config import Settings
-from app.db import check_ch04_tables, check_ch07_tables, check_ch08_tables, make_engine, make_session_factory, ping
+from app.db import check_ch04_tables, check_ch07_tables, check_ch08_tables, check_ch09_tables, make_engine, make_session_factory, ping
 from app.graph.builder import build_chat_graph
 from app.graph.nodes import GraphDeps
 from app.jobs.runner import JobRunner
@@ -70,6 +70,7 @@ def _build_production_runtime(settings: Settings, model) -> AppRuntime:
         check_ch04_tables(engine)  # 缺表启动失败,提示升级命令
         check_ch07_tables(engine)  # 缺 ch07 列/表同样启动失败,提示升级命令
         check_ch08_tables(engine)  # 缺 ch08 审计/幂等表同样启动失败,提示升级命令
+        check_ch09_tables(engine)  # 缺 ch09 表/列同样启动失败,提示升级命令
     except RuntimeError:
         raise
     except Exception as exc:

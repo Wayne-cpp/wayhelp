@@ -18,9 +18,11 @@ DDL_PATHS = [
     Path(__file__).resolve().parent.parent / "db" / "init" / "04-ddl.sql",
     Path(__file__).resolve().parent.parent / "db" / "init" / "05-ddl.sql",
     Path(__file__).resolve().parent.parent / "db" / "init" / "06-ddl.sql",
+    Path(__file__).resolve().parent.parent / "db" / "init" / "07-ddl.sql",
 ]
-TABLES = ("tool_audit_logs", "tool_write_idempotency",
-          "faith_cases", "low_confidence_questions", "knowledge_chunks",
+TABLES = ("chat_feedback", "tool_audit_logs", "tool_write_idempotency",
+          "faith_cases", "low_confidence_questions", "review_queue", "eval_runs",
+          "knowledge_chunks",
           "qa_extraction_staging", "qa_mining_progress",
           "messages", "conversation_summaries", "tickets", "faq",
           "conversations")  # 先子后父

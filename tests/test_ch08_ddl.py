@@ -44,7 +44,9 @@ def test_startup_probe_raises_when_missing(db_engine):
             check_ch08_tables(db_engine)
     finally:
         from tests.dbfixtures import _split_statements, DDL_PATHS
+        # DDL_PATHS[-1] 已随 ch07/ch09 追加不再是 ch08,按文件名显式选 06(照 test_db_ch04 同款)
+        ddl = [p for p in DDL_PATHS if p.name == "06-ddl.sql"][0]
         with db_engine.connect() as c2:
-            for stmt in _split_statements(DDL_PATHS[-1].read_text(encoding="utf-8")):
+            for stmt in _split_statements(ddl.read_text(encoding="utf-8")):
                 c2.execute(text(stmt))
             c2.commit()

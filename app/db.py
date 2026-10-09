@@ -56,3 +56,23 @@ def check_ch08_tables(engine) -> None:
     if missing:
         raise RuntimeError(
             f"缺少 ch08 表 {missing}:请先执行 mysql wayhelp < sql/ch08-ddl.sql")
+
+
+_CH09_TABLES = ("review_queue", "chat_feedback", "eval_runs")
+_CH09_LCQ_COLS = {"retrieved_chunks", "resolved_question", "turn_message_id",
+                  "matched_review_id", "process_status", "attempt_count",
+                  "next_attempt_at", "last_error"}
+
+
+def check_ch09_tables(engine) -> None:
+    """缺 ch09 表/列启动失败并提示升级命令。"""
+    with engine.connect() as conn:
+        tables = {r[0] for r in conn.execute(text("SHOW TABLES"))}
+        cols = {r[0] for r in conn.execute(
+            text("SHOW COLUMNS FROM low_confidence_questions"))}
+    missing = [t for t in _CH09_TABLES if t not in tables]
+    if missing or not _CH09_LCQ_COLS <= cols:
+        raise RuntimeError(
+            f"缺少 ch09 表结构(缺表 {missing},lcq 缺列 "
+            f"{sorted(_CH09_LCQ_COLS - cols)}):请先执行 "
+            f"mysql wayhelp < sql/ch09-ddl.sql")

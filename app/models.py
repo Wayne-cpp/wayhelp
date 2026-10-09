@@ -145,6 +145,18 @@ class LowConfidenceQuestion(Base):
     source: Mapped[str] = mapped_column(
         Enum("retrieval_low_conf", "self_check", "user_feedback", name="lcq_source"))
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retrieved_chunks: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    resolved_question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    turn_message_id: Mapped[int | None] = mapped_column(BIGINT(unsigned=True), nullable=True)
+    matched_review_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("review_queue.id", ondelete="SET NULL"),
+        nullable=True)
+    process_status: Mapped[str] = mapped_column(
+        Enum("pending", "processed", "failed", name="lcq_process_status"),
+        default="pending")
+    attempt_count: Mapped[int] = mapped_column(INTEGER(unsigned=True), default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -194,4 +206,55 @@ class ToolWriteIdempotency(Base):
     idempotency_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     arguments_sha256: Mapped[str] = mapped_column(String(64))
     ticket_no: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ReviewQueue(Base):
+    __tablename__ = "review_queue"
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    normalized_question: Mapped[str] = mapped_column(String(512))
+    ai_suggested_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occurrence_count: Mapped[int] = mapped_column(INTEGER(unsigned=True), default=1)
+    review_status: Mapped[str] = mapped_column(
+        Enum("待审", "写入中", "通过", "驳回", name="review_status"), default="待审")
+    approved_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    knowledge_chunk_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    last_write_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ChatFeedback(Base):
+    __tablename__ = "chat_feedback"
+    __table_args__ = (UniqueConstraint("conversation_id", "assistant_message_id",
+                                       name="uk_cf_conv_msg"),)
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("conversations.id"))
+    assistant_message_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("messages.id"))
+    turn_message_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("messages.id"))
+    sentiment: Mapped[str] = mapped_column(Enum("up", "down", name="fb_sentiment"))
+    low_confidence_question_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("low_confidence_questions.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class EvalRun(Base):
+    __tablename__ = "eval_runs"
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(64), unique=True)
+    triggered_by: Mapped[str] = mapped_column(
+        Enum("定时", "手动", name="eval_trigger"), default="定时")
+    dataset_size: Mapped[int] = mapped_column(INTEGER(unsigned=True))
+    corpus_mode: Mapped[str] = mapped_column(String(32), default="knowledge_docs_baseline")
+    corpus_version: Mapped[str] = mapped_column(String(64))
+    dataset_version: Mapped[str] = mapped_column(String(64))
+    metrics: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

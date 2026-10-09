@@ -5,7 +5,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 # (db/init 序号, sql/ 章节名):两侧 DDL 必须逐字节一致(db/init 供 compose 自动建表,sql/ 供人工执行)
-DDL_PAIRS = [("01", "ch02"), ("03", "ch03"), ("04", "ch04"), ("05", "ch07"), ("06", "ch08")]
+DDL_PAIRS = [("01", "ch02"), ("03", "ch03"), ("04", "ch04"), ("05", "ch07"), ("06", "ch08"), ("07", "ch09")]
 
 
 @pytest.mark.parametrize(("init_name", "sql_stem"), DDL_PAIRS)
