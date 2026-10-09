@@ -966,12 +966,10 @@
     }
   }
 
-  /* ─── 满意度反馈:一次锁定,localStorage 按 会话+回复序号 持久化 ─── */
-  var fbSessionId = null; // 当前计数归属的会话;换会话即重新从 0 计
-  var fbReplyIndex = 0;
-
-  function addFeedback(col, sessionId, replyIndex) {
-    var key = "fb:" + sessionId + ":" + replyIndex;
+  /* ─── 满意度反馈:turn_committed 落库锚点才启用;localStorage 仅做显示缓存 ─── */
+  // assistantMessageId 是 BIGINT,全程字符串持有(含 fetch 体),不进 Number()
+  function addFeedback(col, sessionId, assistantMessageId, serverSentiment) {
+    var key = "fb:" + sessionId + ":" + assistantMessageId;
     var fb = document.createElement("div");
     fb.className = "feedback";
     var up = document.createElement("button");
@@ -985,30 +983,51 @@
     text.className = "fb-text";
     text.textContent = "这条回答有帮助吗?";
 
-    function lock(choice) {
+    function lock(choice, label) {
       up.classList.toggle("selected", choice === "up");
       down.classList.toggle("selected", choice === "down");
       up.disabled = true;
       down.disabled = true;
-      text.textContent = "已反馈";
+      text.textContent = label || "已反馈";
     }
 
-    up.addEventListener("click", function () {
-      try { localStorage.setItem(key, "up"); } catch (e) { /* 隐私模式静默 */ }
-      lock("up");
-    });
-    down.addEventListener("click", function () {
-      try { localStorage.setItem(key, "down"); } catch (e) { /* 隐私模式静默 */ }
-      lock("down");
-    });
+    function send(choice) {
+      up.disabled = true;   // 请求在途先防双击,失败再解锁
+      down.disabled = true;
+      fetch("/v1/chat/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId, conversation_id: sessionId,
+          assistant_message_id: assistantMessageId, sentiment: choice
+        })
+      }).then(function (r) {
+        if (r.status === 409) {  // 已反馈过(异向情感):锁住,不知道原方向就不点亮
+          lock(null, "已反馈过");
+          return;
+        }
+        if (!r.ok) throw new Error("feedback failed " + r.status);
+        try { localStorage.setItem(key, choice); } catch (e) { /* 隐私模式静默 */ }
+        lock(choice);
+      }).catch(function () {  // 网络失败:不锁,允许重试
+        up.disabled = false;
+        down.disabled = false;
+        text.textContent = "反馈失败，请重试";
+      });
+    }
+
+    up.addEventListener("click", function () { send("up"); });
+    down.addEventListener("click", function () { send("down"); });
     fb.appendChild(up);
     fb.appendChild(down);
     fb.appendChild(text);
     col.appendChild(fb);
 
-    // 重进页面/重渲染历史时按 localStorage 恢复锁定态
-    var saved = null;
-    try { saved = localStorage.getItem(key); } catch (e) { /* 同上 */ }
+    // 状态恢复:服务端反馈态优先(历史回载),其次 localStorage 显示缓存
+    var saved = serverSentiment;
+    if (saved !== "up" && saved !== "down") {
+      try { saved = localStorage.getItem(key); } catch (e) { /* 同上 */ }
+    }
     if (saved === "up" || saved === "down") lock(saved);
   }
 
@@ -1193,7 +1212,8 @@
       }
       if (!row.classList.contains("error") && !out.suspended) {
         if (out.citations && out.citations.length) renderCitations(bubble, out.citations);
-        if (sessionId) addFeedback(ui.col, sessionId, fbReplyIndex++);
+        if (out.committed) addFeedback(ui.col, out.committed.conversation_id,
+                                        out.committed.assistant_message_id);
       }
     } catch (err) {
       failRow(row, bubble, err.message);
@@ -1447,10 +1467,6 @@
         var evt;
         try { evt = JSON.parse(data); } catch (e) { return; }
         if (evt.type === "session") {
-          if (fbSessionId !== evt.session_id) {
-            fbSessionId = evt.session_id; // 新会话,反馈序号从 0 重新计
-            fbReplyIndex = 0;
-          }
           var wasNewSession = sessionId === null; // 此前为 null = 本轮开启新会话
           sessionId = evt.session_id;
           if (wasNewSession) onSessionEstablished();
@@ -1466,6 +1482,13 @@
           scrollToBottom();
         } else if (evt.type === "citations") {
           out.citations = evt.citations || [];
+        } else if (evt.type === "turn_committed") {
+          // 落库锚点:本轮 👍👎 的身份来源;挂起轮未提交,不发此帧也就无按钮
+          out.committed = {
+            conversation_id: String(evt.conversation_id),
+            turn_message_id: String(evt.turn_message_id),
+            assistant_message_id: String(evt.assistant_message_id)
+          };
         } else if (evt.type === "suggest_actions") {
           renderActions(ui.col, evt);  // 帧在 commit 成功后、DONE 前到达,直接渲染
         } else if (evt.type === "order_selector") {
@@ -1525,7 +1548,8 @@
       }
       if (!row.classList.contains("error") && !out.suspended) {
         if (out.citations && out.citations.length) renderCitations(bubble, out.citations);
-        if (sessionId) addFeedback(ui.col, sessionId, fbReplyIndex++);
+        if (out.committed) addFeedback(ui.col, out.committed.conversation_id,
+                                        out.committed.assistant_message_id);
       }
     } catch (err) {
       failRow(row, bubble, err.message);
@@ -1581,8 +1605,17 @@
     suggestionsEl = null;
   }
 
-  function appendHistoryBubble(role, content) {
-    addBubble(role, content);  // 只读回放:纯文本气泡,不带徽章/引用/按钮
+  function appendHistoryBubble(m, convId) {
+    var row = addBubble(m.role, m.content || "");
+    // 只读回放:纯文本气泡,不带徽章/引用;当轮最终回答补反馈态(服务端口径)
+    if (m.role === "assistant" && m.feedback_eligible && m.id) {
+      var bubble = row.querySelector(".msg");
+      var col = document.createElement("div"); // 同 newAssistantTurn 的纵列包法
+      col.className = "msg-col";
+      row.insertBefore(col, bubble);
+      col.appendChild(bubble);
+      addFeedback(col, String(convId), String(m.id), m.feedback_sentiment);
+    }
   }
 
   function showToast(text) {
@@ -1641,7 +1674,7 @@
       if (!resp.ok) throw new Error(String(resp.status));
       var msgs = await resp.json();
       clearMessageList();
-      (msgs || []).forEach(function (m) { appendHistoryBubble(m.role, m.content); });
+      (msgs || []).forEach(function (m) { appendHistoryBubble(m, id); });
       sessionId = id;
       renderConversationListActive(id);
     } catch (e) {

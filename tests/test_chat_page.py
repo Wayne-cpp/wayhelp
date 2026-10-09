@@ -111,3 +111,13 @@ def test_chat_page_has_sidebar_and_conversation_api():
     assert "conv-item" in html and "已摘要" in html
     assert "loadConversations" in html and "switchConversation" in html
     assert "display" in html and "catch" in html  # 静默降级路径存在
+
+
+def test_ch09_feedback_wiring():
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent
+            / "app" / "static" / "chat.html").read_text(encoding="utf-8")
+    assert "/v1/chat/feedback" in html
+    assert "turn_committed" in html
+    assert "assistant_message_id" in html
+    assert "feedback_eligible" in html

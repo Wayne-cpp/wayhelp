@@ -77,6 +77,36 @@ async def _recover_snapshot(graph, conversation_id: str, aid: int, turn_id: int,
     return {"chunks": None, "resolved": None, "retrieval": "missing"}
 
 
+def annotate_messages(session_factory, conversation_id: int,
+                      messages: list[dict]) -> list[dict]:
+    """给历史消息补 feedback_eligible/feedback_sentiment;无反馈列表演进为全 None。
+
+    最终回答口径与 _validate_turn 一致:两个相邻 user 行之间(或末尾)最后一条
+    合法 assistant(有正文、无 tool_calls,以账本行为准);id 均按 int 比较。"""
+    with session_factory() as s:
+        rows = (s.query(Message.id).filter(
+            Message.conversation_id == conversation_id,
+            Message.role == "assistant", Message.content.isnot(None),
+            Message.tool_calls.is_(None)).order_by(Message.id).all())
+        fbs = {r.assistant_message_id: r.sentiment
+               for r in s.query(ChatFeedback)
+               .filter_by(conversation_id=conversation_id).all()}
+    final_ids = set()
+    user_bounds = [int(m["id"]) for m in messages if m["role"] == "user"]
+    bounds = sorted(user_bounds) + [1 << 62]
+    for lo, hi in zip([0, *bounds[:-1]], bounds):
+        cands = [i for i, in rows if lo < i < hi]
+        if cands:
+            final_ids.add(cands[-1])
+    out = []
+    for m in messages:
+        mid = int(m["id"])
+        out.append({**m,
+                    "feedback_eligible": m["role"] == "assistant" and mid in final_ids,
+                    "feedback_sentiment": fbs.get(mid)})
+    return out
+
+
 async def submit_feedback(*, settings, session_factory, graph, user_id: str,
                           conversation_id: str, assistant_message_id: str,
                           sentiment: str, on_pooled=None) -> dict:
