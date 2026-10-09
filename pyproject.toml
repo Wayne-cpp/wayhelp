@@ -19,6 +19,8 @@ dependencies = [
   "langgraph-checkpoint-sqlite>=3.1.1",
   "mcp>=1,<2",
   "langchain-mcp-adapters>=0.1,<1",
+  "langfuse>=3.15.0,<4",  # ch09 可观测性;v3 末代 SDK(Context7 核实兼容 langchain-core v1),spec 冻结不进 v4
+  "langchain>=1,<2",  # langfuse.langchain.CallbackHandler 模块级探测导入;v1 分支实际只用 langchain_core
 ]
 
 [dependency-groups]

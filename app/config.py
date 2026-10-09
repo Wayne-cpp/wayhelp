@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     tool_write_timeout_seconds: float = Field(default=10, gt=0)    # 写路径超时(超时≠没执行,绝不重试)
     tool_timeout_overrides: dict[str, float] = Field(default_factory=dict)  # JSON 按名覆盖等待期限(运维 knob/故障注入)
     audit_result_max_chars: int = Field(default=2000, gt=0)        # 审计 result_summary 截断
+    # ch09 可观测性(spec §5.1):未配齐密钥 = 完全不挂回调,系统行为不变
+    langfuse_enabled: bool = False
+    langfuse_host: str = "http://localhost:3000"
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
 
     @field_validator("tool_timeout_overrides", mode="before")
     @classmethod
@@ -106,3 +111,7 @@ class Settings(BaseSettings):
 
     def has_embedding_key(self) -> bool:
         return bool(self.embedding_api_key.strip())
+
+    def has_langfuse_key(self) -> bool:
+        return bool(self.langfuse_public_key.strip()
+                    and self.langfuse_secret_key.strip())
