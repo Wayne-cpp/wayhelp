@@ -6,8 +6,8 @@ from app.services import langfuse_tracing as lt
 
 
 def _settings(**kw):
-    base = dict(openai_base_url="http://x", openai_api_key="k", model_name="m",
-                database_url="mysql+pymysql://u:p@h/d")
+    base = dict(_env_file=None, openai_base_url="http://x", openai_api_key="k",
+                model_name="m", database_url="mysql+pymysql://u:p@h/d")
     base.update(kw)
     return Settings(**base)
 

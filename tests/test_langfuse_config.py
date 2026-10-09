@@ -3,14 +3,14 @@ from app.config import Settings
 
 
 def test_langfuse_disabled_by_default():
-    s = Settings(openai_base_url="http://x", openai_api_key="k",
+    s = Settings(_env_file=None, openai_base_url="http://x", openai_api_key="k",
                  model_name="m", database_url="mysql+pymysql://u:p@h/d")
     assert s.langfuse_enabled is False
     assert s.has_langfuse_key() is False
 
 
 def test_langfuse_key_detection():
-    s = Settings(openai_base_url="http://x", openai_api_key="k",
+    s = Settings(_env_file=None, openai_base_url="http://x", openai_api_key="k",
                  model_name="m", database_url="mysql+pymysql://u:p@h/d",
                  langfuse_enabled=True, langfuse_public_key="pk-lf-x",
                  langfuse_secret_key="sk-lf-x")
