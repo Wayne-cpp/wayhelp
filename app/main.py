@@ -41,9 +41,11 @@ from app.routers.jobs import router as jobs_router
 from app.routers.kb import router as kb_router
 from app.routers.rag_eval import eval_runs_router
 from app.routers.rag_eval import router as rag_eval_router
+from app.routers.review import router as review_router
 from app.services import eval_runs as eval_runs_service
 from app.services import rag_eval as rag_eval_service
 from app.services.rag_eval import ReportCorruptError
+from app.services.review_service import ReviewError
 from app.services.chat_service import ChatService
 from app.services.flywheel import FlywheelWorker
 from app.services.kb_admin import DEFAULT_DOCS_DIR, KbAdminError
@@ -243,6 +245,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.include_router(jobs_router)
     app.include_router(rag_eval_router)
     app.include_router(eval_runs_router)
+    app.include_router(review_router)
 
     root_dir = Path(__file__).resolve().parent.parent
     app.state.rag_eval_report_path = root_dir / "evals" / "results" / "rag_eval.json"
@@ -314,6 +317,11 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
 
     @app.exception_handler(KbAdminError)
     async def _(request: Request, exc: KbAdminError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status,
+                            content=_error_body(exc.code, exc.message))
+
+    @app.exception_handler(ReviewError)
+    async def _(request: Request, exc: ReviewError) -> JSONResponse:
         return JSONResponse(status_code=exc.status,
                             content=_error_body(exc.code, exc.message))
 
