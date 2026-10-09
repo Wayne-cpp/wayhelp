@@ -36,6 +36,7 @@ from app.services.context_layers import (
     build_layered_view, evaluate_degrade, needs_reconcile, reconcile_checkpoint_ids,
     render_history_text,
 )
+from app.services.langfuse_tracing import tag_intent
 from app.services.token_budget import compute_budget, measure_sys_tokens
 from app.sessions import (
     ContextMeta, LowConfidenceRecord, PersistedTurn, StoredMessage,
@@ -229,6 +230,7 @@ def build_front_nodes(deps: GraphDeps) -> dict:
         else:
             intent, confidence = parsed
         route = ROUTE_TABLE[intent]
+        tag_intent(intent, confidence)  # ch09:回写 trace 元数据;未启用 no-op
         logger.info("node=classify_intent intent=%s confidence=%s route=%s",
                     intent, confidence, route)
         return {"intent": intent, "intent_confidence": confidence, "route": route,
@@ -619,6 +621,9 @@ def build_log_node(deps: GraphDeps):
         out = {"messages": stamped,
                "source_message_id": result.source_message_id,
                "node_trace": [*state["node_trace"], {"node": "log"}]}
+        tid = (config.get("configurable") or {}).get("trace_id")
+        if tid:
+            out["trace_id"] = tid  # ch09:trace_id 落 checkpoint,resume 续传
         oc = state.get("order_context")
         if oc:  # 仅已完成轮建立/替换同 thread 订单焦点(spec §10)
             out["active_order"] = {"order_id": oc["order_id"],

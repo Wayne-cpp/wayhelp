@@ -189,6 +189,8 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
             yield
         await app.state.job_runner.close()
         await app.state.summary_runner.aclose()
+        from app.services.langfuse_tracing import flush_langfuse
+        flush_langfuse()  # ch09:进程退出前投递残余 trace 事件
         from app.tools.executor import PENDING_WRITE_TASKS
         if PENDING_WRITE_TASKS:
             await asyncio.gather(*PENDING_WRITE_TASKS, return_exceptions=True)

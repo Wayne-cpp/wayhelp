@@ -51,6 +51,9 @@ class ChatGraphState(TypedDict, total=False):
     turn_messages: list[BaseMessage]
     source_message_id: str | None
     node_trace: list[dict]
+    turn_message_id: int | None            # ch09:本轮用户行 id(prepare 落库盖章)
+    final_assistant_message_id: int | None # ch09:本轮最终回答行 id(log 提交后盖章)
+    trace_id: str | None                   # ch09:Langfuse trace 续传锚点
 
 
 def new_turn_state(raw_query: str, user_db_id: int | str | None = None) -> dict:
@@ -91,4 +94,7 @@ def new_turn_state(raw_query: str, user_db_id: int | str | None = None) -> dict:
         "turn_messages": [first],
         "source_message_id": None,
         "node_trace": [],
+        "turn_message_id": int(user_db_id) if user_db_id is not None else None,
+        "final_assistant_message_id": None,
+        "trace_id": None,
     }

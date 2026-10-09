@@ -14,6 +14,7 @@ from app.errors import (
 from app.graph.errors import TurnAbortError
 from app.graph.state import new_turn_state
 from app.prompts.service import FALLBACK_ANSWER
+from app.services.langfuse_tracing import build_trace_config, new_trace_id
 from app.sessions import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -219,6 +220,23 @@ class ChatService:
             yield SessionEvent(turn.session_id)
             config = {"configurable": {"thread_id": turn.session_id,
                                        "user_id": turn.user_id}}
+            # ch09:trace 续传——resume 轮从 checkpoint 拿回原 trace_id/intent,
+            # 模型/工具消耗归到原意图,服务重启后 resume 也不进 unknown
+            trace_id = None
+            intent = confidence = None
+            if turn.resume_command is not None:
+                st = await self._graph.aget_state(config)
+                vals = st.values or {}
+                trace_id = vals.get("trace_id")
+                intent = vals.get("intent")
+                confidence = vals.get("intent_confidence")
+            if trace_id is None:
+                trace_id = new_trace_id()
+            config["configurable"]["trace_id"] = trace_id
+            config.update(build_trace_config(
+                self._settings, conversation_id=turn.session_id,
+                user_id=turn.user_id, trace_id=trace_id,
+                intent=intent, intent_confidence=confidence))
             graph_input = (turn.resume_command if turn.resume_command is not None
                            else new_turn_state(turn.user_text, user_db_id=turn.user_db_id))
             try:
