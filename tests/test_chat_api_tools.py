@@ -38,7 +38,8 @@ async def test_sse_frame_sequence_session_deltas_done():
     assert status == 200
     frames = parse_frames(lines)
     assert frames[0]["type"] == "session"
-    assert [f["content"] for f in frames[1:-1]] == ["你", "好"]
+    # ch09:done 前还有 turn_committed 帧,中段只挑 delta 比对
+    assert [f["content"] for f in frames[1:-1] if f["type"] == "delta"] == ["你", "好"]
     assert frames[-1] == "[DONE]"
 
 

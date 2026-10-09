@@ -18,6 +18,7 @@ from app.services.chat_service import (
     TicketPreviewEvent,
     ToolEndEvent,
     ToolStartEvent,
+    TurnCommittedEvent,
 )
 
 router = APIRouter()
@@ -69,6 +70,11 @@ class _EventStream:
                                 "interrupt_id": event.interrupt_id,
                                 "ticket_type": event.ticket_type,
                                 "description": event.description})
+                elif isinstance(event, TurnCommittedEvent):
+                    yield _sse({"type": "turn_committed",
+                                "conversation_id": event.conversation_id,
+                                "turn_message_id": event.turn_message_id,
+                                "assistant_message_id": event.assistant_message_id})
                 elif isinstance(event, DoneEvent):
                     yield "data: [DONE]\n\n"
                 elif isinstance(event, ErrorEvent):

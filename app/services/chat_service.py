@@ -82,9 +82,17 @@ class TicketPreviewEvent:
     description: str
 
 
+@dataclass(frozen=True)
+class TurnCommittedEvent:
+    """ch09:本轮已落库且图正常完成;前端据 assistant_message_id 启用 👍👎。"""
+    conversation_id: str
+    turn_message_id: str
+    assistant_message_id: str
+
+
 ChatEvent = Union[SessionEvent, DeltaEvent, ToolStartEvent, ToolEndEvent, DoneEvent,
                   ErrorEvent, CitationsEvent, SuggestActionsEvent, OrderSelectorEvent,
-                  TicketPreviewEvent]
+                  TicketPreviewEvent, TurnCommittedEvent]
 
 
 class SessionLockRegistry:
@@ -268,8 +276,17 @@ class ChatService:
                 logger.exception("chat graph error")
                 yield ErrorEvent("internal_error", "服务内部错误")
                 return
+            pending = False
             async for event in self._pending_selector_events(config):
+                pending = True
                 yield event
+            if not pending:  # 挂起轮无最终回答,不发帧(spec §5.3);失败/中断轮已在上方 return
+                st = await self._graph.aget_state(config)
+                vals = st.values or {}
+                aid = vals.get("final_assistant_message_id")
+                tid = vals.get("turn_message_id")
+                if aid and tid:
+                    yield TurnCommittedEvent(turn.session_id, str(tid), str(aid))
             yield DoneEvent()
         finally:
             self.release_turn(turn)
