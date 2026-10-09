@@ -130,6 +130,22 @@ button.act { border: 1px solid var(--accent); color: var(--accent); background: 
     <div class="card" id="kpi-refuse"><div class="k">库外拒答率</div><div class="v">-</div><div class="s">上线管线 D_absent 桶</div></div>
   </section>
 
+  <h2>趋势(eval_runs 历史轮次)</h2>
+  <section id="sec-trend">
+    <div id="trend-chart"></div>
+    <div class="caption" id="trend-caption"></div>
+  </section>
+
+  <h2>成本(按意图,Langfuse)</h2>
+  <section id="sec-cost">
+    <div class="tabs" id="cost-days-tabs">
+      <button data-days="7" class="on">近 7 天</button>
+      <button data-days="30">近 30 天</button>
+    </div>
+    <div id="cost-chart"></div>
+    <div class="caption" id="cost-caption"></div>
+  </section>
+
   <h2>检索质量(四策略 × 总体+四桶)</h2>
   <section id="retrieval">
     <div class="tabs" id="metric-tabs">
@@ -213,6 +229,7 @@ var COLORS = ["#8a8a7a", "#4a6fa5", "#c0a03c", "#c96442"];
 var SVGNS = "http://www.w3.org/2000/svg";
 var report = null;            // 当前报告(或 null)
 var ledgerState = {status: "未解决", page: 1, size: 10, total: 0};
+var costDays = 7;             // ch09 成本区块时间窗(API 仅 7|30 两档)
 var pollTimer = null;
 
 function el(tag, attrs, text) {
@@ -466,6 +483,228 @@ function renderSummary(rep) {
   });
 }
 
+/* ---------- ch09 趋势:eval_runs 折线,版本三元组变化断线 ---------- */
+var TREND_SERIES = [
+  { key: "recall_at_10", name: "Recall@10", color: "#4a6fa5" },
+  { key: "mrr", name: "MRR", color: "#c0a03c" },
+  { key: "faithfulness", name: "忠实率", color: "#c96442" }
+];
+
+function runGroupKey(run) {
+  // spec §5.5:趋势只连接 corpus_version+dataset_version+evidence_confidence_version 相同的轮次
+  return (run.corpus_version || "-") + "|" + (run.dataset_version || "-") + "|" +
+         (((run.metrics || {}).evidence_confidence_version) || "-");
+}
+
+function renderTrend(runs) {
+  var mount = sel("trend-chart");
+  mount.replaceChildren();
+  if (!runs.length) {
+    mount.appendChild(el("div", "muted", "还没有历史评估轮次——跑一轮后这里出现趋势线。"));
+    sel("trend-caption").textContent = "";
+    return;
+  }
+  var groups = [];   // 连续同版本三元组的轮次归为一组
+  runs.forEach(function (r) {
+    var k = runGroupKey(r);
+    if (groups.length && groups[groups.length - 1].key === k) {
+      groups[groups.length - 1].runs.push(r);
+    } else {
+      groups.push({ key: k, runs: [r] });
+    }
+  });
+
+  var W = 760, H = 260, padL = 36, padR = 14, padB = 42, padT = 14;
+  var innerW = W - padL - padR, innerH = H - padB - padT;
+  var svg = svgEl("svg", {width: W, height: H, role: "img"});
+  [0, 0.25, 0.5, 0.75, 1].forEach(function (yv) {
+    var y = H - padB - yv * innerH;
+    svg.appendChild(svgEl("line", {x1: padL, y1: y, x2: W - padR, y2: y,
+                                   stroke: yv === 0 ? "#c9c4b4" : "#e8e4d6"}));
+    svg.appendChild(svgEl("text", {x: padL - 5, y: y + 3, "text-anchor": "end",
+                                   "font-size": 9, fill: "#6b675c"}, String(yv)));
+  });
+  var n = runs.length;
+  function xOf(i) { return padL + (n === 1 ? innerW / 2 : i * innerW / (n - 1)); }
+  function yOf(v) { return H - padB - v * innerH; }
+
+  var idx = 0;       // 组间分隔线:断线处画虚线并标 G1/G2…
+  groups.forEach(function (g, gi) {
+    if (gi > 0) {
+      var x = (xOf(idx - 1) + xOf(idx)) / 2;
+      svg.appendChild(svgEl("line", {x1: x, y1: padT, x2: x, y2: H - padB,
+                                     stroke: "#c9c4b4", "stroke-dasharray": "3 3"}));
+      svg.appendChild(svgEl("text", {x: x + 3, y: padT + 9, "font-size": 9,
+                                     fill: "#87867f"}, "G" + (gi + 1)));
+    }
+    idx += g.runs.length;
+  });
+
+  TREND_SERIES.forEach(function (s) {
+    var start = 0;
+    groups.forEach(function (g, gi) {
+      var d = "", pen = false;
+      g.runs.forEach(function (r) {
+        var v = (r.metrics || {})[s.key];
+        var i = start;      // x 位置按 run 计,null 缺测也占位
+        start += 1;
+        if (v === null || v === undefined) { pen = false; return; }  // 缺测断线
+        d += (pen ? "L" : "M") + xOf(i).toFixed(1) + " " + yOf(v).toFixed(1) + " ";
+        pen = true;
+      });
+      if (d) svg.appendChild(svgEl("path", {d: d, fill: "none", stroke: s.color,
+                                             "stroke-width": 1.6}));
+    });
+  });
+  // 数据点 + tooltip(点从 runs 全量重放一次,索引即 x 轴位置)
+  runs.forEach(function (r, i) {
+    TREND_SERIES.forEach(function (s) {
+      var v = (r.metrics || {})[s.key];
+      if (v === null || v === undefined) return;
+      var c = svgEl("circle", {cx: xOf(i), cy: yOf(v), r: 3, fill: s.color});
+      c.appendChild(svgEl("title", null,
+        s.name + " " + fmt(v) + "\n" + r.created_at + " " + r.run_id +
+        "\n" + runGroupKey(r).replace(/\|/g, " / ")));
+      svg.appendChild(c);
+    });
+  });
+  var step = Math.max(1, Math.ceil(n / 8));   // x 轴日期稀疏标注
+  runs.forEach(function (r, i) {
+    if (i % step !== 0 && i !== n - 1) return;
+    svg.appendChild(svgEl("text", {x: xOf(i), y: H - padB + 14,
+                                   "text-anchor": "middle", "font-size": 9,
+                                   fill: "#6b675c"},
+                         (r.created_at || "").slice(5, 10)));
+  });
+  TREND_SERIES.forEach(function (s, si) {     // 图例
+    var lx = padL + si * 120;
+    svg.appendChild(svgEl("line", {x1: lx, y1: H - 10, x2: lx + 18, y2: H - 10,
+                                   stroke: s.color, "stroke-width": 2}));
+    svg.appendChild(svgEl("text", {x: lx + 22, y: H - 7, "font-size": 10,
+                                   fill: "#6b675c"}, s.name));
+  });
+  mount.appendChild(svg);
+  sel("trend-caption").textContent =
+    "共 " + n + " 轮、分 " + groups.length + " 组(虚线处版本变化,断线新起一组);" +
+    "只连接 corpus_version + dataset_version + evidence_confidence_version 相同的轮次," +
+    "版本变化的轮次分数不可直接比较。";
+}
+
+function loadTrend() {
+  api("/api/eval-runs").then(function (d) {
+    renderTrend(d.runs || []);
+  }).catch(function (e) {
+    var mount = sel("trend-chart");
+    mount.replaceChildren();
+    mount.appendChild(el("div", "muted",
+      e.status === 503 ? "数据库依赖未装配,趋势不可用。" : "趋势加载失败:HTTP " + (e.status || "?")));
+    sel("trend-caption").textContent = "";
+  });
+}
+
+/* ---------- ch09 成本:按意图 token 分组柱状(照检索图模式,值域为原始 token) ---------- */
+var COST_SERIES = [["input_tokens", "输入 token", "#4a6fa5"],
+                   ["output_tokens", "输出 token", "#c0a03c"]];
+
+function tok(n) {
+  if (n === null || n === undefined) return "0";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(Math.round(n));
+}
+
+function costBars(mount, rows) {
+  mount.replaceChildren();
+  var W = 760, H = 260, padL = 48, padR = 12, padB = 52, padT = 14;
+  var innerW = W - padL - padR, innerH = H - padB - padT;
+  var svg = svgEl("svg", {width: W, height: H, role: "img"});
+  var maxV = 1;
+  rows.forEach(function (r) {
+    COST_SERIES.forEach(function (s) { maxV = Math.max(maxV, r[s[0]] || 0); });
+  });
+  function yOf(v) { return H - padB - (v / maxV) * innerH; }
+  [0, 0.5, 1].forEach(function (f) {
+    var y = yOf(maxV * f);
+    svg.appendChild(svgEl("line", {x1: padL, y1: y, x2: W - padR, y2: y,
+                                   stroke: f === 0 ? "#c9c4b4" : "#e8e4d6"}));
+    svg.appendChild(svgEl("text", {x: padL - 5, y: y + 3, "text-anchor": "end",
+                                   "font-size": 9, fill: "#6b675c"}, tok(maxV * f)));
+  });
+  var totalTok = 0;
+  rows.forEach(function (r) { totalTok += (r.total_tokens || 0); });
+  var gw = innerW / rows.length;
+  var bw = Math.min(18, (gw - 24) / COST_SERIES.length);
+  rows.forEach(function (r, gi) {
+    var gx = padL + gi * gw;
+    COST_SERIES.forEach(function (s, si) {
+      var v = r[s[0]] || 0;
+      var h = Math.max(v > 0 ? 1 : 0, (v / maxV) * innerH);
+      var rect = svgEl("rect", {x: gx + 12 + si * (bw + 3), y: H - padB - h,
+                                width: bw, height: h, fill: s[2]});
+      rect.appendChild(svgEl("title", null,
+        r.intent + " / " + s[1] + ": " + tok(v) +
+        "\nrequests " + r.requests + " · total " + tok(r.total_tokens) +
+        " · cost " + (r.cost === null || r.cost === undefined ? "-" : r.cost)));
+      svg.appendChild(rect);
+    });
+    svg.appendChild(svgEl("text", {x: gx + gw / 2, y: H - padB + 14,
+                                   "text-anchor": "middle", "font-size": 11,
+                                   fill: "#6b675c"}, r.intent));
+    var share = totalTok ? (r.total_tokens / totalTok) : 0;
+    svg.appendChild(svgEl("text", {x: gx + gw / 2, y: H - padB + 27,
+                                   "text-anchor": "middle", "font-size": 9,
+                                   fill: "#87867f"},
+                         (share * 100).toFixed(0) + "%"));
+  });
+  COST_SERIES.forEach(function (s, si) {
+    var lx = padL + si * 120;
+    svg.appendChild(svgEl("rect", {x: lx, y: H - 16, width: 10, height: 10,
+                                   fill: s[2]}));
+    svg.appendChild(svgEl("text", {x: lx + 14, y: H - 7, "font-size": 10,
+                                   fill: "#6b675c"}, s[1]));
+  });
+  mount.appendChild(svg);
+}
+
+function renderCost(d) {
+  var mount = sel("cost-chart");
+  mount.replaceChildren();
+  var rows = (d.intents || []).slice();
+  if (d.unknown && d.unknown.requests) rows.push(d.unknown);
+  if (!rows.length) {
+    mount.appendChild(el("div", "muted",
+      "近 " + d.days + " 天没有可统计的模型调用(或 Langfuse 尚无数据)。"));
+    sel("cost-caption").textContent = "";
+    return;
+  }
+  costBars(mount, rows);
+  var reqs = 0, cost = 0;
+  rows.forEach(function (r) { reqs += (r.requests || 0); cost += (r.cost || 0); });
+  var notes = [];
+  notes.push("近 " + d.days + " 天共 " + reqs + " 个请求,成本合计 $" +
+             cost.toFixed(4) + (d.cost_available ? "" : "(单价未配,cost_available=false)"));
+  if (d.incomplete) notes.push("超出统计上限已截断(incomplete=true,仅最近 200 trace / 2000 generation)");
+  if (d.missing_usage_observations) {
+    notes.push("缺 usage 的 generation " + d.missing_usage_observations +
+               " 条未计入(不静默当 0)");
+  }
+  sel("cost-caption").textContent = notes.join(";");
+}
+
+function loadCost(days) {
+  api("/api/stats/cost-by-intent?days=" + days).then(function (d) {
+    renderCost(d);
+  }).catch(function (e) {
+    var mount = sel("cost-chart");
+    mount.replaceChildren();
+    var msg = e.status === 503 ? "Langfuse 未启用(ENABLED=false 或未配密钥);启用后这里展示各意图 token 花销。"
+      : e.status === 502 ? "Langfuse 不可达,稍后重试。"
+      : "成本数据加载失败:HTTP " + (e.status || "?");
+    mount.appendChild(el("div", "muted", msg));
+    sel("cost-caption").textContent = "";
+  });
+}
+
 /* ---------- 台账 ---------- */
 function loadLedger() {
   var q = "?status=" + encodeURIComponent(ledgerState.status) +
@@ -596,6 +835,8 @@ function loadAll() {
       e.status === 502 ? "评估报告文件损坏,请重跑。" : "报告加载失败。";
   });
   loadLedger();
+  loadTrend();       // ch09 趋势:eval_runs 历史轮次折线
+  loadCost(costDays);
   api("/api/jobs/eval-rag").then(function (st) {   // 页面打开时若正在跑,接着轮询
     sel("log-window").textContent = st.log_tail || "";
     if (st.status === "running") { setRunning(true); pollJob(); }
@@ -621,6 +862,13 @@ sel("ledger-tabs").addEventListener("click", function (e) {
   ledgerState.status = e.target.getAttribute("data-status");
   ledgerState.page = 1;
   loadLedger();
+});
+sel("cost-days-tabs").addEventListener("click", function (e) {
+  if (e.target.tagName !== "BUTTON") return;
+  sel("cost-days-tabs").querySelectorAll("button").forEach(function (b) { b.className = ""; });
+  e.target.className = "on";
+  costDays = parseInt(e.target.getAttribute("data-days"), 10) || 7;
+  loadCost(costDays);
 });
 sel("pager-prev").addEventListener("click", function () {
   if (ledgerState.page > 1) { ledgerState.page--; loadLedger(); }

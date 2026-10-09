@@ -209,7 +209,9 @@ def test_confidence_from_scores_math():
 
 def test_confidence_signal_applies_only_to_hybrid_rerank(store, db_session_factory):
     _seed_knowledge(db_session_factory, store)
-    s = make_settings(rerank_confidence_signal="margin12")
+    # 信号 knob 属旧口径:2026-10-09 回填后默认已是校准闸,显式 uncalibrated 走旧路径
+    s = make_settings(rerank_confidence_signal="margin12",
+                      evidence_confidence_version="uncalibrated")
     r = _retriever(s, store, db_session_factory, reranker=FakeReranker())
     res = r.search("邮费怎么算", query_plan=_plan("邮费怎么算"))
     # FakeReranker 对 2 块给分 1.0/0.5 → margin12 = 0.5(非 top1 的 1.0)
@@ -221,7 +223,8 @@ def test_confidence_signal_applies_only_to_hybrid_rerank(store, db_session_facto
 
 def test_confidence_signal_default_is_top1(store, db_session_factory):
     _seed_knowledge(db_session_factory, store)
-    r = _retriever(make_settings(), store, db_session_factory, reranker=FakeReranker())
+    r = _retriever(make_settings(evidence_confidence_version="uncalibrated"),
+                   store, db_session_factory, reranker=FakeReranker())
     res = r.search("邮费怎么算", query_plan=_plan("邮费怎么算"))
     assert res.confidence_score == res.hits[0].score == 1.0
 
@@ -268,7 +271,9 @@ def _seed_intent_knowledge(sf, store):
 
 def test_multi_intent_subquery_boosts_second_intent(store, db_session_factory):
     ids = _seed_intent_knowledge(db_session_factory, store)
-    r = _retriever(make_settings(), store, db_session_factory, reranker=IntentReranker())
+    # 旧口径 confidence=top1,钉「置信分取合并后榜首」;校准闸行为见 test_evidence_confidence
+    r = _retriever(make_settings(evidence_confidence_version="uncalibrated"),
+                   store, db_session_factory, reranker=IntentReranker())
     # 对照:无子查询 → 主问两意图关键词都不含,两榜同分按融合序,故障块在前
     plan_plain = QueryPlan("猫砂盆报错能自修吗维修要等几天", (), None, False, None)
     res0 = r.search("猫砂盆报错能自修吗维修要等几天", query_plan=plan_plain)
@@ -339,13 +344,13 @@ def test_rerank_candidates_success_builds_single_result():
             from app.knowledge.reranker import RerankOutcome
             return RerankOutcome(True, [(2, 0.9), (0, 0.5), (1, 0.2)], None)
 
-    r = KnowledgeRetriever(make_settings(), embed=object(), store=object(),
-                           reranker=_Reranker())
+    r = KnowledgeRetriever(make_settings(evidence_confidence_version="uncalibrated"),
+                           embed=object(), store=object(), reranker=_Reranker())
     res = r.rerank_candidates("退款", hits)
     assert res is not None
     assert res.requested_strategy == res.effective_strategy == "hybrid_rerank"
     assert [h.chunk_id for h in res.hits] == [3, 1, 2]       # 按重排序
-    assert res.confidence_score == 0.9                        # top1 信号
+    assert res.confidence_score == 0.9                        # top1 信号(旧口径显式钉)
     assert res.low_confidence is False                        # 0.9 >= rerank_min_score 0.0553
 
 

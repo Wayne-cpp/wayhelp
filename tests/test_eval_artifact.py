@@ -9,13 +9,22 @@ from evals.run_retrieval_compare import (
 )
 from tests.conftest import make_settings
 
-# 与 config.py 默认(uncalibrated)完全一致的 artifact:check 放行
+# 与「显式 uncalibrated settings」完全一致的 artifact:check 放行
+# (2026-10-09 回填后 config 默认已是校准版,旧口径一律显式声明)
 UNCALIBRATED_ARTIFACT = {
     "version": "uncalibrated",
     "weights": {"top1": 1.0, "count": 0.0, "margin": 0.0},
     "min_effective_score": 0.0,
     "threshold": 0.0553,
 }
+
+
+def _uncal_settings():
+    return make_settings(evidence_confidence_version="uncalibrated",
+                         evidence_weight_top1=1.0, evidence_weight_count=0.0,
+                         evidence_weight_margin=0.0,
+                         evidence_min_effective_score=0.0,
+                         evidence_min_confidence=0.0553)
 
 
 def test_content_sha256_stable_and_order_independent(tmp_path):
@@ -39,7 +48,7 @@ def test_frozen_mismatch_rejected():
 
 
 def test_frozen_match_accepted():
-    check_evidence_frozen(make_settings(), UNCALIBRATED_ARTIFACT)   # 不抛即过
+    check_evidence_frozen(_uncal_settings(), UNCALIBRATED_ARTIFACT)   # 不抛即过
 
 
 @pytest.mark.parametrize("mutate", [
@@ -56,7 +65,7 @@ def test_frozen_any_field_mismatch_or_missing_rejected(mutate):
     artifact = json.loads(json.dumps(UNCALIBRATED_ARTIFACT))
     mutate(artifact)
     with pytest.raises(SystemExit):
-        check_evidence_frozen(make_settings(), artifact)
+        check_evidence_frozen(_uncal_settings(), artifact)   # 基线一致,变异即拒
 
 
 def test_load_frozen_evidence_roundtrip(tmp_path):

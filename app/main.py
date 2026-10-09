@@ -42,8 +42,10 @@ from app.routers.kb import router as kb_router
 from app.routers.rag_eval import eval_runs_router
 from app.routers.rag_eval import router as rag_eval_router
 from app.routers.review import router as review_router
+from app.routers.stats import router as stats_router
 from app.services import eval_runs as eval_runs_service
 from app.services import rag_eval as rag_eval_service
+from app.services.cost_stats import CostStatsError
 from app.services.rag_eval import ReportCorruptError
 from app.services.review_service import ReviewError
 from app.services.chat_service import ChatService
@@ -246,6 +248,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.include_router(rag_eval_router)
     app.include_router(eval_runs_router)
     app.include_router(review_router)
+    app.include_router(stats_router)
 
     root_dir = Path(__file__).resolve().parent.parent
     app.state.rag_eval_report_path = root_dir / "evals" / "results" / "rag_eval.json"
@@ -279,6 +282,10 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     @app.get("/rag-eval", include_in_schema=False)
     async def rag_eval_ui() -> FileResponse:
         return FileResponse(static_dir / "rag-eval.html")
+
+    @app.get("/review", include_in_schema=False)
+    async def review_ui() -> FileResponse:
+        return FileResponse(static_dir / "review.html")
 
     @app.get("/1784959384051.jpg", include_in_schema=False)
     async def brand_mark() -> FileResponse:
@@ -322,6 +329,12 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
 
     @app.exception_handler(ReviewError)
     async def _(request: Request, exc: ReviewError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status,
+                            content=_error_body(exc.code, exc.message))
+
+    @app.exception_handler(CostStatsError)
+    async def _(request: Request, exc: CostStatsError) -> JSONResponse:
+        # ch09 spec §5.1:未启用 503 langfuse_disabled;不可达 502 langfuse_unavailable
         return JSONResponse(status_code=exc.status,
                             content=_error_body(exc.code, exc.message))
 

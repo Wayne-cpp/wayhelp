@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+    # 成本折算单价(USD/百万 token):Langfuse costDetails 缺失时按 token/1e6 兜底;
+    # 皆 0 → cost=0 且 cost_available=false(spec §5.1)
+    model_input_price_per_mtok: float = Field(default=0.0, ge=0)
+    model_output_price_per_mtok: float = Field(default=0.0, ge=0)
     low_conf_snapshot_top_n: int = Field(default=3, gt=0)  # 落池召回快照条数(审核页展示)
     # ch09 飞轮流水线(spec §5.4):lifespan 单 worker,Event 唤醒 + DB 退避到期自醒
     flywheel_batch_size: int = Field(default=50, gt=0)
@@ -84,18 +88,19 @@ class Settings(BaseSettings):
     flywheel_retry_base_seconds: float = Field(default=60, gt=0)  # 模型/解析失败的指数退避基数
     flywheel_retry_max_seconds: float = Field(default=3600, gt=0)  # 自动重试与 worker 异常恢复的退避上限
     flywheel_max_attempts: int = Field(default=5, ge=1)  # 连续失败次数上限,到限转 failed 等人工重试
-    # 正式置信闸冻结参数(spec §5.2):默认 uncalibrated = 退化为旧 top1 信号行为
-    # (既有 rerank_confidence_signal/rerank_min_score 口径继续生效);
-    # 校准(uv run python evals/run_retrieval_compare.py --calibrate-evidence,Task 16 实跑)
-    # 后把 evals/calibration/evidence_confidence.json 的值同步到此处默认值并注明日期。
+    # 正式置信闸冻结参数(spec §5.2):2026-10-09 校准冻结——uv run python
+    # evals/run_retrieval_compare.py --calibrate-evidence,d_pass=0.100 / pass=0.992,
+    # artifact: evals/calibration/evidence_confidence.json(version 即校准时刻)。
+    # version ≠ uncalibrated 后 hybrid_rerank 主臂走三信号合成闸;旧
+    # rerank_confidence_signal/rerank_min_score 口径留给降级臂与显式 uncalibrated 回归。
     # 注:evidence_min_confidence 即 spec §7 表的 RERANK_EVIDENCE_MIN_CONFIDENCE(同一 knob,
     # 命名以计划为准);evidence_confidence_version 即 EVIDENCE_CONFIDENCE_VERSION。
-    evidence_weight_top1: float = Field(default=1.0)   # 待校准回填,占位保守值
-    evidence_weight_count: float = Field(default=0.0)  # 待校准回填,占位保守值
-    evidence_weight_margin: float = Field(default=0.0)  # 待校准回填,占位保守值
-    evidence_min_effective_score: float = Field(default=0.0)  # 待校准回填,占位保守值
-    evidence_min_confidence: float = Field(default=0.0553)    # 待校准回填(暂沿用 rerank_min_score 冻结值)
-    evidence_confidence_version: str = "uncalibrated"
+    evidence_weight_top1: float = Field(default=0.7)   # 2026-10-09 校准冻结
+    evidence_weight_count: float = Field(default=0.3)  # 2026-10-09 校准冻结
+    evidence_weight_margin: float = Field(default=0.0)  # 2026-10-09 校准冻结
+    evidence_min_effective_score: float = Field(default=0.01)  # 2026-10-09 校准冻结
+    evidence_min_confidence: float = Field(default=0.15)  # 2026-10-09 校准冻结(d_pass=0.100, pass=0.992)
+    evidence_confidence_version: str = "2026-10-09T08:33:21Z"  # 校准时刻即版本号
     # ch09 评估定时(spec §5.5):每日本地时区到点自动跑 eval-rag(烧额度可关);
     # lifespan 挂单 worker 内存 task,不引 APScheduler
     eval_schedule_enabled: bool = True

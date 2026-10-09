@@ -1,0 +1,16 @@
+{
+  "version": "2026-10-09T08:33:21Z",
+  "calibrated_at": "2026-10-09T08:33:21Z",
+  "corpus": "knowledge_docs/",
+  "model": "deepseek-v4-flash",
+  "rerank_model": "BAAI/bge-reranker-v2-m3",
+  "weights": {
+    "top1": 0.7,
+    "count": 0.3,
+    "margin": 0.0
+  },
+  "min_effective_score": 0.01,
+  "threshold": 0.15,
+  "d_pass_rate": 0.1,
+  "pass_rate": 0.9916666666666667
+}

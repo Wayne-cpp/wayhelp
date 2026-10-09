@@ -13,7 +13,7 @@ docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversation
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch07-ddl.sql
 # 已有 ch07 数据卷的老库升级(不得删卷;docker 首启自动含 db/init/06-ddl.sql,新装可跳过):
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch08-ddl.sql
-uv run pytest                 # 测试 617 条(DB 用例需 Docker 在线)
+uv run pytest                 # 测试 738 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
@@ -179,3 +179,24 @@ make mcp-after-sales     # 起售后 MCP Server(:8102)
 - 建工单双通道:前端按钮走 `POST /v1/chat/action`(点按即确认);图内 create_ticket 走确认流——模型发起 → ticket_preview 预览卡 → `POST /v1/chat/resume` 带 decision(confirm / cancel),确认才真正建单、取消不建(参数只信服务端快照)
 - 全量工具调用(内置 / MCP / 写确认)同走统一执行引擎,落 tool_audit_logs 审计台账;写超时按「已发未必未成」处理且绝不重试,tool_write_idempotency 收敛重复提交
 - 红线:本机有代理时访问本机服务一律 `curl --noproxy '*'`;起 uvicorn 与 MCP Server 前加 `no_proxy=127.0.0.1,localhost`
+
+## 可观测性与数据飞轮(ch09 新增)
+
+- Langfuse 自托管可观测性:`docker compose up -d` 除 MySQL 外一并起 Langfuse v3 服务组(web / worker / ClickHouse / Postgres / Valkey / MinIO,web 暴露 127.0.0.1:3000);首次访问 `http://localhost:3000` 建站建项目,把 public/secret key 填进 `.env`(LANGFUSE_ENABLED=true + 两把密钥;未配齐 = 完全不挂回调,系统行为与现状一致)。trace 以逻辑轮为单位一棵树:LangChain 回调覆盖图内全部模型调用,classify 出意图即写入 trace metadata/tags;检索 / 工具 / MCP 在固定边界补 SDK span;resume 与服务重启后从 checkpoint 重建 trace 上下文,消耗归原意图不进 unknown。注意 GET 类 API 数据可能滞后 ~10 分钟
+- 成本统计:`GET /api/stats/cost-by-intent?days=7|30` 按 trace metadata.intent 聚合各意图 token/成本(observation 按 id 去重、每轮 1 request、优先 Langfuse costDetails、缺失按 MODEL_INPUT/OUTPUT_PRICE_PER_MTOK 折算,单价皆 0 时 cost_available=false);/rag-eval 页新增「成本」区块(分组柱状图)与「趋势」区块(eval_runs 历史 recall@10/MRR/忠实率三线,语料/评估集/置信闸版本变化即断线新起一组)
+- 数据飞轮:三入口落池(检索低置信 / 生成自评缺知识 / 👎 反馈经 turn_committed 锚定精确回捞)带召回片段快照 → lifespan 单 worker 异步「模型标准化 → 与待审队列查重合并(occurrence_count 累加,失败指数退避,到限转 failed 等人工重试)」→ review_queue 待审 → 人工审核;通过即冻结答案与 FAQ 块、向量化写回知识库(`review:<id>` 来源,对线上检索生效),驳回留档不可重开
+- /review 审核页(`http://127.0.0.1:8000/review`):状态 tab(待审/写入中/通过/驳回)+ 处理失败视图;详情抽屉展示归并的用户原话与当轮召回快照(原文+得分),辅助判断「真缺知识」还是「有但没检到」;待审可编辑核准答案后通过,写入中展示冻结答案/最近错误并可重试;「立即处理」按钮主动唤醒飞轮 worker
+- 评估定时:EVAL_SCHEDULE_ENABLED(默认 true)/ EVAL_SCHEDULE_HOUR(默认 3)/ EVAL_SCHEDULE_TIMEZONE(默认 Asia/Shanghai),每日本地时区到点自动跑 eval-rag(烧额度,可关);跑完经 run_id 幂等落 eval_runs 表供趋势图
+- 置信闸升级:hybrid_rerank 主臂改三信号合成 evidence_confidence(Top1 分/有效证据数/Top1-Top2 分差),参数由 `uv run python evals/run_retrieval_compare.py --calibrate-evidence` 校准冻结(2026-10-09:top1=0.7/count=0.3/margin=0.0,min_effective=0.01,threshold=0.15,d_pass=0.100/pass=0.992;产物 evals/calibration/evidence_confidence.json);降级臂与未校准时仍走旧 top1 口径
+
+### 数据库初始化与升级
+
+- 全新环境:`docker compose up -d` 首启自动执行 db/init 全部 DDL(含 ch09 的 07-ddl.sql:review_queue / chat_feedback / eval_runs 三新表 + low_confidence_questions 八新列)
+- 已有 ch08 数据卷的升级(不得删卷):`docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch09-ddl.sql`(docker 首启自动含 db/init/07-ddl.sql,新装可跳过)
+
+### 运行约束
+
+- 红线(同 milvus-lite):shell 有代理变量时,起服与访问本机 Langfuse 都要 `no_proxy=127.0.0.1,localhost`(SDK 走 HTTP 会被劫持进代理);curl 本机服务仍加 `--noproxy '*'`
+- 审核通过(写回知识库)与建库/向量化/挖掘/选择性重建/全量重建/手工录入共用一把进程级知识库作业锁:锁忙返回 409 job_busy,审核项不变,稍后重试;写入中 = 人工已核准、允许发布的冻结内容,不代表「未发布」
+- 选择性重建只删 `knowledge_docs/` 来源的块,保留 `review:<id>` 审核来源与其他来源;全量重建会先清空再从 knowledge_docs 重灌并重放全部「通过/写入中」审核的冻结 FAQ 块
+- 飞轮 probe(烧额度、手跑不进 pytest):`uv run python evals/probe_flywheel.py`(标准化/查重标注样例)

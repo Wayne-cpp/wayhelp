@@ -16,6 +16,12 @@ P = EvidenceGateParams(weight_top1=0.6, weight_count=0.2, weight_margin=0.2,
 CALIBRATED = dict(evidence_confidence_version="t9", evidence_weight_top1=0.5,
                   evidence_weight_count=0.3, evidence_weight_margin=0.2)
 
+# 显式 uncalibrated 六 knob:2026-10-09 回填后默认已是校准版,旧口径须显式声明
+UNCALIBRATED = dict(evidence_confidence_version="uncalibrated",
+                    evidence_weight_top1=1.0, evidence_weight_count=0.0,
+                    evidence_weight_margin=0.0, evidence_min_effective_score=0.0,
+                    evidence_min_confidence=0.0553)
+
 
 # ─── 纯函数:三信号合成与边界(计划 Step 1)────────────────────────────────────
 
@@ -41,20 +47,35 @@ def test_effective_count_capped_at_three():
     assert a == b   # 有效证据数归一按 3 封顶
 
 
-def test_gate_params_from_settings_defaults_uncalibrated():
-    from app.config import Settings
-    s = Settings(openai_base_url="http://x", openai_api_key="k", model_name="m",
-                 database_url="mysql+pymysql://u:p@h/d")
-    p = gate_params_from_settings(s)
-    assert p.version == UNCALIBRATED_VERSION == "uncalibrated"   # 校准前保守等价 top1
+def test_gate_params_defaults_match_frozen_artifact():
+    """回填后默认即冻结产物(2026-10-09 校准),逐字段一致——夜间回归
+    check_evidence_frozen 靠 config 与 artifact 对齐放行。"""
+    import json
+    from pathlib import Path
+    artifact = json.loads((Path(__file__).resolve().parent.parent / "evals"
+                           / "calibration" / "evidence_confidence.json"
+                           ).read_text(encoding="utf-8"))
+    p = gate_params_from_settings(make_settings())
+    assert p.version == artifact["version"] != "uncalibrated"
+    assert p.weight_top1 == artifact["weights"]["top1"]
+    assert p.weight_count == artifact["weights"]["count"]
+    assert p.weight_margin == artifact["weights"]["margin"]
+    assert p.min_effective_score == artifact["min_effective_score"]
+    assert p.threshold == artifact["threshold"]
+
+
+def test_gate_params_uncalibrated_knobs():
+    """显式 uncalibrated 六 knob:保守参数与旧 top1 信号同源(阈值即 rerank 冻结值)。"""
+    p = gate_params_from_settings(make_settings(**UNCALIBRATED))
+    assert p.version == UNCALIBRATED_VERSION == "uncalibrated"
     assert p.weight_top1 == 1.0
     assert (p.weight_count, p.weight_margin, p.min_effective_score) == (0.0, 0.0, 0.0)
     assert p.threshold == 0.0553   # 与 rerank_min_score 现行冻结值同源
 
 
 def test_uncalibrated_params_equivalent_to_top1_signal():
-    # 默认参数下合成分退化为 Top-1 分:闸位行为与旧 top1 信号逐位等价(硬约束)
-    p = gate_params_from_settings(make_settings())
+    # uncalibrated 参数下合成分退化为 Top-1 分:闸位行为与旧 top1 信号逐位等价(硬约束)
+    p = gate_params_from_settings(make_settings(**UNCALIBRATED))
     assert evidence_confidence([0.62, 0.40, 0.31], p) == pytest.approx(0.62)
     assert evidence_confidence([0.62], p) == pytest.approx(0.62)
     conf, low = evaluate_evidence([0.05], p)   # 0.05 < 0.0553 → 旧口径同判低
@@ -101,7 +122,7 @@ def _result(scores, **overrides):
 def test_gate_old_top1_low_new_synthetic_usable():
     """方向①:旧 top1 判低(0.05 < 0.0553)、新合成判可用(count 满额抬分)。"""
     scores = [0.05, 0.048, 0.047]
-    old = _result(scores)   # 默认 uncalibrated → 旧 top1 口径
+    old = _result(scores, evidence_confidence_version="uncalibrated")  # 旧 top1 口径
     assert old.confidence_score == pytest.approx(0.05)
     assert old.low_confidence is True and old.confidence_threshold == 0.0553
     new = _result(scores, **CALIBRATED, evidence_min_effective_score=0.01,
@@ -114,7 +135,7 @@ def test_gate_old_top1_low_new_synthetic_usable():
 def test_gate_old_usable_new_synthetic_low():
     """方向②:旧判可用(top1 0.9 ≥ 0.0553)、新判低(有效下限 0.95 → count=0 压分)。"""
     scores = [0.9, 0.899, 0.898]
-    old = _result(scores)
+    old = _result(scores, evidence_confidence_version="uncalibrated")
     assert old.confidence_score == pytest.approx(0.9) and old.low_confidence is False
     new = _result(scores, **CALIBRATED, evidence_min_effective_score=0.95,
                   evidence_min_confidence=0.5)

@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wayhelp 审核后台</title>
+<style>
+  /* ─── 与 kb.html / chat.html 同源的设计 tokens ─── */
+  :root {
+    --bg: #f5f4ed;
+    --surface: #faf9f5;
+    --surface-warm: #e8e6dc;
+    --bg-deep: color-mix(in oklab, var(--bg), var(--surface-warm) 65%);
+
+    --fg: #141413;
+    --fg-2: #3d3d3a;
+    --muted: #5e5d59;
+    --meta: #87867f;
+
+    --border: #f0eee6;
+    --border-soft: #e8e6dc;
+
+    --accent: #c96442;
+    --accent-on: #faf9f5;
+    --accent-hover: color-mix(in oklab, var(--accent), black 8%);
+    --accent-active: color-mix(in oklab, var(--accent), black 14%);
+
+    --success: #17a34a;
+    --warn: #eab308;
+    --danger: #b53333;
+
+    --font-display: "Anthropic Serif", Georgia, "Times New Roman", serif;
+    --font-body: "Anthropic Sans", "Arial", system-ui, -apple-system, sans-serif;
+    --font-mono: "Anthropic Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+
+    --text-xs: 10px;
+    --text-sm: 14px;
+    --text-base: 16px;
+
+    --leading-body: 1.6;
+    --leading-tight: 1.1;
+
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-pill: 9999px;
+
+    --elev-ring: 0 0 0 1px var(--border);
+    --elev-raised: rgba(0, 0, 0, 0.05) 0px 4px 24px;
+    --focus-ring: 0 0 0 3px rgba(56, 152, 236, 0.3);
+    --motion-fast: 150ms;
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg-deep);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: var(--text-base);
+    line-height: var(--leading-body);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; cursor: pointer; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .app {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: var(--space-5) var(--space-4) var(--space-8);
+  }
+
+  /* ─── header ─── */
+  .rv-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--elev-raised);
+  }
+  .brand-mark {
+    width: 36px; height: 36px; flex: none; display: block; object-fit: cover;
+    background: var(--surface-warm);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--elev-ring);
+  }
+  .brand-name {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 19px; font-weight: 500; line-height: var(--leading-tight);
+  }
+  .brand-sub { font-size: 12px; color: var(--muted); line-height: 1.3; }
+  .run-now {
+    margin-left: auto;
+    height: 32px; padding: 0 var(--space-4);
+    border: none; border-radius: var(--radius-sm);
+    background: var(--accent); color: var(--accent-on);
+    font-size: var(--text-sm); font-weight: 500;
+  }
+  .run-now:hover:not(:disabled) { background: var(--accent-hover); }
+  .run-now:disabled { background: var(--surface-warm); color: var(--meta); cursor: not-allowed; }
+  .back-link { font-size: var(--text-sm); color: var(--muted); }
+
+  /* ─── notice ─── */
+  #notice {
+    display: none;
+    margin-top: var(--space-3);
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+  }
+  #notice.show { display: block; }
+  #notice.ok {
+    background: color-mix(in oklch, var(--success) 8%, var(--surface));
+    border: 1px solid color-mix(in oklch, var(--success) 30%, var(--surface));
+    color: var(--success);
+  }
+  #notice.err {
+    background: color-mix(in oklch, var(--danger) 6%, var(--surface));
+    border: 1px solid color-mix(in oklch, var(--danger) 28%, var(--surface));
+    color: var(--danger);
+  }
+
+  /* ─── tabs ─── */
+  #status-tabs {
+    display: flex; gap: var(--space-2); flex-wrap: wrap;
+    margin-top: var(--space-4);
+  }
+  #status-tabs button {
+    height: 30px; padding: 0 var(--space-4);
+    border: 1px solid var(--border-soft); border-radius: var(--radius-pill);
+    background: var(--surface); color: var(--fg-2);
+    font-size: var(--text-sm);
+  }
+  #status-tabs button.on {
+    background: var(--accent); border-color: var(--accent); color: var(--accent-on);
+  }
+  #status-tabs button .cnt { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+  #status-tabs button.on .cnt { color: var(--accent-on); }
+
+  /* ─── card / list ─── */
+  .card {
+    margin-top: var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5);
+  }
+  .card h2 {
+    margin: 0 0 var(--space-3);
+    font-family: var(--font-display);
+    font-size: 18px; font-weight: 500;
+  }
+  .card .desc { margin: 0 0 var(--space-3); font-size: var(--text-sm); color: var(--muted); }
+
+  .pill {
+    display: inline-flex; align-items: center;
+    padding: 2px 10px;
+    border-radius: var(--radius-pill);
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.03em;
+    background: var(--surface-warm); color: var(--fg-2);
+    border: 1px solid var(--border-soft);
+    white-space: nowrap;
+  }
+  .pill.ok { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, var(--surface)); }
+  .pill.bad { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 35%, var(--surface)); }
+  .pill.warn { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 35%, var(--surface)); }
+  .pill.muted { color: var(--meta); }
+
+  .rv-row {
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+  .rv-row .top { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+  .rv-row .q { font-weight: 600; font-size: var(--text-sm); }
+  .rv-row .m { font-size: var(--text-xs); color: var(--meta); font-family: var(--font-mono); }
+  .rv-row .ans { font-size: var(--text-sm); color: var(--fg-2); margin-top: var(--space-1);
+                 display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .rv-row .err { font-size: var(--text-xs); color: var(--danger);
+                 font-family: var(--font-mono); margin-top: var(--space-1);
+                 white-space: pre-wrap; word-break: break-all; }
+  .rv-row button { margin-left: auto; }
+  .rv-row .ops { display: flex; gap: var(--space-2); margin-left: auto; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: var(--space-2);
+    height: 30px; padding: 0 var(--space-4);
+    border: none; border-radius: var(--radius-sm);
+    background: var(--accent); color: var(--accent-on);
+    font-size: var(--text-sm); font-weight: 500;
+    transition: background var(--motion-fast) var(--ease-standard);
+  }
+  .btn:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn:active:not(:disabled) { background: var(--accent-active); }
+  .btn:disabled { background: var(--surface-warm); color: var(--meta); cursor: not-allowed; }
+  .btn.secondary {
+    background: var(--surface-warm); color: var(--fg-2);
+    box-shadow: 0 0 0 1px var(--border-soft);
+  }
+  .btn.secondary:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--surface-warm), black 5%);
+    box-shadow: 0 0 0 1px var(--meta);
+  }
+  .btn.danger { background: var(--danger); }
+  .btn.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger), black 8%); }
+
+  .pager { display: flex; gap: var(--space-2); align-items: center;
+           margin-top: var(--space-3); font-size: var(--text-sm); color: var(--muted); }
+  .hint { font-size: var(--text-xs); color: var(--muted); }
+
+  /* ─── 详情抽屉 ─── */
+  #detail-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: min(560px, 92vw);
+    background: var(--surface);
+    border-left: 1px solid var(--border-soft);
+    box-shadow: var(--elev-raised);
+    transform: translateX(100%);
+    transition: transform var(--motion-fast) var(--ease-standard);
+    display: flex; flex-direction: column;
+    z-index: 30;
+  }
+  #detail-drawer.open { transform: translateX(0); }
+  #detail-drawer .head {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  #detail-drawer .head h3 { margin: 0; font-size: var(--text-sm); font-weight: 600;
+                            flex: 1; }
+  #detail-drawer .body {
+    flex: 1; overflow-y: auto; padding: var(--space-4);
+  }
+  #detail-drawer .body h4 {
+    margin: var(--space-4) 0 var(--space-2); font-size: var(--text-xs);
+    color: var(--muted); font-weight: 500; letter-spacing: 0.04em;
+  }
+  #detail-drawer .foot {
+    padding: var(--space-3) var(--space-4);
+    border-top: 1px solid var(--border-soft);
+    background: var(--bg);
+  }
+  .src {
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+    font-size: var(--text-sm);
+  }
+  .src .raw { font-weight: 600; }
+  .src .m { font-size: var(--text-xs); color: var(--meta); font-family: var(--font-mono); }
+  .snap {
+    border-top: 1px dashed var(--border-soft);
+    margin-top: var(--space-2); padding-top: var(--space-2);
+  }
+  .snap .item {
+    padding: var(--space-2); border-radius: var(--radius-sm);
+    margin-bottom: var(--space-1); background: var(--surface);
+    font-size: var(--text-xs); color: var(--fg-2);
+  }
+  .snap .item .sc { font-family: var(--font-mono); color: var(--muted); }
+  textarea#approve-answer {
+    width: 100%; min-height: 110px;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit; font-size: var(--text-sm);
+    font-family: var(--font-mono); line-height: 1.5;
+    resize: vertical;
+  }
+  textarea#approve-answer:focus-visible { outline: none; border-color: var(--meta); box-shadow: var(--focus-ring); }
+  .frozen-answer {
+    white-space: pre-wrap; word-break: break-word;
+    border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+    background: var(--bg); padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm); font-family: var(--font-mono); color: var(--fg-2);
+  }
+
+  @media (max-width: 640px) {
+    .app { padding: var(--space-3) var(--space-2) var(--space-6); }
+    .card { padding: var(--space-4); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="rv-header">
+    <img class="brand-mark" src="1784959384051.jpg" alt="" aria-hidden="true">
+    <div>
+      <h1 class="brand-name">审核后台</h1>
+      <span class="brand-sub">待审问题 · 通过写回知识库 · 驳回留档</span>
+    </div>
+    <button class="run-now" id="run-flywheel-btn" type="button">立即处理</button>
+    <a class="back-link" href="/">← 返回对话</a>
+    <a class="back-link" href="/kb">知识库管理</a>
+  </header>
+
+  <div id="notice" role="status"></div>
+
+  <div id="status-tabs" role="tablist">
+    <button data-tab="待审" class="on" type="button">待审 <span class="cnt" data-cnt="待审"></span></button>
+    <button data-tab="写入中" type="button">写入中 <span class="cnt" data-cnt="写入中"></span></button>
+    <button data-tab="通过" type="button">通过 <span class="cnt" data-cnt="通过"></span></button>
+    <button data-tab="驳回" type="button">驳回 <span class="cnt" data-cnt="驳回"></span></button>
+    <button data-tab="处理失败" type="button">处理失败 <span class="cnt" data-cnt="failed"></span></button>
+  </div>
+
+  <section class="card" id="review-list-card">
+    <h2 id="list-title">待审</h2>
+    <p class="desc" id="list-desc">点行展开详情抽屉:归并的用户原话与当轮召回快照,判断「真缺知识」还是「有但没检到」。</p>
+    <div id="review-list"></div>
+    <div class="pager" id="pager">
+      <button class="btn secondary" id="pager-prev" type="button">上一页</button>
+      <span id="pager-info"></span>
+      <button class="btn secondary" id="pager-next" type="button">下一页</button>
+    </div>
+  </section>
+</div>
+
+<!-- 详情抽屉 -->
+<aside id="detail-drawer" aria-label="审核详情">
+  <div class="head">
+    <h3 id="drawer-title">详情</h3>
+    <span class="pill" id="drawer-status"></span>
+    <button class="btn secondary" id="drawer-close" type="button">关闭</button>
+  </div>
+  <div class="body" id="drawer-body"></div>
+  <div class="foot" id="drawer-foot"></div>
+</aside>
+
+<script>
+(function () {
+  var PAGE_SIZE = 20;
+  var TABS = ["待审", "写入中", "通过", "驳回"];
+  var state = { tab: "待审", page: 1, total: 0 };
+  var detail = null;   // 当前抽屉里的 /detail 响应
+
+  var noticeEl = document.getElementById("notice");
+
+  function notice(text, isErr) {
+    noticeEl.textContent = text;
+    noticeEl.className = "show " + (isErr ? "err" : "ok");
+  }
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+
+  function api(path, body, method) {
+    var opt = { method: method || (body === undefined ? "GET" : "POST") };
+    if (body !== undefined) {
+      opt.headers = { "Content-Type": "application/json" };
+      opt.body = JSON.stringify(body);
+    }
+    return fetch(path, opt).then(function (resp) {
+      return resp.json().catch(function () { return null; }).then(function (data) {
+        if (!resp.ok) {
+          var msg = (data && data.error && data.error.message) || ("请求失败(" + resp.status + ")");
+          var err = new Error(msg);
+          err.code = data && data.error && data.error.code;
+          err.status = resp.status;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function statusClass(status) {
+    return { "待审": "warn", "写入中": "warn", "通过": "ok", "驳回": "muted" }[status] || "muted";
+  }
+
+  function statusPill(status) {
+    return el("span", "pill " + statusClass(status), status);
+  }
+
+  /* ─── 列表 ─── */
+  function loadCounts() {
+    // 各状态 tab 的计数:一次拉总数(首页 total 即计数)
+    TABS.forEach(function (st) {
+      api("/api/review?status=" + encodeURIComponent(st) + "&page=1").then(function (d) {
+        var span = document.querySelector('[data-cnt="' + st + '"]');
+        if (span) span.textContent = d.total ? String(d.total) : "";
+      }).catch(function () { /* 计数失败不影响列表 */ });
+    });
+    api("/api/flywheel/failures?page=1").then(function (d) {
+      var span = document.querySelector('[data-cnt="failed"]');
+      if (span) span.textContent = d.total ? String(d.total) : "";
+    }).catch(function () {});
+  }
+
+  function loadList() {
+    if (state.tab === "处理失败") return loadFailures();
+    var box = document.getElementById("review-list");
+    box.replaceChildren(el("p", "hint", "加载中…"));
+    var q = "?page=" + state.page + "&status=" + encodeURIComponent(state.tab);
+    api("/api/review" + q).then(function (d) {
+      state.total = d.total;
+      renderList(d.items);
+      renderPager();
+    }).catch(function (err) {
+      box.replaceChildren();
+      box.appendChild(el("p", "hint", "加载失败:" + err.message));
+    });
+  }
+
+  function renderList(items) {
+    var box = document.getElementById("review-list");
+    box.replaceChildren();
+    if (!items.length) {
+      box.appendChild(el("p", "hint", "(空)"));
+      return;
+    }
+    items.forEach(function (it) {
+      var row = el("div", "rv-row");
+      var top = el("div", "top");
+      top.appendChild(statusPill(it.review_status));
+      top.appendChild(el("span", "pill muted", "出现 " + it.occurrence_count + " 次"));
+      var ops = el("div", "ops");
+      var det = el("button", "btn secondary", "详情");
+      det.type = "button";
+      det.addEventListener("click", function () { openDrawer(it.id); });
+      ops.appendChild(det);
+      if (it.review_status === "写入中") {
+        var retry = el("button", "btn", "重试写入");
+        retry.type = "button";
+        retry.addEventListener("click", function () { approve(it.id, undefined); });
+        ops.appendChild(retry);
+      }
+      top.appendChild(ops);
+      row.appendChild(top);
+      row.appendChild(el("div", "q", it.normalized_question));
+      var sample = it.review_status === "写入中" || it.review_status === "通过"
+        ? it.approved_answer : it.ai_suggested_answer;
+      row.appendChild(el("div", "ans", sample || "(无示例答案)"));
+      row.appendChild(el("div", "m", "#" + it.id + " · " + it.created_at +
+        (it.knowledge_chunk_ids ? " · 块 " + it.knowledge_chunk_ids.join(",") : "")));
+      if (it.last_write_error) {
+        row.appendChild(el("div", "err", "最近写入错误:" + it.last_write_error));
+      }
+      box.appendChild(row);
+    });
+  }
+
+  function loadFailures() {
+    var box = document.getElementById("review-list");
+    box.replaceChildren(el("p", "hint", "加载中…"));
+    api("/api/flywheel/failures?page=" + state.page).then(function (d) {
+      state.total = d.total;
+      renderFailures(d.items);
+      renderPager();
+    }).catch(function (err) {
+      box.replaceChildren();
+      box.appendChild(el("p", "hint", "加载失败:" + err.message));
+    });
+  }
+
+  function renderFailures(items) {
+    var box = document.getElementById("review-list");
+    box.replaceChildren();
+    if (!items.length) {
+      box.appendChild(el("p", "hint", "(没有处理失败的落池问题)"));
+      return;
+    }
+    items.forEach(function (it) {
+      var row = el("div", "rv-row");
+      var top = el("div", "top");
+      top.appendChild(el("span", "pill bad", "failed"));
+      top.appendChild(el("span", "pill muted", "尝试 " + it.attempt_count + " 次"));
+      var ops = el("div", "ops");
+      var retry = el("button", "btn", "重试");
+      retry.type = "button";
+      retry.addEventListener("click", function () { retryFailed(it.id); });
+      ops.appendChild(retry);
+      top.appendChild(ops);
+      row.appendChild(top);
+      row.appendChild(el("div", "q", it.raw_question));
+      row.appendChild(el("div", "m", "#" + it.id + " · " + (it.source || "-") + " · " + it.created_at));
+      if (it.last_error) row.appendChild(el("div", "err", it.last_error));
+      box.appendChild(row);
+    });
+  }
+
+  function renderPager() {
+    var pages = Math.max(1, Math.ceil(state.total / PAGE_SIZE));
+    document.getElementById("pager-info").textContent =
+      "第 " + state.page + " / " + pages + " 页(共 " + state.total + " 条)";
+    document.getElementById("pager-prev").disabled = state.page <= 1;
+    document.getElementById("pager-next").disabled = state.page >= pages;
+  }
+
+  /* ─── 详情抽屉 ─── */
+  function openDrawer(id) {
+    var body = document.getElementById("drawer-body");
+    body.replaceChildren(el("p", "hint", "加载中…"));
+    document.getElementById("drawer-foot").replaceChildren();
+    document.getElementById("detail-drawer").classList.add("open");
+    api("/api/review/" + id + "/detail").then(function (d) {
+      detail = d;
+      renderDrawer(d);
+    }).catch(function (err) {
+      body.replaceChildren(el("p", "hint", "详情加载失败:" + err.message));
+    });
+  }
+
+  function closeDrawer() {
+    document.getElementById("detail-drawer").classList.remove("open");
+    detail = null;
+  }
+
+  function renderDrawer(d) {
+    document.getElementById("drawer-title").textContent =
+      "#" + d.id + " " + d.normalized_question;
+    var pill = document.getElementById("drawer-status");
+    pill.className = "pill " + statusClass(d.review_status);
+    pill.textContent = d.review_status + " · 出现 " + d.occurrence_count + " 次";
+
+    var body = document.getElementById("drawer-body");
+    body.replaceChildren();
+
+    body.appendChild(el("h4", null, "AI 示例答案"));
+    body.appendChild(el("div", "frozen-answer", d.ai_suggested_answer || "(无)"));
+
+    if (d.approved_answer) {
+      body.appendChild(el("h4", null, d.review_status === "通过" ? "核准答案(已发布)" : "冻结答案(写入中)"));
+      body.appendChild(el("div", "frozen-answer", d.approved_answer));
+    }
+    if (d.last_write_error) {
+      body.appendChild(el("h4", null, "最近写入错误"));
+      body.appendChild(el("div", "err", d.last_write_error));
+    }
+
+    body.appendChild(el("h4", null, "归并的用户原话(" + (d.sources || []).length + " 条)"));
+    (d.sources || []).forEach(function (src) {
+      var card = el("div", "src");
+      card.appendChild(el("div", "raw", src.raw_question));
+      if (src.resolved_question && src.resolved_question !== src.raw_question) {
+        card.appendChild(el("div", null, "→ " + src.resolved_question));
+      }
+      card.appendChild(el("div", "m", "#" + src.lcq_id + " · " + (src.source || "-") + " · " + src.created_at));
+      var snaps = src.retrieved_chunks || [];
+      if (snaps.length) {
+        var snap = el("div", "snap");
+        snap.appendChild(el("div", "m", "当轮召回快照(" + snaps.length + " 条,原文+得分):"));
+        snaps.forEach(function (c) {
+          var item = el("div", "item");
+          item.appendChild(el("div", null, "[" + (c.section_path || "_chunk " + c.chunk_id) +
+            "] " + (c.question || "")));
+          item.appendChild(el("div", null, c.answer || ""));
+          item.appendChild(el("div", "sc", "score " + (c.score === null || c.score === undefined
+            ? "-" : c.score.toFixed ? c.score.toFixed(3) : c.score)));
+          snap.appendChild(item);
+        });
+        card.appendChild(snap);
+      } else {
+        card.appendChild(el("div", "m", "(该入口未带召回快照)"));
+      }
+      body.appendChild(card);
+    });
+    if (!(d.sources || []).length) {
+      body.appendChild(el("p", "hint", "(尚无归并原话)"));
+    }
+
+    var foot = document.getElementById("drawer-foot");
+    foot.replaceChildren();
+    if (d.review_status === "待审") {
+      var ta = el("textarea");
+      ta.id = "approve-answer";
+      ta.value = d.ai_suggested_answer || "";
+      var label = el("label", "hint", "核准答案(可编辑,写入知识库后对外可检索)");
+      label.style.display = "block";
+      label.appendChild(ta);
+      foot.appendChild(label);
+      var row = el("div");
+      row.style.cssText = "display:flex;gap:8px;margin-top:8px;";
+      var ok = el("button", "btn", "通过并写入知识库");
+      ok.type = "button";
+      ok.addEventListener("click", function () {
+        approve(d.id, document.getElementById("approve-answer").value);
+      });
+      var no = el("button", "btn danger", "驳回");
+      no.type = "button";
+      no.addEventListener("click", function () { reject(d.id); });
+      row.appendChild(ok);
+      row.appendChild(no);
+      foot.appendChild(row);
+    } else if (d.review_status === "写入中") {
+      var retry = el("button", "btn", "重试写入");
+      retry.type = "button";
+      retry.addEventListener("click", function () { approve(d.id, undefined); });
+      foot.appendChild(retry);
+      foot.appendChild(el("p", "hint",
+        "答案已冻结;重试复用本 review 知识块补齐向量化,失败不回退待审。"));
+    } else if (d.review_status === "通过") {
+      foot.appendChild(el("p", "hint",
+        "已通过并发布,知识块 " + (d.knowledge_chunk_ids || []).join(", ") + ";不可改答案。"));
+    } else if (d.review_status === "驳回") {
+      foot.appendChild(el("p", "hint", "已驳回留档;无重开入口。"));
+    }
+  }
+
+  /* ─── 操作 ─── */
+  function refreshAll() {
+    loadCounts();
+    loadList();
+  }
+
+  function approve(id, answer) {
+    var body = answer === undefined ? {} : { approved_answer: answer };
+    api("/api/review/" + id + "/approve", body).then(function (d) {
+      notice("已通过,知识块 " + (d.knowledge_chunk_ids || []).join(", "), false);
+      closeDrawer();
+      refreshAll();
+    }).catch(function (err) {
+      notice(err.message + (err.code === "job_busy" ? "(知识库忙,稍后重试)" : ""), true);
+    });
+  }
+
+  function reject(id) {
+    if (!confirm("确认驳回?驳回后不可重开。")) return;
+    api("/api/review/" + id + "/reject", {}).then(function () {
+      notice("已驳回", false);
+      closeDrawer();
+      refreshAll();
+    }).catch(function (err) { notice(err.message, true); });
+  }
+
+  function retryFailed(id) {
+    api("/api/flywheel/questions/" + id + "/retry", {}).then(function () {
+      notice("已重新排队,worker 随后处理", false);
+      refreshAll();
+    }).catch(function (err) { notice(err.message, true); });
+  }
+
+  document.getElementById("run-flywheel-btn").addEventListener("click", function () {
+    api("/api/flywheel/run", {}).then(function () {
+      notice("已通知飞轮 worker 处理到期 pending", false);
+      setTimeout(refreshAll, 1500);
+    }).catch(function (err) { notice(err.message, true); });
+  });
+
+  /* ─── 事件 ─── */
+  document.getElementById("status-tabs").addEventListener("click", function (e) {
+    var btn = e.target.closest("button");
+    if (!btn) return;
+    var buttons = this.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) buttons[i].className = "";
+    btn.className = "on";
+    state.tab = btn.getAttribute("data-tab");
+    state.page = 1;
+    var title = document.getElementById("list-title");
+    var desc = document.getElementById("list-desc");
+    title.textContent = state.tab;
+    if (state.tab === "处理失败") {
+      desc.textContent = "飞轮处理失败(标准化/解析连续失败到限)的落池原话;重试仅 failed → pending。";
+    } else if (state.tab === "写入中") {
+      desc.textContent = "人工已核准、正在写入知识库;失败保留冻结答案与块,重试补齐向量化。";
+    } else if (state.tab === "通过") {
+      desc.textContent = "已写回知识库(review:<id> 来源),对线上检索生效。";
+    } else if (state.tab === "驳回") {
+      desc.textContent = "驳回留档;不再提供编辑或重开。";
+    } else {
+      desc.textContent = "点「详情」看归并原话与召回快照,判断「真缺知识」还是「有但没检到」。";
+    }
+    loadList();
+  });
+  document.getElementById("pager-prev").addEventListener("click", function () {
+    if (state.page > 1) { state.page--; loadList(); }
+  });
+  document.getElementById("pager-next").addEventListener("click", function () {
+    state.page++; loadList();
+  });
+  document.getElementById("drawer-close").addEventListener("click", closeDrawer);
+
+  refreshAll();
+})();
+</script>
+</body>
+</html>
