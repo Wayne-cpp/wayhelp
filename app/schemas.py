@@ -231,3 +231,9 @@ class ConversationMessageOut(BaseModel):
     role: str
     content: str
     created_at: str | None
+
+
+class ReviewApproveRequest(BaseModel):
+    """ch09(spec §5.6):审核通过/写入中重试;首次必填非空核准答案,
+    写入中原样重试可省略(语义校验在 review_service.approve)。"""
+    approved_answer: str | None = None

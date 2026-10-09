@@ -2,7 +2,8 @@
 
 一切写库复用 ingest/mining 现有函数(run_ingest/vectorize_pending/run_mining),
 MySQL id 与 Milvus pk 1:1 对齐的不变量不由本模块另起路径。写动作(build/
-vectorize/mine/reset)拿全局作业互斥锁;读(state/search)不拿锁,可与作业并发。
+vectorize/mine/reset/rebuild/manual_ingest)拿全局作业互斥锁,审核写回
+(review_service.approve)共用同一把锁;读(state/search)不拿锁,可与作业并发。
 """
 
 import shutil
@@ -92,7 +93,9 @@ _JOB_LOCK = threading.Lock()
 
 
 @contextmanager
-def _job_lock():
+def job_lock():
+    """知识库全局作业锁(进程级,非阻塞):approve 等竞争者取锁失败即 409 job_busy,
+    不排队;build/vectorize/mine/reset/rebuild/manual_ingest/审核写回共用互斥。"""
     if not _JOB_LOCK.acquire(blocking=False):
         raise JobBusyError("另一个知识库作业正在进行,请稍后重试")
     try:
@@ -238,37 +241,40 @@ def manual_ingest(settings: Settings, session_factory: sessionmaker, embed,
                   store: MilvusKnowledgeStore, doc_type: str, title: str,
                   markdown: str, vectorize: bool = True) -> dict:
     """插入 knowledge_chunks(source_doc/chunk_index/prev/next 按挖掘块惯例置 NULL);
-    vectorize=True 时随即 vectorize_pending,中途失败块留 pending 并报错。"""
-    chunks = _manual_chunks(settings, doc_type, title, markdown)
-    if vectorize and embed is None:
-        raise EmbeddingNotConfiguredError(
-            "未配置 EMBEDDING_API_KEY,无法向量化;可取消「顺手向量化」仅入库")
-    with session_factory() as s:
-        try:
-            rows = []
-            for c in chunks:
-                row = KnowledgeChunk(
-                    category=c.category, questions=c.questions, answer=c.answer,
-                    section_path=c.section_path, content_type=c.content_type,
-                    is_key_clause=c.is_key_clause, source_doc=None, chunk_index=None,
-                    vectorize_status="pending")
-                s.add(row)
-                rows.append(row)
-            s.flush()
-            ids = [r.id for r in rows]
-            s.commit()
-        except Exception as exc:
-            s.rollback()
-            raise KbAdminError(f"手工录入入库失败: {type(exc).__name__}") from exc
-    if vectorize:
-        try:
-            store.ensure_collection()
-            vectorize_pending(settings, session_factory, embed, store)
-        except IngestError as exc:
-            raise VectorizeFailedError(
-                f"已入库 {len(ids)} 块(留 pending),向量化失败: {exc}") from exc
-    return {"chunk_ids": ids, "vectorized": vectorize,
-            "message": f"已入库 {len(ids)} 块" + (",已向量化" if vectorize else "(待向量化)")}
+    vectorize=True 时随即 vectorize_pending,中途失败块留 pending 并报错。
+    ch09 起整段纳入知识库作业锁:插块到可选向量化与其它写入口/审核写回互斥。"""
+    with job_lock():
+        chunks = _manual_chunks(settings, doc_type, title, markdown)
+        if vectorize and embed is None:
+            raise EmbeddingNotConfiguredError(
+                "未配置 EMBEDDING_API_KEY,无法向量化;可取消「顺手向量化」仅入库")
+        with session_factory() as s:
+            try:
+                rows = []
+                for c in chunks:
+                    row = KnowledgeChunk(
+                        category=c.category, questions=c.questions, answer=c.answer,
+                        section_path=c.section_path, content_type=c.content_type,
+                        is_key_clause=c.is_key_clause, source_doc=None,
+                        chunk_index=None, vectorize_status="pending")
+                    s.add(row)
+                    rows.append(row)
+                s.flush()
+                ids = [r.id for r in rows]
+                s.commit()
+            except Exception as exc:
+                s.rollback()
+                raise KbAdminError(f"手工录入入库失败: {type(exc).__name__}") from exc
+        if vectorize:
+            try:
+                store.ensure_collection()
+                vectorize_pending(settings, session_factory, embed, store)
+            except IngestError as exc:
+                raise VectorizeFailedError(
+                    f"已入库 {len(ids)} 块(留 pending),向量化失败: {exc}") from exc
+        return {"chunk_ids": ids, "vectorized": vectorize,
+                "message": f"已入库 {len(ids)} 块"
+                           + (",已向量化" if vectorize else "(待向量化)")}
 
 
 # ─── 写动作(作业互斥锁内)────────────────────────────────────────────────────
@@ -278,7 +284,7 @@ def build_kb(settings: Settings, session_factory: sessionmaker, embed,
              store: MilvusKnowledgeStore,
              docs_dir: Path = DEFAULT_DOCS_DIR) -> dict:
     """一键建库。无 embedding key 时自动只跑 Phase 1,留下 pending 不报错。"""
-    with _job_lock():
+    with job_lock():
         if embed is None:
             rc = run_ingest(settings, session_factory, None, store, docs_dir,
                             skip_vectorize=True)
@@ -334,7 +340,7 @@ def vectorize_kb(settings: Settings, session_factory: sessionmaker, embed,
                  store: MilvusKnowledgeStore) -> dict:
     if embed is None:
         raise EmbeddingNotConfiguredError("未配置 EMBEDDING_API_KEY,无法向量化")
-    with _job_lock():
+    with job_lock():
         store.ensure_collection()
         try:
             vectorize_pending(settings, session_factory, embed, store)
@@ -351,7 +357,7 @@ def mine_kb(settings: Settings, session_factory: sessionmaker, model, embed,
             store: MilvusKnowledgeStore) -> dict:
     if embed is None:
         raise EmbeddingNotConfiguredError("未配置 EMBEDDING_API_KEY,无法挖掘")
-    with _job_lock():
+    with job_lock():
         rc = run_mining(settings, session_factory, model, embed, store)
         if rc != 0:
             raise MiningFailedError("挖掘完成但存在失败批次,详见服务日志")
@@ -361,22 +367,22 @@ def mine_kb(settings: Settings, session_factory: sessionmaker, model, embed,
 def reset_kb(settings: Settings, session_factory: sessionmaker, embed,
              store: MilvusKnowledgeStore,
              docs_dir: Path = DEFAULT_DOCS_DIR) -> dict:
-    """选择性重建:只清 source_doc 非 NULL 的文档块(向量 + 行)后重新建库;
-    手工块与 qa_mined 块一律保留。"""
-    with _job_lock():
+    """选择性重建:只清 knowledge_docs/ 命名空间的文档块(含已移除文件的旧块,
+    向量 + 行)后重新建库;review:/manual:/qa_mined 等其余来源一律保留。"""
+    with job_lock():
         with session_factory() as s:
             ids = [r[0] for r in s.query(KnowledgeChunk.id)
-                   .filter(KnowledgeChunk.source_doc.isnot(None)).all()]
+                   .filter(KnowledgeChunk.source_doc.like("knowledge_docs/%")).all()]
         store.delete_by_ids(ids)
         with session_factory() as s:
             try:
                 # 先摘掉文档内自引用指针,再多行删除(InnoDB 自引用 FK 逐行检查)
                 s.query(KnowledgeChunk).filter(
-                    KnowledgeChunk.source_doc.isnot(None)).update(
+                    KnowledgeChunk.source_doc.like("knowledge_docs/%")).update(
                     {"prev_chunk_id": None, "next_chunk_id": None},
                     synchronize_session=False)
                 s.query(KnowledgeChunk).filter(
-                    KnowledgeChunk.source_doc.isnot(None)).delete(
+                    KnowledgeChunk.source_doc.like("knowledge_docs/%")).delete(
                     synchronize_session=False)
                 s.commit()
             except Exception as exc:
@@ -466,11 +472,12 @@ def _clear_knowledge_tables(session_factory: sessionmaker) -> None:
 def rebuild_index(settings: Settings, session_factory: sessionmaker, embed,
                   store: MilvusKnowledgeStore, state: KnowledgeStateHolder,
                   docs_dir: Path = DEFAULT_DOCS_DIR) -> dict:
-    """全量重置重建(spec §6):预检 → rebuilding → drop+清表 → 新 schema → 重灌 → 终验。
-    预检失败不动旧库(state 不变);破坏性步骤后失败置 rebuild_required 并抛。"""
+    """全量重置重建(spec §6):预检 → rebuilding → drop+清表 → 新 schema → 重灌
+    → 重放审核知识 → 终验。预检失败不动旧库(state 不变);破坏性步骤后失败置
+    rebuild_required 并抛,由下次 rebuild 恢复。"""
     if embed is None:
         raise EmbeddingNotConfiguredError("未配置 EMBEDDING_API_KEY,无法重建")
-    with _job_lock():
+    with job_lock():
         _preflight(settings, docs_dir)
         state.set(KnowledgeState.REBUILDING)
         try:
@@ -480,6 +487,14 @@ def rebuild_index(settings: Settings, session_factory: sessionmaker, embed,
             rc = run_ingest(settings, session_factory, embed, store, docs_dir)
             if rc != 0:
                 raise RebuildFailedError("重建:重新建库失败,详见服务日志")
+            # 重灌后重放审核知识(review_service 惰性 import 防环);replay 不取锁
+            # ——rebuild_index 已持 job_lock。失败置 REBUILD_REQUIRED(spec §5.6)。
+            from app.services import review_service
+            try:
+                review_service.replay_reviews_locked(settings, session_factory,
+                                                     embed, store)
+            except Exception as exc:
+                raise RebuildFailedError(f"重建:审核知识重放失败: {exc}") from exc
             if not store.search_bm25("MH-LP100", 3):
                 raise RebuildFailedError("重建终验:BM25 型号 smoke 无命中")
         except Exception:
