@@ -213,7 +213,7 @@ def build_front_nodes(deps: GraphDeps) -> dict:
         return {"resolved_query": resolved, "active_order": active,
                 "node_trace": trace, **base}
 
-    async def classify_intent(state):
+    async def classify_intent(state, config=None):
         writer = get_stream_writer()
         prompt = (INTENT_PROMPT
                   .replace("{history_block}", state.get("history_block") or "(无对话历史)")
@@ -232,7 +232,10 @@ def build_front_nodes(deps: GraphDeps) -> dict:
         else:
             intent, confidence = parsed
         route = ROUTE_TABLE[intent]
-        tag_intent(intent, confidence)  # ch09:回写 trace 元数据;未启用 no-op
+        # ch09:回写 trace 元数据;未启用 no-op。trace_id 取自 config
+        # configurable(log 节点才落 state,本节点执行时 state 里还没有)
+        tid = ((config or {}).get("configurable") or {}).get("trace_id")
+        tag_intent(intent, confidence, trace_id=tid)
         logger.info("node=classify_intent intent=%s confidence=%s route=%s",
                     intent, confidence, route)
         return {"intent": intent, "intent_confidence": confidence, "route": route,

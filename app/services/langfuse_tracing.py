@@ -67,21 +67,33 @@ def build_trace_config(settings: Settings, *, conversation_id: str, user_id: str
     return {"callbacks": [handler], "metadata": metadata, "tags": tags}
 
 
-def tag_intent(intent: str, confidence: float | None) -> None:
-    """classify_intent 出结果后回写当前 trace;无活动 trace/未启用 → no-op。
+def tag_intent(intent: str, confidence: float | None, *,
+               trace_id: str | None = None) -> None:
+    """classify_intent 出结果后回写当前 trace;无 trace_id/未启用 → no-op。
+
+    不依赖 ambient OTel context(图节点体内 update_current_trace 实测静默
+    丢失):按 trace_id 以 trace_context 建一个短命 span,借其 update_trace
+    落 trace 属性;span 本身同时充当 trace 树上的意图标记。
 
     update_current_trace 是 v3 SDK 官方的 trace 属性更新 API,签名全
     keyword-only:name/user_id/session_id/version/input/output/metadata/tags/
     public;v4 起才改用 propagate_attributes,钉 3.15.0 不受影响。依据:
     https://github.com/langfuse/langfuse-docs/blob/main/content/docs/observability/sdk/upgrade-path/python-v3-to-v4.mdx
     (另经 .venv langfuse/_client/client.py:1644 源码复核)。"""
+    if not trace_id:
+        return
     try:
-        from langfuse import get_client
-        client = get_client()
         md: dict[str, Any] = {"intent": intent}
         if confidence is not None:
             md["intent_confidence"] = confidence
-        client.update_current_trace(tags=[f"intent:{intent}"], metadata=md)
+        span = _get_client().start_observation(
+            trace_context={"trace_id": trace_id}, name="intent_tag",
+            as_type="span")
+        try:
+            span.update_trace(name="chat_turn", tags=[f"intent:{intent}"],
+                              metadata=md)
+        finally:
+            span.end()
     except Exception:
         logger.debug("langfuse tag_intent skipped", exc_info=True)
 

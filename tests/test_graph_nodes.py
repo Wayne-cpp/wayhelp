@@ -889,3 +889,28 @@ def test_to_stored_persisted_turn_no_tool_rows():
     assert [m.role for m in pack.stored] == ["user", "assistant", "assistant"]
     assert pack.checkpoint_indexes == [0, 1, 3]          # ToolMessage 不落库,索引跳 2
     assert pack.stored[1].tool_calls and pack.stored[1].content is None
+
+
+async def test_classify_tags_intent_with_config_trace_id(monkeypatch):
+    """验收回归:classify 须把 config.configurable.trace_id 传给 tag_intent
+    (trace_id 在 log 节点才落 state,classify 时只能取 config)。"""
+    import app.graph.nodes as nodes_mod
+    seen = []
+    monkeypatch.setattr(nodes_mod, "tag_intent",
+                        lambda intent, confidence, *, trace_id=None:
+                        seen.append((intent, confidence, trace_id)))
+    g = _graph(_ClassifyModel('{"intent":"商品咨询","confidence":0.9}'))
+    await g.ainvoke(new_turn_state("固件能升级吗"),
+                    config={"configurable": {"trace_id": "ab" * 16}})
+    assert seen == [("商品咨询", 0.9, "ab" * 16)]
+
+
+async def test_classify_without_trace_id_still_calls_tag(monkeypatch):
+    import app.graph.nodes as nodes_mod
+    seen = []
+    monkeypatch.setattr(nodes_mod, "tag_intent",
+                        lambda intent, confidence, *, trace_id=None:
+                        seen.append(trace_id))
+    g = _graph(_ClassifyModel('{"intent":"闲聊","confidence":0.9}'))
+    await g.ainvoke(new_turn_state("你好"))
+    assert seen == [None]  # 无 trace_id 时如实传 None,由 tag_intent 内部 no-op
