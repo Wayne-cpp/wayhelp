@@ -17,7 +17,8 @@ async def test_business_face_has_create_ticket_no_logistics():
     app = create_app(settings=make_settings(), model=model, runtime=make_runtime(tools=[]))
     async with await _client(app) as client:
         frames, sid = await _turn(client, "我的订单怎么样了")
-    assert _types(frames) == ["session", "delta", "[DONE]"]
+    # ch09 T6:完成轮在 [DONE] 前必有 turn_committed 锚点帧
+    assert _types(frames) == ["session", "delta", "turn_committed", "[DONE]"]
     bound = set(model.bound or [])
     assert {"query_order", "query_product", "query_faq", "create_ticket",
             "suggest_options"} <= bound
@@ -39,7 +40,8 @@ async def test_invalid_batch_write_not_last_recovers(db_session_factory):
                      runtime=runtime)
     async with await _client(app) as client:
         frames, sid = await _turn(client, "帮我建个工单顺便查下订单")
-    assert _types(frames) == ["session", "delta", "[DONE]"]  # 零执行:无 tool_start
+    # 零执行:无 tool_start;完成轮尾带 turn_committed 锚点帧(ch09 T6)
+    assert _types(frames) == ["session", "delta", "turn_committed", "[DONE]"]
     with db_session_factory() as s:
         rows = s.query(ToolAuditLog).filter(ToolAuditLog.tool_call_id.in_(["c1", "c2"])).all()
     assert len(rows) == 2 and {r.status for r in rows} == {"校验拦下"}

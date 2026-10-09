@@ -25,3 +25,8 @@ class UpstreamError(AppError):
 class ResumeConflictError(AppError):
     """ch06(spec §9.1):无匹配挂起/ID 不符/订单不在候选内 → 409。"""
     code = "resume_conflict"
+
+
+class FeedbackConflictError(AppError):
+    """ch09(spec §5.3):非最终回答/中间工具行/跨会话消息/反向反馈 → 409。"""
+    code = "feedback_conflict"

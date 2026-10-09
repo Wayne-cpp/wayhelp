@@ -4,7 +4,12 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from app.schemas import ChatActionRequest, ChatResumeRequest, ChatStreamRequest
+from app.schemas import (
+    ChatActionRequest,
+    ChatFeedbackRequest,
+    ChatResumeRequest,
+    ChatStreamRequest,
+)
 from app.services.chat_service import (
     ChatService,
     CitationsEvent,
@@ -136,3 +141,17 @@ async def chat_action(body: ChatActionRequest, request: Request):
         ticket_no = await service.create_ticket_from_action(
             body.user_id, body.session_id, body.source_message_id, body.ticket_type)
     return {"ticket_no": ticket_no, "status": "待处理"}
+
+
+@router.post("/v1/chat/feedback")
+async def chat_feedback(body: ChatFeedbackRequest, request: Request):
+    """ch09(spec §5.3):账本校验 404/409 → down 回捞落池 → 持久幂等。"""
+    from app.services import feedback
+    worker = getattr(request.app.state, "flywheel_worker", None)
+    return await feedback.submit_feedback(
+        settings=request.app.state.settings,
+        session_factory=request.app.state.session_factory,
+        graph=request.app.state.chat_service.graph,
+        user_id=body.user_id, conversation_id=body.conversation_id,
+        assistant_message_id=body.assistant_message_id, sentiment=body.sentiment,
+        on_pooled=(worker.notify if worker is not None else None))

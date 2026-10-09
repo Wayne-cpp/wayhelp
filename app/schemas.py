@@ -140,6 +140,31 @@ class ChatActionRequest(BaseModel):
         return self
 
 
+class ChatFeedbackRequest(BaseModel):
+    """ch09(spec §5.3):👍👎 反馈;消息 id 用十进制字符串传输(BIGINT 精度)。"""
+    user_id: str
+    conversation_id: str
+    assistant_message_id: str
+    sentiment: Literal["up", "down"]
+
+    @field_validator("user_id")
+    @classmethod
+    def _user_id(cls, v):
+        return _validate_uuid(v)
+
+    @field_validator("conversation_id")
+    @classmethod
+    def _conversation_id(cls, v):
+        return _validate_session_id(v)
+
+    @field_validator("assistant_message_id")
+    @classmethod
+    def _assistant_message_id(cls, v: str) -> str:
+        if not _SOURCE_MSG_ID_RE.match(v):
+            raise ValueError("assistant_message_id must be a decimal id string")
+        return v
+
+
 class ExtractRequest(BaseModel):
     text: str
 

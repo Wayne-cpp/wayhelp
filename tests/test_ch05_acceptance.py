@@ -150,9 +150,13 @@ async def test_a3_complaint_two_independent_buttons_and_old_button_binds_origina
         opts = sug[0]["options"]
         assert [o["action"] for o in opts] == ["transfer_human", "create_ticket"]
         assert opts[1]["ticket_type"] == "投诉"
-        # 帧序:suggest_actions 在最后一个 delta 之后、DONE 之前
-        assert _types(frames).index("suggest_actions") > len(_types(frames)) - 3
-        assert _types(frames)[-1] == "[DONE]"
+        # 帧序:suggest_actions 在最后一个 delta 之后、DONE 之前(不受 ch09 T6 的
+        # turn_committed 锚点帧影响;完成轮尾固定 turn_committed → [DONE])
+        types = _types(frames)
+        assert types.index("suggest_actions") > max(
+            i for i, t in enumerate(types) if t == "delta")
+        assert types.index("suggest_actions") < types.index("[DONE]")
+        assert types[-2:] == ["turn_committed", "[DONE]"]
         mid1 = sug[0]["source_message_id"]
         # 不点按钮继续正常聊(产生新用户消息)
         frames2, _ = await _turn(client, "顺便查下订单 1001", sid)

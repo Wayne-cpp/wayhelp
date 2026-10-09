@@ -151,6 +151,11 @@ class ChatService:
     def set_graph(self, graph) -> None:
         self._graph = graph
 
+    @property
+    def graph(self):
+        """ch09:反馈回捞要读 checkpoint history;路由层经此取图,不碰私有字段。"""
+        return self._graph
+
     async def prepare(self, user_id: str, session_id: str | None, message: str) -> PreparedTurn:
         if len(message) > self._settings.max_message_chars:
             raise MessageTooLongError("message exceeds MAX_MESSAGE_CHARS")

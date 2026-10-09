@@ -26,6 +26,7 @@ from app.knowledge.retriever import KnowledgeRetriever
 from app.knowledge.state import KnowledgeState, KnowledgeStateHolder
 from app.errors import (
     AppError,
+    FeedbackConflictError,
     MessageTooLongError,
     ResumeConflictError,
     SessionCapacityReachedError,
@@ -267,6 +268,12 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     async def _(request: Request, exc: ResumeConflictError) -> JSONResponse:
         # ch06 spec §9.1:旧卡/已恢复卡/重复点击/新轮再挂起时的旧卡均适用
         return JSONResponse(status_code=409, content=_error_body(exc.code, "该选择已失效"))
+
+    @app.exception_handler(FeedbackConflictError)
+    async def _(request: Request, exc: FeedbackConflictError) -> JSONResponse:
+        # ch09 spec §5.3:非最终回答/中间工具行/跨会话/反向反馈均适用
+        return JSONResponse(status_code=409,
+                            content=_error_body(exc.code, "该反馈目标不可用或已反馈"))
 
     @app.exception_handler(SessionCapacityReachedError)
     async def _(request: Request, exc: SessionCapacityReachedError) -> JSONResponse:
