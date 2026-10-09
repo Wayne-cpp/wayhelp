@@ -37,6 +37,7 @@ from app.services.context_layers import (
     render_history_text,
 )
 from app.services.langfuse_tracing import tag_intent
+from app.services.retrieval_snapshot import snapshot_top_chunks
 from app.services.token_budget import compute_budget, measure_sys_tokens
 from app.sessions import (
     ContextMeta, LowConfidenceRecord, PersistedTurn, StoredMessage,
@@ -530,20 +531,24 @@ def _to_stored(turn_messages) -> PersistedTurn:
     return PersistedTurn(stored, indexes)
 
 
-def _build_low_conf(state, cid: int | None) -> LowConfidenceRecord | None:
+def _build_low_conf(state, cid: int | None, top_n: int) -> LowConfidenceRecord | None:
+    snap = state.get("retrieval_result") or {}
+    chunks = snapshot_top_chunks(snap.get("hits"), top_n)
+    base = {"raw_question": state["raw_query"], "conversation_id": cid,
+            "retrieved_chunks": chunks,
+            "resolved_question": state.get("resolved_query") or None,
+            "turn_message_id": state.get("turn_message_id")}
     if state["low_conf_source"] == "retrieval_low_conf":
         return LowConfidenceRecord(
-            raw_question=state["raw_query"], source="retrieval_low_conf",
-            reason=json.dumps(state["low_conf_reason"], ensure_ascii=False),
-            conversation_id=cid)
+            **base, source="retrieval_low_conf",
+            reason=json.dumps(state["low_conf_reason"], ensure_ascii=False))
     if (state["retrieval_status"] == "ok"
             and state["final_text"].strip() == REFUSAL_ANSWER):
         refs = [{"ref_no": e["ref_no"], "chunk_id": e["chunk_id"]}
                 for e in state["evidence"]]
         return LowConfidenceRecord(
-            raw_question=state["raw_query"], source="self_check",
-            reason=json.dumps({"evidence_refs": refs}, ensure_ascii=False),
-            conversation_id=cid)
+            **base, source="self_check",
+            reason=json.dumps({"evidence_refs": refs}, ensure_ascii=False))
     return None
 
 
@@ -562,7 +567,7 @@ def build_log_node(deps: GraphDeps):
         sid = config["configurable"]["thread_id"]
         stored_pack = _to_stored(state["turn_messages"])
         cid = int(sid) if sid.isdecimal() else None
-        low_conf = _build_low_conf(state, cid)
+        low_conf = _build_low_conf(state, cid, deps.settings.low_conf_snapshot_top_n)
         # ch07 Task 16:本轮用户行 prepare 已落库并盖章 → commit 幂等,只补 assistant 行
         # (resume 完成路径同样成立:盖章随图输入经 interrupt/checkpoint 存活)
         first = state["turn_messages"][0]
@@ -619,8 +624,17 @@ def build_log_node(deps: GraphDeps):
                     state.get("agent_steps"), state.get("agent_tokens"),
                     state.get("token_accounting"))
         out = {"messages": stamped,
+               # ch09 spec §5.3:本轮行带 db_id 与两锚点随 checkpoint 落 state 输出,
+               # 不能只在局部变量盖章(用户反馈回捞按完成轮锚点定位)
+               "turn_messages": stamped,
                "source_message_id": result.source_message_id,
+               # 真 store 恒非空(validate_turn ≥2 行);message_ids 契约允许缺省,
+               # 最小 stub 留空时锚点置 None 而非崩溃
+               "final_assistant_message_id": (int(result.message_ids[-1])
+                                              if result.message_ids else None),
                "node_trace": [*state["node_trace"], {"node": "log"}]}
+        if prepared_user_id is not None:
+            out["turn_message_id"] = prepared_user_id
         tid = (config.get("configurable") or {}).get("trace_id")
         if tid:
             out["trace_id"] = tid  # ch09:trace_id 落 checkpoint,resume 续传

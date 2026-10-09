@@ -123,6 +123,9 @@ class DbSessionStore:
                     raw_question=low_confidence.raw_question,
                     source=low_confidence.source,
                     reason=low_confidence.reason,
+                    retrieved_chunks=low_confidence.retrieved_chunks,
+                    resolved_question=low_confidence.resolved_question,
+                    turn_message_id=low_confidence.turn_message_id,
                 ))
             s.commit()  # 任一失败整体回滚(Session 上下文管理器);低置信度入池与消息同事务
             return ids

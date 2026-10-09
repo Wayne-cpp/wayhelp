@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+    low_conf_snapshot_top_n: int = Field(default=3, gt=0)  # 落池召回快照条数(审核页展示)
 
     @field_validator("tool_timeout_overrides", mode="before")
     @classmethod

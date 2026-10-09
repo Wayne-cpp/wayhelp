@@ -17,9 +17,12 @@ class StoredMessage:
 @dataclass(frozen=True)
 class LowConfidenceRecord:
     raw_question: str
-    source: str            # "retrieval_low_conf" | "self_check"(user_feedback 本章不写)
+    source: str            # "retrieval_low_conf" | "self_check" | "user_feedback"
     reason: str | None
     conversation_id: int | None
+    retrieved_chunks: list[dict] | None = None   # ch09:召回快照
+    resolved_question: str | None = None         # ch09:指代消解后问题
+    turn_message_id: int | None = None           # ch09:轮次锚点
 
 
 @dataclass(frozen=True)
