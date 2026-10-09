@@ -60,6 +60,7 @@ class GraphDeps:
     catalog: Any = None          # ch08 ToolCatalog(main_agent 工具面装配)
     mcp_gateway: Any = None      # ch08 McpGateway(每轮 MCP 发现;None = 未配置)
     session_factory: Any = None  # ch08 审计/写确认用
+    flywheel: Any = None         # ch09 FlywheelWorker(log 落池后 notify)
 
 
 def parse_intent_output(text: str) -> tuple[str, float | None] | None:
@@ -584,6 +585,8 @@ def build_log_node(deps: GraphDeps):
             with contextlib.suppress(Exception):
                 await commit_task
             raise
+        if low_conf is not None and deps.flywheel is not None:
+            deps.flywheel.notify()   # ch09:落池即唤醒飞轮(Event 加速,DB 为准)
         # 盖章:落库行 id 按索引映射写回 checkpoint 消息(additional_kwargs.db_id)
         stamped = list(state["turn_messages"])
         for row_id, msg_idx in zip(result.message_ids, stored_pack.checkpoint_indexes):

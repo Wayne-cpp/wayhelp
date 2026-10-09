@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     low_conf_snapshot_top_n: int = Field(default=3, gt=0)  # 落池召回快照条数(审核页展示)
+    # ch09 飞轮流水线(spec §5.4):lifespan 单 worker,Event 唤醒 + DB 退避到期自醒
+    flywheel_batch_size: int = Field(default=50, gt=0)
+    review_queue_match_limit: int = Field(default=200, gt=0)  # 查重候选上限保护
+    flywheel_retry_base_seconds: float = Field(default=60, gt=0)  # 模型/解析失败的指数退避基数
+    flywheel_retry_max_seconds: float = Field(default=3600, gt=0)  # 自动重试与 worker 异常恢复的退避上限
+    flywheel_max_attempts: int = Field(default=5, ge=1)  # 连续失败次数上限,到限转 failed 等人工重试
     # 正式置信闸冻结参数(spec §5.2):默认 uncalibrated = 退化为旧 top1 信号行为
     # (既有 rerank_confidence_signal/rerank_min_score 口径继续生效);
     # 校准(uv run python evals/run_retrieval_compare.py --calibrate-evidence,Task 16 实跑)

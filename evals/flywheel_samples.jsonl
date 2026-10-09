@@ -1,0 +1,13 @@
+{"raw": "发票咋开啊", "resolved": "如何开具发票?", "expect_normalized_contains": ["发票"], "candidates": [], "expect_match_id": null}
+{"raw": "能帮我改下收货地址不", "resolved": "如何修改收货地址?", "expect_normalized_contains": ["收货地址", "地址"], "candidates": [{"id": 1, "question": "如何修改订单收货地址?"}], "expect_match_id": 1}
+{"raw": "东西坏了想修", "resolved": "商品损坏如何申请维修?", "expect_normalized_contains": ["维修"], "candidates": [{"id": 2, "question": "退货退款流程是什么?"}], "expect_match_id": null}
+{"raw": "我的优惠券怎么用不了", "resolved": "优惠券无法使用的原因?", "expect_normalized_contains": ["优惠券"], "candidates": [{"id": 3, "question": "优惠券的使用条件是什么?"}, {"id": 4, "question": "如何开发票?"}], "expect_match_id": 3}
+{"raw": "啥时候能到啊", "resolved": "订单什么时候发货?", "expect_normalized_contains": ["发货", "送达", "到货"], "candidates": [{"id": 5, "question": "如何申请价格保护?"}], "expect_match_id": null}
+{"raw": "退款咋还没到账", "resolved": "退款多久到账?", "expect_normalized_contains": ["退款"], "candidates": [{"id": 6, "question": "退款一般需要多少天到账?"}, {"id": 7, "question": "如何取消订单?"}], "expect_match_id": 6}
+{"raw": "密码忘了登不上", "resolved": "忘记密码如何重置?", "expect_normalized_contains": ["密码"], "candidates": [{"id": 8, "question": "如何修改账号绑定手机?"}], "expect_match_id": null}
+{"raw": "买重复了想退一个", "resolved": "如何退掉重复购买的商品?", "expect_normalized_contains": ["退"], "candidates": [{"id": 9, "question": "多买了一件如何退货?"}], "expect_match_id": 9}
+{"raw": "你们客服电话多少", "resolved": "客服联系电话是多少?", "expect_normalized_contains": ["客服", "联系"], "candidates": [], "expect_match_id": null}
+{"raw": "七天无理由是七天吗", "resolved": "七天无理由退货的期限如何计算?", "expect_normalized_contains": ["七天", "退货"], "candidates": [{"id": 10, "question": "七天无理由退货时间从哪天开始算?"}], "expect_match_id": 10}
+{"raw": "能不能换个颜色", "resolved": "如何申请换货?", "expect_normalized_contains": ["换"], "candidates": [{"id": 11, "question": "如何申请退货退款?"}], "expect_match_id": null}
+{"raw": "包邮吗这个", "resolved": "该商品是否包邮?", "expect_normalized_contains": ["包邮", "运费"], "candidates": [{"id": 12, "question": "运费怎么算?"}], "expect_match_id": 12}
+{"raw": "订单号找不到了", "resolved": "在哪里查看订单号?", "expect_normalized_contains": ["订单"], "candidates": [{"id": 13, "question": "如何查询我的订单?"}], "expect_match_id": 13}

@@ -45,6 +45,7 @@ from app.services import eval_runs as eval_runs_service
 from app.services import rag_eval as rag_eval_service
 from app.services.rag_eval import ReportCorruptError
 from app.services.chat_service import ChatService
+from app.services.flywheel import FlywheelWorker
 from app.services.kb_admin import DEFAULT_DOCS_DIR, KbAdminError
 from app.services.summarizer import SummaryRunner
 from app.store_db import DbSessionStore
@@ -174,11 +175,15 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     summary_runner = SummaryRunner(runtime.store, model, settings)
     service = ChatService(runtime.store, model, settings, SERVICE_SYSTEM_PROMPT,
                           session_factory=runtime.session_factory)
+    # ch09 飞轮 worker(spec §5.4):log/反馈落池经 GraphDeps.notify 唤醒;
+    # 无 session_factory(纯内存测试路径)时 start() 不启动
+    flywheel_worker = FlywheelWorker(settings, runtime.session_factory, model)
     deps = GraphDeps(model=model, settings=settings, retriever=runtime.retriever,
                      store=runtime.store, system_prompt=SERVICE_SYSTEM_PROMPT,
                      context_budget=context_budget, summary_runner=summary_runner,
                      catalog=tool_catalog, mcp_gateway=mcp_gateway,
-                     session_factory=runtime.session_factory)
+                     session_factory=runtime.session_factory,
+                     flywheel=flywheel_worker)
     if not owns_runtime:  # 测试/嵌入路径:内存 checkpointer 即刻可用
         service.set_graph(build_chat_graph(deps, InMemorySaver()))
 
@@ -190,12 +195,14 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
             from app.services.eval_scheduler import eval_scheduler_loop
             sched_task = asyncio.create_task(
                 eval_scheduler_loop(app.state.job_runner, settings))
+        flywheel_worker.start()  # ch09 飞轮:启动即扫描恢复积压(无 DB 时 no-op)
         if owns_runtime:  # 生产:SQLite checkpointer 由 lifespan 托管,启停对称
             async with AsyncSqliteSaver.from_conn_string(settings.checkpoint_db_path) as cp:
                 service.set_graph(build_chat_graph(deps, cp))
                 yield
         else:
             yield
+        await flywheel_worker.aclose()  # ch09:关闭 cancel/wait worker,取消不算模型失败
         if sched_task is not None:  # 关闭先 cancel/wait 调度器,再收尾 job runner
             sched_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -227,6 +234,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
                                  if runtime.knowledge_state is not None
                                  else KnowledgeStateHolder())
     app.state.retriever = runtime.retriever
+    app.state.flywheel_worker = flywheel_worker
     app.state.kb_docs_dir = DEFAULT_DOCS_DIR
     app.include_router(chat_router)
     app.include_router(conversations_router)
