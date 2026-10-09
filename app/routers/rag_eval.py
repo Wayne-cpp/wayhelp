@@ -6,9 +6,12 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from app.schemas import FaithCasePatchRequest
+from app.services import eval_runs as eval_runs_svc
 from app.services import rag_eval as svc
 
 router = APIRouter(prefix="/api/rag-eval")
+# eval-runs 走完整路径 /api/eval-runs(Task 11 契约),不吃上面的 prefix
+eval_runs_router = APIRouter()
 
 
 def _err(status: int, code: str, message: str) -> JSONResponse:
@@ -69,3 +72,13 @@ async def faith_case_patch(row_id: int, body: FaithCasePatchRequest, request: Re
     if item is None:
         return _err(404, "faith_case_not_found", "个案不存在")
     return item
+
+
+@eval_runs_router.get("/api/eval-runs")
+async def eval_runs_list(request: Request):
+    """eval_runs 台账(按 created_at 升序),供趋势图直接画。"""
+    sf = _sf(request)
+    if sf is None:
+        return _err(503, "rag_eval_unavailable", "数据库依赖未装配")
+    runs = await asyncio.to_thread(eval_runs_svc.list_runs, sf)
+    return {"runs": runs}

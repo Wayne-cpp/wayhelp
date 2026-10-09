@@ -16,7 +16,7 @@ async def job_run(name: str, request: Request):
     runner = request.app.state.job_runner
     if name not in runner.names():
         return _err(404, "job_unknown", "未知作业")
-    if not await runner.run(name):
+    if not await runner.run(name, triggered_by="手动"):
         return _err(409, "job_running", "作业正在运行")
     return {"started": True}
 

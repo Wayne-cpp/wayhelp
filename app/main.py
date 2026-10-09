@@ -39,7 +39,9 @@ from app.routers.conversations import router as conversations_router
 from app.routers.extract import router as extract_router
 from app.routers.jobs import router as jobs_router
 from app.routers.kb import router as kb_router
+from app.routers.rag_eval import eval_runs_router
 from app.routers.rag_eval import router as rag_eval_router
+from app.services import eval_runs as eval_runs_service
 from app.services import rag_eval as rag_eval_service
 from app.services.rag_eval import ReportCorruptError
 from app.services.chat_service import ChatService
@@ -222,6 +224,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.include_router(kb_router)
     app.include_router(jobs_router)
     app.include_router(rag_eval_router)
+    app.include_router(eval_runs_router)
 
     root_dir = Path(__file__).resolve().parent.parent
     app.state.rag_eval_report_path = root_dir / "evals" / "results" / "rag_eval.json"
@@ -233,7 +236,11 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
             return None
 
     job_runner = JobRunner(log_dir=root_dir / "data" / "jobs",
-                           report_loader=_report_loader, cwd=root_dir)
+                           report_loader=_report_loader, cwd=root_dir,
+                           on_report_published=(
+                               (lambda report, by: eval_runs_service.record_run(
+                                   runtime.session_factory, report, by))
+                               if runtime.session_factory is not None else None))
     job_runner.register("eval-rag",
                         ["uv", "run", "python", "evals/run_retrieval_compare.py"])
     app.state.job_runner = job_runner

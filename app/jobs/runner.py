@@ -6,12 +6,15 @@
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 LOG_TAIL_BYTES = 8192
 _CLOSE_TIMEOUT_S = 5
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> str:
@@ -28,14 +31,17 @@ class JobInfo:
     quality_passed: bool | None = None
     report_run_id: str | None = None
     error: str | None = None
+    triggered_by: str = "手动"      # 定时|手动(Task 11)
     proc: object = field(default=None, repr=False)  # asyncio.subprocess.Process
 
 
 class JobRunner:
-    def __init__(self, log_dir, report_loader=None, cwd=None):
+    def __init__(self, log_dir, report_loader=None, cwd=None, on_report_published=None):
         self._log_dir = Path(log_dir)
         self._report_loader = report_loader  # callable() -> dict|None(已校验报告)
         self._cwd = str(cwd) if cwd else None
+        # 报告发布回调 callable(report: dict, triggered_by: str);失败只记日志
+        self._on_report = on_report_published
         self._cmds: dict[str, list[str]] = {}
         self._jobs: dict[str, JobInfo] = {}
         self._lock = asyncio.Lock()
@@ -55,14 +61,15 @@ class JobRunner:
             return None
         return (report.get("meta") or {}).get("run_id")
 
-    async def run(self, name: str) -> bool:
+    async def run(self, name: str, *, triggered_by: str = "手动") -> bool:
         if name not in self._cmds:
             raise KeyError(name)
         async with self._lock:  # 检查+登记原子化:两个并发 POST 只放一个
             job = self._jobs.get(name)
             if job is not None and job.status == "running":
                 return False
-            job = JobInfo(name=name, status="running", started_at=_utcnow())
+            job = JobInfo(name=name, status="running", started_at=_utcnow(),
+                          triggered_by=triggered_by)
             self._jobs[name] = job
         asyncio.create_task(self._exec(job))
         return True
@@ -97,6 +104,11 @@ class JobRunner:
                 gates = report.get("gates") or {}
                 job.quality_passed = bool(gates.get("passed"))
                 job.report_run_id = run_id
+                if self._on_report is not None:   # 落表回调:失败只记日志,不翻作业状态
+                    try:
+                        self._on_report(report, job.triggered_by)
+                    except Exception:
+                        logger.exception("on_report_published failed job=%s", job.name)
             else:
                 job.status = "failed"
         finally:
@@ -114,7 +126,7 @@ class JobRunner:
         return {"name": name, "status": job.status, "started_at": job.started_at,
                 "finished_at": job.finished_at, "exit_code": job.exit_code,
                 "quality_passed": job.quality_passed, "report_run_id": job.report_run_id,
-                "error": job.error, "log_tail": tail}
+                "error": job.error, "triggered_by": job.triggered_by, "log_tail": tail}
 
     async def close(self) -> None:
         for job in self._jobs.values():
