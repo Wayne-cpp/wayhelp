@@ -2,9 +2,12 @@
 
 用法:
   uv run python evals/run_retrieval_compare.py [--max-d-pass 0.10]
+  uv run python evals/run_retrieval_compare.py --calibrate-evidence [--max-d-pass 0.10]
 前置:EMBEDDING_API_KEY 必填;RERANK_API_KEY 空时回退 EMBEDDING_API_KEY;
 主库须已执行 ch04 DDL(faith_cases 写主业务库);服务已停(Lite 独占)。
-产物:evals/results/{UTC 时间戳}_compare.json + .md
+产物:evals/results/{UTC 时间戳}_compare.json + .md;--calibrate-evidence 模式只跑
+calibration split × hybrid_rerank 臂,冻结产物 evals/calibration/evidence_confidence.json
+(版本控制),原始候选报告进忽略的 evals/results/;无可行点退出码 2 且不写产物。
 口径(2026-09-16 用户批准):某策略在 D 约束下无可行阈值时,该臂不冻结阈值
 (ungated, threshold=null,有命中即过闸),报告标注「仅观测」,评估不中断。
 另:评估模型关思考模式(extra_body thinking disabled)——思考模式下合成的
@@ -28,6 +31,7 @@ from langchain_openai import ChatOpenAI
 from app.config import Settings
 from app.db import check_ch04_tables, make_engine, make_session_factory
 from app.knowledge.embedding import build_embeddings
+from app.knowledge.evidence_confidence import EvidenceGateParams, evidence_confidence
 from app.knowledge.evalset import BUCKETS, covered_groups, load_compare_cases
 from app.knowledge.ingest import run_ingest
 from app.knowledge.milvus_store import MilvusKnowledgeStore
@@ -51,6 +55,7 @@ from evals.run_knowledge_eval import _prepare_eval_db
 ROOT = Path(__file__).resolve().parent.parent
 CASES = Path(__file__).parent / "retrieval_compare.txt"
 RESULTS_DIR = Path(__file__).parent / "results"
+CALIBRATION_DIR = Path(__file__).parent / "calibration"   # 冻结产物目录(版本控制)
 STRATEGIES = ("dense", "bm25", "hybrid", "hybrid_rerank")
 DEFAULT_MAX_D_PASS = 0.10
 MIN_B_RECALL = 0.5   # 硬门槛:B_model test 桶 bm25 SectionRecall@10 下限
@@ -182,6 +187,104 @@ def choose_confidence_signal(samples: list[dict], max_d_pass: float) -> tuple[st
 
     winner = max(gated, key=_key)[1]
     return winner, results[winner], results
+
+
+def calibrate_evidence_gate(samples: list[dict], max_d_pass: float,
+                            *, weight_step: float = 0.1) -> dict | None:
+    """--calibrate-evidence 网格搜索(spec §5.2,只跑 calibration split 的 hybrid_rerank 臂)。
+    网格:权重三元组(0.1 步长、和为 1)× min_effective_score(0.01~0.2,0.01 步)
+    × threshold(0.01 步,只扫到该组合的最大观测置信分——「全拒」退化点无意义,
+    也让无可行点真实可达);置信分一律用生产同一 evidence_confidence() 计算。
+    约束 D_absent 误放行率 ≤ max_d_pass,最大化正例通过率;并列 → d_pass 低 →
+    阈值低 → 有效分下限低 → top1 权重高 → count 权重高(简单优先,确定性胜出)。
+    samples 行:{"should_refuse": bool, "scores": 降序重排分向量, "recall10": float}。
+    无可行点 → None(调用方退出码 2 且不写产物)。"""
+    pos = [s for s in samples if not s["should_refuse"]]
+    neg = [s for s in samples if s["should_refuse"]]
+    if not pos or not neg:
+        raise SystemExit("[calibrate] 校准需要正负样本俱全(D_absent 与正例)")
+    n_steps = int(round(1.0 / weight_step))
+    weights_grid = [(round(i * weight_step, 10), round(j * weight_step, 10),
+                     round(1.0 - (i + j) * weight_step, 10))
+                    for i in range(n_steps + 1) for j in range(n_steps + 1 - i)]
+    me_grid = [round(0.01 * k, 10) for k in range(1, 21)]
+    best = None
+    for w1, w2, w3 in weights_grid:
+        for me in me_grid:
+            params = EvidenceGateParams(weight_top1=w1, weight_count=w2,
+                                        weight_margin=w3, min_effective_score=me,
+                                        threshold=0.0, version="grid")
+            confs = [evidence_confidence(s["scores"], params) for s in samples]
+            # 阈值上界取正例最大置信(浮点.floor 容差 1e-9);过不了任何正例的阈值
+            # 是「全拒」退化点,不算可行解——否则无可行点永不触发
+            cap = max((c for c, s in zip(confs, samples)
+                       if not s["should_refuse"] and c is not None), default=None)
+            if cap is None:   # 正例全零命中:该组合无信息
+                continue
+            for k in range(1, int(cap * 100 + 1e-9) + 1):
+                t = round(k / 100, 10)
+                passed = sum(1 for c, s in zip(confs, samples)
+                             if not s["should_refuse"] and c is not None and c >= t)
+                if passed == 0:   # 浮点边界:k/100 可能恰高于最大正例置信
+                    continue
+                d_pass = sum(1 for c, s in zip(confs, samples)
+                             if s["should_refuse"] and c is not None and c >= t)
+                d_rate = d_pass / len(neg)
+                if d_rate > max_d_pass:
+                    continue
+                key = (passed / len(pos), -d_rate, -t, -me, w1, w2)
+                if best is None or key > best[0]:
+                    best = (key, {"weights": {"top1": w1, "count": w2, "margin": w3},
+                                  "min_effective_score": me, "threshold": t,
+                                  "d_pass_rate": d_rate,
+                                  "pass_rate": passed / len(pos)})
+    return None if best is None else best[1]
+
+
+def build_evidence_artifact(best: dict, settings: Settings, version: str) -> dict:
+    """冻结产物契约(spec §5.2):evals/calibration/evidence_confidence.json 的形状。"""
+    return {"version": version, "calibrated_at": version,
+            "corpus": "knowledge_docs/", "model": settings.model_name,
+            "rerank_model": settings.rerank_model,
+            "weights": dict(best["weights"]),
+            "min_effective_score": best["min_effective_score"],
+            "threshold": best["threshold"],
+            "d_pass_rate": best["d_pass_rate"], "pass_rate": best["pass_rate"]}
+
+
+def _finish_evidence_calibration(cases: list[dict], settings: Settings,
+                                 max_d_pass: float) -> int:
+    samples = [{"should_refuse": c["should_refuse"],
+                "scores": c["retrieval"]["hybrid_rerank"]["scores"],
+                "recall10": section_recall_at_k(c["retrieval"]["hybrid_rerank"]["paths"],
+                                                c["gt_groups"], 10)}
+               for c in cases]
+    best = calibrate_evidence_gate(samples, max_d_pass)
+    if best is None:
+        print(f"[calibrate] 无可行点:D_absent 误放行率 ≤ {max_d_pass} 约束下不存在解,"
+              f"不写产物(红线:停下来问用户)", file=sys.stderr)
+        return 2
+    now = datetime.now(timezone.utc)
+    artifact = build_evidence_artifact(best, settings, now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
+    path = CALIBRATION_DIR / "evidence_confidence.json"
+    path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+    RESULTS_DIR.mkdir(exist_ok=True)   # 原始候选报告进忽略目录(spec §5.2)
+    raw_path = RESULTS_DIR / f"{now.strftime('%Y%m%dT%H%M%SZ')}_evidence_calibration.json"
+    raw_path.write_text(json.dumps({"ts": artifact["calibrated_at"],
+                                    "max_d_pass": max_d_pass, "best": best,
+                                    "samples": samples},
+                                   ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[calibrate] 冻结产物: {path}")
+    print(f"[calibrate] 原始报告(忽略目录): {raw_path}")
+    print(f"[calibrate] weights={best['weights']}"
+          f" min_effective_score={best['min_effective_score']}"
+          f" threshold={best['threshold']:.4f}"
+          f" d_pass={best['d_pass_rate']:.3f} pass={best['pass_rate']:.3f}")
+    print("[calibrate] 人工评审后把冻结值回填 config.py 默认值并更新"
+          " evidence_confidence_version(照 0.0553 现有钉法)")
+    return 0
 
 
 _JUDGE_JSON_RE = re.compile(r"\{.*\}", re.S)
@@ -464,6 +567,7 @@ def _parse_max_d_pass(argv: list[str]) -> float:
 
 def main(argv: list[str]) -> int:
     _t0 = time.monotonic()
+    calibrate = "--calibrate-evidence" in argv   # ch09 校准模式:只跑 calibration split
     max_d_pass = _parse_max_d_pass(argv)
     run_id = new_run_id(datetime.now(timezone.utc))  # 含微秒,连跑不重
     settings = Settings()
@@ -503,6 +607,8 @@ def main(argv: list[str]) -> int:
                           for r in s.query(KnowledgeChunk).all()}
         corpus_paths = [m[0] for m in chunk_meta.values()]
         cases = [_case_dict(c) for c in load_compare_cases(CASES)]
+        if calibrate:   # 校准只烧 calibration split(奇数 id)× hybrid_rerank 臂
+            cases = [c for c in cases if c["split"] == "calibration"]
         by_id = {c["id"]: c for c in cases}
         for c in cases:  # 覆盖断言:每个正例 AND 组至少一个别名命中语料 section_path
             for g in c["gt_groups"]:
@@ -516,8 +622,8 @@ def main(argv: list[str]) -> int:
             settings, embed=embed, store=store, session_factory=eval_sf, model=model,
             reranker=SiliconFlowReranker(settings))
         for c in cases:  # 检索段:四策略 × 全量 300,min_score=-1 阈值离线施加
-            c["retrieval"] = {}
-            for strat in STRATEGIES:
+            c["retrieval"] = {}   # 校准模式只跑 hybrid_rerank × calibration split
+            for strat in (("hybrid_rerank",) if calibrate else STRATEGIES):
                 res = _search_with_retry(retriever, c["query"], strat, c["plan"])
                 scores = [h.score for h in res.hits[:5]]  # 末级排序分向量,供置信信号离线选拔
                 entry = {
@@ -531,6 +637,8 @@ def main(argv: list[str]) -> int:
                     entry["signals"] = {sig: confidence_from_scores(scores, sig)
                                         for sig in CONFIDENCE_SIGNALS}
                 c["retrieval"][strat] = entry
+        if calibrate:   # 网格搜索 → 冻结产物;无可行点退出码 2(不进下方评估流程)
+            return _finish_evidence_calibration(cases, settings, max_d_pass)
         calibration = [c for c in cases if c["split"] == "calibration"]
         thresholds, pareto = {}, {}
         signal_choice = {}

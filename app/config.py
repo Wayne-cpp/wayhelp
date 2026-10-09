@@ -78,6 +78,18 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     low_conf_snapshot_top_n: int = Field(default=3, gt=0)  # 落池召回快照条数(审核页展示)
+    # 正式置信闸冻结参数(spec §5.2):默认 uncalibrated = 退化为旧 top1 信号行为
+    # (既有 rerank_confidence_signal/rerank_min_score 口径继续生效);
+    # 校准(uv run python evals/run_retrieval_compare.py --calibrate-evidence,Task 16 实跑)
+    # 后把 evals/calibration/evidence_confidence.json 的值同步到此处默认值并注明日期。
+    # 注:evidence_min_confidence 即 spec §7 表的 RERANK_EVIDENCE_MIN_CONFIDENCE(同一 knob,
+    # 命名以计划为准);evidence_confidence_version 即 EVIDENCE_CONFIDENCE_VERSION。
+    evidence_weight_top1: float = Field(default=1.0)   # 待校准回填,占位保守值
+    evidence_weight_count: float = Field(default=0.0)  # 待校准回填,占位保守值
+    evidence_weight_margin: float = Field(default=0.0)  # 待校准回填,占位保守值
+    evidence_min_effective_score: float = Field(default=0.0)  # 待校准回填,占位保守值
+    evidence_min_confidence: float = Field(default=0.0553)    # 待校准回填(暂沿用 rerank_min_score 冻结值)
+    evidence_confidence_version: str = "uncalibrated"
 
     @field_validator("tool_timeout_overrides", mode="before")
     @classmethod

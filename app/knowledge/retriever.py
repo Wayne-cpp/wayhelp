@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 
 from app.config import Settings
+from app.knowledge.evidence_confidence import (
+    UNCALIBRATED_VERSION, evaluate_evidence, gate_params_from_settings,
+)
 from app.knowledge.ingest import vector_text
 from app.knowledge.milvus_store import MilvusKnowledgeStore
 from app.knowledge.query_understanding import QueryPlan, passthrough_plan, plan_query
@@ -60,7 +63,7 @@ class RetrievalResult:
     hits: list[KnowledgeHit]
     requested_strategy: str
     effective_strategy: str
-    confidence_score: float | None   # 闸门置信分:hybrid_rerank 按 rerank_confidence_signal 算,其余为 Top-1 分;无命中为 None
+    confidence_score: float | None   # 闸门置信分:hybrid_rerank 已校准走 evidence_confidence 合成,未校准按 rerank_confidence_signal,其余为 Top-1 分;无命中为 None
     confidence_threshold: float
     low_confidence: bool
     note: str | None
@@ -178,6 +181,33 @@ class KnowledgeRetriever:
     def _threshold_for(self, strategy: str) -> float:
         return getattr(self._settings, _THRESHOLD_ATTR[strategy])
 
+    def _apply_confidence(self, hits, effective, min_score=None):
+        """闸位统一口径(ch09 spec §5.2):截 top_n → (confidence, threshold, low)。
+        hybrid_rerank 且置信闸已校准(version ≠ uncalibrated)→ evidence_confidence
+        三信号合成 + 冻结阈值;其余一律旧口径——未校准的 hybrid_rerank 仍按冻结
+        rerank_confidence_signal 算分(含 margin12 等既有信号 knob,行为逐位不变),
+        dense/bm25/hybrid(含 rerank 降级)用 Top-1 分 + 各策略旧阈值。
+        min_score 为评估/自测显式覆盖,优先于配置阈值。"""
+        hits = hits[: self._settings.rerank_top_k]
+        scores = [h.score for h in hits]
+        if effective == "hybrid_rerank":
+            params = gate_params_from_settings(self._settings)
+            if params.version != UNCALIBRATED_VERSION:
+                confidence, low = evaluate_evidence(scores, params)
+                if min_score is None:
+                    return hits, confidence, params.threshold, low
+                low = confidence is None or confidence < min_score
+                return hits, confidence, min_score, low
+            confidence = confidence_from_scores(scores, self._settings.rerank_confidence_signal)
+            threshold = (self._threshold_for("hybrid_rerank") if min_score is None
+                         else min_score)
+        else:
+            confidence = scores[0] if scores else None
+            threshold = (self._threshold_for(effective) if min_score is None
+                         else min_score)
+        low = confidence is None or confidence < threshold
+        return hits, confidence, threshold, low
+
     def _state_note(self) -> str | None:
         if self._state is None:
             return None
@@ -280,15 +310,8 @@ class KnowledgeRetriever:
             else:
                 effective = "hybrid"
                 note = outcome.note or note
-                threshold = (self._threshold_for("hybrid") if min_score is None
-                             else min_score)
-        top_n = self._settings.rerank_top_k
-        hits = hits[:top_n]
-        scores = [h.score for h in hits]
-        confidence = (confidence_from_scores(scores, self._settings.rerank_confidence_signal)
-                      if effective == "hybrid_rerank"
-                      else (scores[0] if scores else None))
-        low = (confidence is None) or (confidence < threshold)
+        hits, confidence, threshold, low = self._apply_confidence(hits, effective,
+                                                                  min_score)
         return RetrievalResult(hits, requested, effective, confidence, threshold,
                                low, note, plan, leg_counts)
 
@@ -311,18 +334,16 @@ class KnowledgeRetriever:
 
     def _rerank_candidates_inner(self, query: str, hits: list[KnowledgeHit],
                                  deadline: float | None = None) -> RetrievalResult | None:
-        threshold = self._threshold_for("hybrid_rerank")
         if not hits:
-            return RetrievalResult([], "hybrid_rerank", "hybrid_rerank", None,
-                                   threshold, True, None, None, {})
+            _, confidence, threshold, low = self._apply_confidence([], "hybrid_rerank")
+            return RetrievalResult([], "hybrid_rerank", "hybrid_rerank", confidence,
+                                   threshold, low, None, None, {})
         outcome = self._rerank(query, hits, deadline)
         if not outcome.ok:
             logger.warning("rerank_candidates 统一重排失败: %s", outcome.note)
             return None
-        ranked = self._apply_ranking(hits, outcome.ranking)[: self._settings.rerank_top_k]
-        scores = [h.score for h in ranked]
-        confidence = confidence_from_scores(scores, self._settings.rerank_confidence_signal)
-        low = confidence is None or confidence < threshold
+        ranked, confidence, threshold, low = self._apply_confidence(
+            self._apply_ranking(hits, outcome.ranking), "hybrid_rerank")
         return RetrievalResult(ranked, "hybrid_rerank", "hybrid_rerank", confidence,
                                threshold, low, None, None, {})
 
