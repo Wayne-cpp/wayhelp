@@ -18,6 +18,7 @@ from app.knowledge.ingest import vector_text
 from app.knowledge.milvus_store import MilvusKnowledgeStore
 from app.knowledge.query_understanding import QueryPlan, passthrough_plan, plan_query
 from app.models import KnowledgeChunk
+from app.services.langfuse_tracing import observation
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,15 @@ def _hit_text(h: KnowledgeHit) -> str:
 CONFIDENCE_SIGNALS = ("top1", "margin12", "product", "ratio5")
 
 
+def _result_span_output(result: RetrievalResult) -> dict:
+    """retriever span 的 output 契约(ch09 spec §5.1):只发聚合指标,不发命中原文。"""
+    return {"effective_strategy": result.effective_strategy,
+            "hits": len(result.hits),
+            "confidence": result.confidence_score,
+            "low_confidence": result.low_confidence,
+            "note": result.note}
+
+
 def confidence_from_scores(scores: list[float], signal: str) -> float | None:
     """从重排后分数向量(降序)算闸门置信分;无命中为 None。ratio5 遇全 0 分布不可比,None。"""
     if not scores:
@@ -182,7 +192,22 @@ class KnowledgeRetriever:
                strategy: str | None = None, min_score: float | None = None,
                query_plan: QueryPlan | None = None,
                deadline: float | None = None) -> RetrievalResult:
-        """四级管道。阈值不做命中过滤,只驱动 low_confidence(min_score 供评估/自测覆盖)。"""
+        """四级管道(外包一层 retriever span,ch09 spec §5.1;disabled 零开销)。
+        阈值不做命中过滤,只驱动 low_confidence(min_score 供评估/自测覆盖)。"""
+        with observation("retriever", "knowledge.search",
+                         {"query": query[:500], "strategy": strategy},
+                         settings=self._settings) as obs:
+            result = self._search_inner(query, scope=scope, strategy=strategy,
+                                        min_score=min_score, query_plan=query_plan,
+                                        deadline=deadline)
+            if obs is not None:
+                obs.update(output=_result_span_output(result))
+            return result
+
+    def _search_inner(self, query: str, *, scope: str | None = None,
+                      strategy: str | None = None, min_score: float | None = None,
+                      query_plan: QueryPlan | None = None,
+                      deadline: float | None = None) -> RetrievalResult:
         requested = strategy or self._settings.knowledge_strategy
         threshold = self._threshold_for(requested) if min_score is None else min_score
 
@@ -271,7 +296,21 @@ class KnowledgeRetriever:
                           deadline: float | None = None) -> RetrievalResult | None:
         """ch06(spec §6.4/D10):对节点合并后的候选集合统一重排,构造单一 hybrid_rerank
         结果(置信信号与阈值同 search 的 rerank 路径);重排失败/未配置 → None,
-        调用方回退 base_query 完整结果,禁止混用不同策略分数。"""
+        调用方回退 base_query 完整结果,禁止混用不同策略分数。
+        外包一层 retriever span(ch09 spec §5.1;disabled 零开销)。"""
+        with observation("retriever", "knowledge.rerank",
+                         {"query": query[:500]},
+                         settings=self._settings) as obs:
+            result = self._rerank_candidates_inner(query, hits, deadline)
+            if obs is not None:
+                obs.update(output=_result_span_output(result) if result is not None
+                           else {"effective_strategy": "hybrid_rerank", "hits": 0,
+                                 "confidence": None, "low_confidence": True,
+                                 "note": "rerank_failed"})
+            return result
+
+    def _rerank_candidates_inner(self, query: str, hits: list[KnowledgeHit],
+                                 deadline: float | None = None) -> RetrievalResult | None:
         threshold = self._threshold_for("hybrid_rerank")
         if not hits:
             return RetrievalResult([], "hybrid_rerank", "hybrid_rerank", None,

@@ -3,7 +3,9 @@
 import asyncio
 import json
 import logging
+import time
 
+from app.services.langfuse_tracing import observation
 from app.tools.catalog import ToolSpec, classify_mcp_tool, mcp_args_model
 from app.tools.executor import McpToolError
 
@@ -14,6 +16,7 @@ _MCP_BUDGET_PRIORITY = 10  # 动态工具最低档:超预算先剔(spec §1.5)
 
 class McpGateway:
     def __init__(self, settings):
+        self._settings = settings   # ch09:mcp.call span 判 enabled 用
         self._timeout = settings.mcp_discovery_timeout_seconds
         servers = {}
         if settings.mcp_logistics_url:
@@ -61,6 +64,26 @@ class McpGateway:
         return out
 
     async def call(self, server: str, name: str, args: dict) -> str:
+        """外包一层 tool span(ch09 spec §5.1;disabled 零开销):input 只记
+        server+工具名(args 不发 Langfuse),output 记状态/耗时。"""
+        started = time.monotonic()
+        with observation("tool", "mcp.call",
+                         {"server": server, "tool": name},
+                         settings=self._settings) as obs:
+            try:
+                result = await self._call(server, name, args)
+            except Exception as exc:
+                if obs is not None:
+                    obs.update(output={"status": "error",
+                                       "error": type(exc).__name__,
+                                       "duration_ms": int((time.monotonic() - started) * 1000)})
+                raise
+            if obs is not None:
+                obs.update(output={"status": "success",
+                                   "duration_ms": int((time.monotonic() - started) * 1000)})
+            return result
+
+    async def _call(self, server: str, name: str, args: dict) -> str:
         if self._client is None:
             raise ConnectionError("mcp gateway not configured")
         async with self._client.session(server) as session:

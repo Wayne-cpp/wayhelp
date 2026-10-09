@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.knowledge.retriever import RetryableKnowledgeError
+from app.services.langfuse_tracing import observation
 from app.services.orders import get_order
 from app.services.token_budget import truncate_tool_result
 from app.services.tool_audit import (
@@ -125,6 +126,23 @@ class ToolExecutor:
 
     # ── 普通路径(只读;写调用在此一律拒绝)──
     async def execute(self, call: dict, ctx: TurnContext) -> ToolOutcome:
+        """统一执行入口,外包一层 tool span(ch09 spec §5.1;disabled 零开销):
+        input 只记工具名(参数含用户数据,不发 Langfuse),结果沿用
+        audit_result_max_chars 截断,与审计同款脱敏边界。"""
+        with observation("tool", "tool.execute",
+                         {"tool": call.get("name", "")},
+                         settings=self._settings) as obs:
+            outcome = await self._execute_inner(call, ctx)
+            if obs is not None:
+                rec = outcome.record
+                obs.update(output={
+                    "status": rec.audit_status, "retry_count": rec.retry_count,
+                    "duration_ms": rec.duration_ms,
+                    "result": (outcome.message.content or "")
+                    [: self._settings.audit_result_max_chars]})
+            return outcome
+
+    async def _execute_inner(self, call: dict, ctx: TurnContext) -> ToolOutcome:
         name = call.get("name", "")
         args = call.get("args") or {}
         call_id = call.get("id") or ""

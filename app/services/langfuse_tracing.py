@@ -8,7 +8,9 @@ resume 续传经 CallbackHandler(trace_context={"trace_id": ...})。
 
 import logging
 import os
+import sys
 import uuid
+from contextlib import contextmanager
 from typing import Any
 
 from app.config import Settings
@@ -90,3 +92,56 @@ def flush_langfuse() -> None:
         get_client().flush()
     except Exception:
         logger.debug("langfuse flush skipped", exc_info=True)
+
+
+def _get_client():
+    """模块内薄封装:测试 monkeypatch 此属性即可替换 SDK client。"""
+    from langfuse import get_client
+    return get_client()
+
+
+def _env_tracing_ready() -> bool:
+    """settings 缺省时的兜底判定:SDK get_client 读的同源环境变量是否配齐。"""
+    return bool(os.environ.get("LANGFUSE_PUBLIC_KEY")) \
+        and bool(os.environ.get("LANGFUSE_SECRET_KEY"))
+
+
+@contextmanager
+def observation(as_type: str, name: str, input: dict | None = None,
+                settings: Settings | None = None):
+    """固定边界 span(spec §5.1):disabled/异常一律 yield None,绝不拦主路。
+
+    三处边界(retriever/executor/mcp gateway)总是显式传自己持有的 settings;
+    缺省时按进程环境判 enabled。异常只允许发生在首个 yield 前(client 创建/
+    进入失败 → yield None);调用方 with 体的异常原样穿透并把 span 标错,
+    关闭 span 自身的异常只记 debug——所有路径下主路语义不变。调用方对 yield
+    出的对象判 None 后再 .update(output=..., metadata=...)。"""
+    if settings is None:
+        if not _env_tracing_ready():
+            yield None
+            return
+    elif not tracing_enabled(settings):
+        yield None
+        return
+    try:
+        if settings is not None:
+            ensure_env(settings)   # 幂等:密钥入 env + 预热默认 client
+        cm = _get_client().start_as_current_observation(
+            as_type=as_type, name=name, input=input)
+        obs = cm.__enter__()
+    except Exception:
+        logger.debug("langfuse observation %s skipped", name, exc_info=True)
+        yield None
+        return
+    try:
+        yield obs
+    except BaseException:
+        try:
+            cm.__exit__(*sys.exc_info())
+        except Exception:
+            logger.debug("langfuse observation %s close failed", name, exc_info=True)
+        raise
+    try:
+        cm.__exit__(None, None, None)
+    except Exception:
+        logger.debug("langfuse observation %s close failed", name, exc_info=True)
