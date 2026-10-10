@@ -24,10 +24,34 @@ dependencies = [
 ]
 
 [dependency-groups]
+topic-data = [
+  "numpy>=1.26",
+  "scikit-learn>=1.4",
+  "scikit-multilearn>=0.2",
+  "opencc>=1.1",
+]
 dev = [
+  {include-group = "topic-data"},
   "pytest>=8",
   "pytest-asyncio>=0.23",
+]
+train = [
+  {include-group = "topic-data"},
+  "torch>=2.2",
+  "transformers>=4.46,<5",
+  "datasets>=2.19",
+  "onnx>=1.16",
+  "onnxruntime>=1.17",
+  "optimum[onnx]>=1.23",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
