@@ -210,3 +210,52 @@ def _metadata_for_store(meta: dict) -> dict:
             "effective_threshold": float(meta["effective_threshold"]),
             "labels": meta["labels"],
             "decoder_version": meta["decoder_version"]}
+
+
+def get_distribution(settings, session_factory) -> dict:
+    """主题分布统计(spec §7.4):轮次去重、多标签计数、stale 清零、版本冲突 409。"""
+    groups: dict[tuple, list[tuple[LowConfidenceQuestion, TopicClassification | None]]] = {}
+    for lcq, tc in _snapshot(session_factory):
+        groups.setdefault(question_key(lcq), []).append((lcq, tc))
+    names = label_names()
+    stored = [tc for members in groups.values() for _, tc in members if tc is not None]
+    versions = {tc.classifier_version for tc in stored}
+    if len(versions) > 1:
+        raise TopicVersionConflictError("分类结果版本混杂,请重新归类修复")
+    metas = {canonical_json(tc.classifier_metadata or {}) for tc in stored}
+    if len(metas) > 1:
+        raise TopicVersionConflictError("同版本 metadata 冲突,请重新归类修复")
+
+    version = stored[0].classifier_version if stored else None
+    meta = stored[0].classifier_metadata if stored else None
+    stale = bool(meta) and meta.get("taxonomy_version") != taxonomy_version()
+    classified_at = max((tc.classified_at for tc in stored), default=None)
+
+    counts = {n: 0 for n in names}
+    classified = 0
+    for members in groups.values():
+        tcs = [tc for _, tc in members]
+        # 整组一致才算已归类:全行有结果、同 labels、同版本、标签合法非空
+        ok = (all(tc is not None for tc in tcs)
+              and len({canonical_json(tc.labels) for tc in tcs}) == 1
+              and len({tc.classifier_version for tc in tcs}) == 1
+              and isinstance(tcs[0].labels, list) and tcs[0].labels
+              and set(tcs[0].labels) <= set(names))
+        if not ok:
+            continue
+        classified += 1
+        if stale:
+            continue  # 过期口径不进横条图
+        for lb in dict.fromkeys(tcs[0].labels):  # 同组同标签最多计一次
+            counts[lb] += 1
+    if stale:
+        classified = 0
+    ordered = sorted(counts.items(),
+                     key=lambda kv: (-kv[1], names.index(kv[0])))  # 降序,并列按权威顺序
+    return {"total": len(groups), "classified": classified,
+            "unclassified": len(groups) - classified,
+            "counts": [{"label": k, "count": v} for k, v in ordered],
+            "classifier_version": version,
+            "classifier_metadata": meta,
+            "classified_at": classified_at.isoformat(sep=" ") if classified_at else None,
+            "stale": stale}
