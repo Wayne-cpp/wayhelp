@@ -182,7 +182,7 @@ make mcp-after-sales     # 起售后 MCP Server(:8102)
 
 ## 可观测性与数据飞轮(ch09 新增)
 
-- Langfuse 自托管可观测性:`docker compose up -d` 除 MySQL 外一并起 Langfuse v3 服务组(web / worker / ClickHouse / Postgres / Valkey / MinIO,web 暴露 127.0.0.1:3000);首次访问 `http://localhost:3000` 建站建项目,把 public/secret key 填进 `.env`(LANGFUSE_ENABLED=true + 两把密钥;未配齐 = 完全不挂回调,系统行为与现状一致)。trace 以逻辑轮为单位一棵树:LangChain 回调覆盖图内全部模型调用,classify 出意图即写入 trace metadata/tags;检索 / 工具 / MCP 在固定边界补 SDK span;resume 与服务重启后从 checkpoint 重建 trace 上下文,消耗归原意图不进 unknown。注意 GET 类 API 数据可能滞后 ~10 分钟
+- Langfuse 自托管可观测性:`docker compose up -d` 除 MySQL 外一并起 Langfuse v3 服务组(web / worker / ClickHouse / Postgres / Valkey / MinIO,web 暴露 127.0.0.1:3000);首次访问 `http://localhost:3000` 建站建项目,把 public/secret key 填进 `.env`(LANGFUSE_ENABLED=true + 两把密钥;未配齐 = 完全不挂回调,系统行为与现状一致)。trace 以逻辑轮为单位一棵树:LangChain 回调覆盖图内全部模型调用,classify 出意图即写入 trace metadata/tags;检索 / 工具 / MCP 在固定边界补 SDK span(无 ambient 上下文不产 span——评估/脚本直跑不会刷孤儿 trace);resume 与服务重启后从 checkpoint 重建 trace 上下文,消耗归原意图不进 unknown。注意 GET 类 API 数据可能滞后 ~10 分钟
 - 成本统计:`GET /api/stats/cost-by-intent?days=7|30` 按 trace metadata.intent 聚合各意图 token/成本(observation 按 id 去重、每轮 1 request、优先 Langfuse costDetails、缺失按 MODEL_INPUT/OUTPUT_PRICE_PER_MTOK 折算,单价皆 0 时 cost_available=false);/rag-eval 页新增「成本」区块(分组柱状图)与「趋势」区块(eval_runs 历史 recall@10/MRR/忠实率三线,语料/评估集/置信闸版本变化即断线新起一组)
 - 数据飞轮:三入口落池(检索低置信 / 生成自评缺知识 / 👎 反馈经 turn_committed 锚定精确回捞)带召回片段快照 → lifespan 单 worker 异步「模型标准化 → 与待审队列查重合并(occurrence_count 累加,失败指数退避,到限转 failed 等人工重试)」→ review_queue 待审 → 人工审核;通过即冻结答案与 FAQ 块、向量化写回知识库(`review:<id>` 来源,对线上检索生效),驳回留档不可重开
 - /review 审核页(`http://127.0.0.1:8000/review`):状态 tab(待审/写入中/通过/驳回)+ 处理失败视图;详情抽屉展示归并的用户原话与当轮召回快照(原文+得分),辅助判断「真缺知识」还是「有但没检到」;待审可编辑核准答案后通过,写入中展示冻结答案/最近错误并可重试;「立即处理」按钮主动唤醒飞轮 worker

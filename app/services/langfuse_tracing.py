@@ -127,13 +127,25 @@ def observation(as_type: str, name: str, input: dict | None = None,
     缺省时按进程环境判 enabled。异常只允许发生在首个 yield 前(client 创建/
     进入失败 → yield None);调用方 with 体的异常原样穿透并把 span 标错,
     关闭 span 自身的异常只记 debug——所有路径下主路语义不变。调用方对 yield
-    出的对象判 None 后再 .update(output=..., metadata=...)。"""
+    出的对象判 None 后再 .update(output=..., metadata=...)。
+
+    无 ambient span 时直接 yield None:span 的父子挂树依赖 LangChain 回调
+    attach 的 OTel 上下文,无上下文(评估子进程/脚本直跑)建了也是孤儿
+    trace——eval 曾一晚刷数百条 knowledge.search 孤儿掩埋聊天 trace。"""
     if settings is None:
         if not _env_tracing_ready():
             yield None
             return
     elif not tracing_enabled(settings):
         yield None
+        return
+    try:
+        from opentelemetry import trace as otel_trace
+        if otel_trace.get_current_span() is otel_trace.INVALID_SPAN:
+            yield None
+            return
+    except Exception:
+        yield None   # OTel 不可用视同无 ambient,不拦主路
         return
     try:
         if settings is not None:
