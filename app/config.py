@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     eval_schedule_enabled: bool = True
     eval_schedule_hour: int = Field(default=3, ge=0, le=23)
     eval_schedule_timezone: str = "Asia/Shanghai"
+    # ── ch10 主题分类器 ──
+    topic_inference_url: str = "http://127.0.0.1:8103"  # 推理服务地址(独立进程)
+    topic_classify_batch_size: int = Field(default=32, ge=1, le=256)  # 归类批大小
+    topic_inference_timeout_seconds: float = Field(default=60.0, gt=0)  # 单次 metadata/归类请求超时
+    topic_label_threshold: float | None = Field(default=None, gt=0, lt=1)  # 仅推理进程读取的阈值覆盖;主服务不消费
 
     @field_validator("tool_timeout_overrides", mode="before")
     @classmethod
