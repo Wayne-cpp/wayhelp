@@ -16,10 +16,13 @@ scikit-multilearn,仅有 scikit-learn(无此类)——改以锁版安装源码�
   shuffle=False 直接拒绝 random_state 入参(ValueError)。→ 复现只能
   np.random.seed(seed),结束后恢复全局 RNG 状态以免外泄。
 - order=1 即 Sechidis11 原始逐标签分层(库自带 helper 用 order=2,不采)。
+
+CLI: uv run --group train python -m training.prep_split <in.jsonl> <out_dir>
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 
 from training.labels import canonical_json, label_names
@@ -122,3 +125,46 @@ def split_report(records, assignment) -> dict:
     return {"actual_ratios": {k: round(v / total, 4) for k, v in ratios.items()},
             "per_class_support": support,
             "multilabel_share": round(multi / total, 4)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="分层切分 80/10/10 + split_manifest 冻结(train/val/test.jsonl)")
+    parser.add_argument("infile", help="输入 jsonl(如 labeled.jsonl)")
+    parser.add_argument("out_dir", help="输出目录(写 train/val/test.jsonl "
+                                        "+ split_manifest.json + dedupe_conflicts.json)")
+    parser.add_argument("--seed", type=int, default=42)  # 种子冻结 42
+    args = parser.parse_args(argv)
+
+    import json
+    from pathlib import Path
+
+    from training.labels import taxonomy_version
+    from training.prep_records import read_jsonl, write_jsonl
+
+    records = read_jsonl(args.infile)
+    merged, conflicts = dedupe_by_text(records)
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "dedupe_conflicts.json").write_text(
+        json.dumps(conflicts, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[prep_split] 输入 {len(records)} 条,同文合并后 {len(merged)} 条,"
+          f"同文异标冲突 {len(conflicts)} 条(已排除 → dedupe_conflicts.json)")
+
+    assignment = stratified_split(merged, seed=args.seed)
+    for split in ("train", "val", "test"):
+        write_jsonl(out / f"{split}.jsonl",
+                    [r for r in merged if assignment[r["sample_id"]] == split])
+    manifest = freeze_manifest(merged, assignment, taxonomy_version(),
+                               seed=args.seed)
+    (out / "split_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    print(f"[prep_split] 写出 train/val/test.jsonl + split_manifest.json → {out}"
+          f"(dataset_version={manifest['dataset_version'][:12]}…,"
+          f"taxonomy_version={manifest['taxonomy_version'][:12]}…)")
+    print(f"[prep_split] report {json.dumps(split_report(merged, assignment), ensure_ascii=False)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
