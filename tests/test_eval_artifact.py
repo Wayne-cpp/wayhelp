@@ -24,7 +24,7 @@ def _uncal_settings():
                          evidence_weight_top1=1.0, evidence_weight_count=0.0,
                          evidence_weight_margin=0.0,
                          evidence_min_effective_score=0.0,
-                         evidence_min_confidence=0.0553)
+                         rerank_evidence_min_confidence=0.0553)
 
 
 def test_content_sha256_stable_and_order_independent(tmp_path):

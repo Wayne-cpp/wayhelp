@@ -20,7 +20,7 @@ CALIBRATED = dict(evidence_confidence_version="t9", evidence_weight_top1=0.5,
 UNCALIBRATED = dict(evidence_confidence_version="uncalibrated",
                     evidence_weight_top1=1.0, evidence_weight_count=0.0,
                     evidence_weight_margin=0.0, evidence_min_effective_score=0.0,
-                    evidence_min_confidence=0.0553)
+                    rerank_evidence_min_confidence=0.0553)
 
 
 # ─── 纯函数:三信号合成与边界(计划 Step 1)────────────────────────────────────
@@ -126,7 +126,7 @@ def test_gate_old_top1_low_new_synthetic_usable():
     assert old.confidence_score == pytest.approx(0.05)
     assert old.low_confidence is True and old.confidence_threshold == 0.0553
     new = _result(scores, **CALIBRATED, evidence_min_effective_score=0.01,
-                  evidence_min_confidence=0.3)
+                  rerank_evidence_min_confidence=0.3)
     # 0.5*0.05 + 0.3*min(3/3,1) + 0.2*0.002 = 0.3254 ≥ 0.3 → 判可用
     assert new.confidence_score == pytest.approx(0.3254)
     assert new.low_confidence is False and new.confidence_threshold == 0.3
@@ -138,7 +138,7 @@ def test_gate_old_usable_new_synthetic_low():
     old = _result(scores, evidence_confidence_version="uncalibrated")
     assert old.confidence_score == pytest.approx(0.9) and old.low_confidence is False
     new = _result(scores, **CALIBRATED, evidence_min_effective_score=0.95,
-                  evidence_min_confidence=0.5)
+                  rerank_evidence_min_confidence=0.5)
     # 0.5*0.9 + 0.3*0 + 0.2*0.001 = 0.4502 < 0.5 → 判低
     assert new.confidence_score == pytest.approx(0.4502)
     assert new.low_confidence is True
@@ -197,7 +197,7 @@ def test_degraded_arms_keep_old_thresholds_under_calibrated_gate(store, db_sessi
     dense/bm25 仍用各自旧阈值,置信分一律 Top-1。"""
     _seed(db_session_factory, store)
     s = make_settings(**CALIBRATED, evidence_min_effective_score=0.01,
-                      evidence_min_confidence=0.3)
+                      rerank_evidence_min_confidence=0.3)
     plain = make_settings()
 
     r = _retriever(s, store, db_session_factory, reranker=FailReranker())
@@ -227,7 +227,7 @@ def test_search_uses_calibrated_gate_for_hybrid_rerank(store, db_session_factory
             return RerankOutcome(True, [(0, 0.9)], None)
 
     s = make_settings(**CALIBRATED, evidence_min_effective_score=0.5,
-                      evidence_min_confidence=0.7)
+                      rerank_evidence_min_confidence=0.7)
     r = _retriever(s, store, db_session_factory, reranker=OneHitReranker())
     res = r.search("邮费怎么算")
     assert res.effective_strategy == "hybrid_rerank"

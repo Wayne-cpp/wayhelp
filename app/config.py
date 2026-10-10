@@ -93,13 +93,13 @@ class Settings(BaseSettings):
     # artifact: evals/calibration/evidence_confidence.json(version 即校准时刻)。
     # version ≠ uncalibrated 后 hybrid_rerank 主臂走三信号合成闸;旧
     # rerank_confidence_signal/rerank_min_score 口径留给降级臂与显式 uncalibrated 回归。
-    # 注:evidence_min_confidence 即 spec §7 表的 RERANK_EVIDENCE_MIN_CONFIDENCE(同一 knob,
-    # 命名以计划为准);evidence_confidence_version 即 EVIDENCE_CONFIDENCE_VERSION。
+    # 注:rerank_evidence_min_confidence 即 spec §7 表的 RERANK_EVIDENCE_MIN_CONFIDENCE;
+    # evidence_confidence_version 即 EVIDENCE_CONFIDENCE_VERSION。
     evidence_weight_top1: float = Field(default=0.7)   # 2026-10-09 校准冻结
     evidence_weight_count: float = Field(default=0.3)  # 2026-10-09 校准冻结
     evidence_weight_margin: float = Field(default=0.0)  # 2026-10-09 校准冻结
     evidence_min_effective_score: float = Field(default=0.01)  # 2026-10-09 校准冻结
-    evidence_min_confidence: float = Field(default=0.15)  # 2026-10-09 校准冻结(d_pass=0.100, pass=0.992)
+    rerank_evidence_min_confidence: float = Field(default=0.15)  # 2026-10-09 校准冻结(d_pass=0.100, pass=0.992)
     evidence_confidence_version: str = "2026-10-09T08:33:21Z"  # 校准时刻即版本号
     # ch09 评估定时(spec §5.5):每日本地时区到点自动跑 eval-rag(烧额度可关);
     # lifespan 挂单 worker 内存 task,不引 APScheduler

@@ -30,7 +30,7 @@ def gate_params_from_settings(settings: Settings) -> EvidenceGateParams:
         weight_count=settings.evidence_weight_count,
         weight_margin=settings.evidence_weight_margin,
         min_effective_score=settings.evidence_min_effective_score,
-        threshold=settings.evidence_min_confidence,
+        threshold=settings.rerank_evidence_min_confidence,
         version=settings.evidence_confidence_version)
 
 

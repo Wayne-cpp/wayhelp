@@ -336,7 +336,7 @@ def check_evidence_frozen(settings, artifact: dict) -> None:
                 "weights.count": settings.evidence_weight_count,
                 "weights.margin": settings.evidence_weight_margin,
                 "min_effective_score": settings.evidence_min_effective_score,
-                "threshold": settings.evidence_min_confidence}
+                "threshold": settings.rerank_evidence_min_confidence}
     actual = {"version": artifact.get("version"),
               "weights.top1": weights.get("top1"),
               "weights.count": weights.get("count"),
