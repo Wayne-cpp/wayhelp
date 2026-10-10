@@ -1,7 +1,8 @@
 """RoBERTa-wwm-ext 全参微调(CPU),early stopping + 阈值扫描(spec §5)。
 
 CLI: uv run --group train python -m training.train [--smoke]
-产物:models/topic_classifier/_work/best/(checkpoint)+ val_scores.npy + threshold.json。
+产物:models/topic_classifier_work/best/(checkpoint)+ val_scores.npy + threshold.json
+(_work 迁出模型包目录:包目录 models/topic_classifier/ 是导出 target,导出前会被清空)。
 torch/transformers/datasets 全部延迟进 main,dev 闭包可 import 收集。
 
 锁版 API 核对(transformers 4.57.6,Context7 + 安装源内省):
@@ -23,7 +24,7 @@ from training.labels import decode_scores, label_names
 from training.prep_records import read_jsonl
 
 MODEL_NAME = "hfl/chinese-roberta-wwm-ext"
-WORK_DIR = Path("models/topic_classifier/_work")
+WORK_DIR = Path("models/topic_classifier_work")
 DATA_DIR = Path("data/topic_classifier")
 MAX_LEN = 64
 SEED = 42

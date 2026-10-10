@@ -1,8 +1,8 @@
 """留出测试评测:逐类 P/R/F1/support + one-vs-rest 混淆矩阵 + 错例导出(spec §6)。
 
 CLI: uv run --group train python -m training.evaluate \
-       --ckpt models/topic_classifier/_work/best
-读 test.jsonl 与 _work/threshold.json,报告落 evals/results/<UTC时间戳>_topic_eval.md,
+       --ckpt models/topic_classifier_work/best
+读 test.jsonl 与 ckpt 同级 threshold.json,报告落 evals/results/<UTC时间戳>_topic_eval.md,
 错例导出 <UTC时间戳>_topic_errors.md(产物 gitignore,不进 pytest、不入库)。
 纯函数 compute_metrics_per_class/render_report 只依赖 numpy + training.labels,
 torch/transformers 延迟到 CLI 路径,保证 dev 闭包可收集。
@@ -154,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     from training.prep_records import read_jsonl
 
     ap = argparse.ArgumentParser(description="ch10 主题分类器留出测试评测")
-    ap.add_argument("--ckpt", default="models/topic_classifier/_work/best")
+    ap.add_argument("--ckpt", default="models/topic_classifier_work/best")
     ap.add_argument("--data-dir", default=str(DATA_DIR))
     ap.add_argument("--out-dir", default=str(EVAL_RESULTS))
     args = ap.parse_args(argv)

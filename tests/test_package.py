@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+import pytest
+
+from training.export_onnx import main as export_main
 from training.package import file_sha256, package_version, write_manifest
 
 
@@ -25,3 +28,14 @@ def test_manifest_roundtrip(tmp_path: Path):
     assert (tmp_path / "manifest.json").exists()
     # manifest 自身不参与 model_version
     assert package_version(tmp_path) == package_version(tmp_path)
+
+
+def test_export_refuses_nested_ckpt_without_deleting(tmp_path: Path):
+    ckpt = tmp_path / "pkg" / "_work" / "best"
+    ckpt.mkdir(parents=True)
+    (ckpt / "config.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="ckpt"):
+        export_main(ckpt, tmp_path / "pkg")
+    # 守卫先于 rmtree 与 optimum 重导入(dev 闭包无 optimum,
+    # 抛 ValueError 而非 ModuleNotFoundError 即证顺序),目录原封不动
+    assert (ckpt / "config.json").exists()

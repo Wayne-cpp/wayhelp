@@ -5,7 +5,10 @@ optimum.onnxruntime.ORTModelForSequenceClassification.from_pretrained(ckpt,
 export=True) + save_pretrained(写 model.onnx);onnxruntime InferenceSession(
 path, providers=["CPUExecutionProvider"])。
 CLI: uv run --group train python -m training.export_onnx \
-       --ckpt models/topic_classifier/_work/best --out models/topic_classifier
+       --ckpt models/topic_classifier_work/best --out models/topic_classifier
+几何守卫:ckpt 位于 out 内(或相等)直接 ValueError——main 先 rmtree(out) 再读 ckpt,
+嵌套几何会在读取前连 checkpoint 一起删掉(2026-10-10 实跑翻车,guard 必须先于 rmtree
+与 optimum 重导入)。
 一致性:eval 模式,同输入比较 logits 与 sigmoid(atol=1e-4, rtol=1e-3),
 解码标签必须完全一致;不一致即导出失败,不写 manifest。
 """
@@ -55,6 +58,12 @@ def verify_export(torch_dir: Path, onnx_dir: Path, probes: list[str]) -> None:
 
 
 def main(ckpt: Path, out: Path) -> None:
+    ckpt_r, out_r = Path(ckpt).resolve(), Path(out).resolve()
+    if ckpt_r == out_r or out_r in ckpt_r.parents:
+        raise ValueError(
+            f"ckpt({ckpt_r}) 位于 out({out_r}) 内或与其相等:main 会先清空 out 再读 ckpt,"
+            "嵌套几何将在读取前删除 checkpoint——请把训练产物迁出导出目录"
+            "(如 models/topic_classifier_work)")
     from optimum.onnxruntime import ORTModelForSequenceClassification
     from transformers import AutoTokenizer
 
