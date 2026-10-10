@@ -291,6 +291,10 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     async def review_ui() -> FileResponse:
         return FileResponse(static_dir / "review.html")
 
+    @app.get("/topics", include_in_schema=False)
+    async def topics_ui() -> FileResponse:
+        return FileResponse(static_dir / "topics.html")
+
     @app.get("/1784959384051.jpg", include_in_schema=False)
     async def brand_mark() -> FileResponse:
         return FileResponse(static_dir / "1784959384051.jpg")

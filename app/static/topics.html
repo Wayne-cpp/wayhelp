@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>主题分布 - wayhelp</title>
+<style>
+  /* ─── 与 rag-eval.html 同源的设计 tokens ─── */
+  :root {
+    --bg: #f5f4ed;
+    --surface: #faf9f5;
+    --surface-warm: #e8e6dc;
+    --bg-deep: color-mix(in oklab, var(--bg), var(--surface-warm) 65%);
+
+    --fg: #141413;
+    --fg-2: #3d3d3a;
+    --muted: #5e5d59;
+    --meta: #87867f;
+
+    --border: #f0eee6;
+    --border-soft: #e8e6dc;
+
+    --accent: #c96442;
+    --accent-on: #faf9f5;
+    --accent-hover: color-mix(in oklab, var(--accent), black 8%);
+    --accent-active: color-mix(in oklab, var(--accent), black 14%);
+
+    --success: #17a34a;
+    --warn: #eab308;
+    --danger: #b53333;
+
+    --font-display: "Anthropic Serif", Georgia, "Times New Roman", serif;
+    --font-body: "Anthropic Sans", "Arial", system-ui, -apple-system, sans-serif;
+    --font-mono: "Anthropic Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+
+    --text-xs: 10px;
+    --text-sm: 14px;
+    --text-base: 16px;
+
+    --leading-body: 1.6;
+    --leading-tight: 1.1;
+
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-pill: 9999px;
+
+    --elev-ring: 0 0 0 1px var(--border);
+    --elev-raised: rgba(0, 0, 0, 0.05) 0px 4px 24px;
+    --focus-ring: 0 0 0 3px rgba(56, 152, 236, 0.3);
+    --motion-fast: 150ms;
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  }
+body { margin: 0; background: var(--bg); color: var(--fg);
+       font-family: var(--font-body); }
+.wrap { max-width: 960px; margin: 0 auto; padding: 24px 20px 80px; }
+.topnav { display: flex; gap: 16px; margin-bottom: 8px; }
+.topnav a { color: var(--accent); text-decoration: none; font-size: 13px; }
+h1 { font-size: 22px; margin: 8px 0 4px; }
+h2 { font-size: 16px; margin: 28px 0 12px; border-bottom: 1px solid var(--border-soft);
+     padding-bottom: 6px; }
+.muted { color: var(--muted); font-size: 12px; }
+.banner { border-radius: 8px; padding: 10px 14px; margin: 12px 0; font-size: 13px; }
+.banner.ok { background: #e7f2ea; color: #2e6b3f; }
+.banner.warn { background: #faf0e6; color: #a05a2c; }
+.banner.err { background: #f8e8e4; color: #a13c2a; }
+.actions { display: flex; align-items: center; gap: 12px; margin: 14px 0 4px; }
+.big-btn { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+           padding: 8px 18px; font-size: 14px; cursor: pointer; }
+.big-btn:disabled { opacity: .5; cursor: default; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.card { background: #fff; border: 1px solid var(--border-soft); border-radius: 10px;
+        padding: 14px; }
+.card .k { font-size: 12px; color: var(--muted); }
+.card .v { font-size: 22px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.card .s { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.caption { font-size: 12px; color: var(--muted); margin-top: 8px; }
+#topics-chart svg { display: block; background: #fff; border: 1px solid var(--border-soft);
+                    border-radius: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topnav"><a href="/">← 返回对话</a><a href="/kb">知识库管理</a><a href="/rag-eval">RAG 评估</a></div>
+  <h1>主题分布</h1>
+
+  <section id="header-block">
+    <div id="meta-line" class="muted">加载中…</div>
+    <div id="state-banner" class="banner" hidden></div>
+    <div class="actions">
+      <button class="big-btn" id="classify-btn" type="button">立即归类</button>
+      <span id="classify-status" class="muted"></span>
+    </div>
+  </section>
+
+  <h2>概览</h2>
+  <section id="overview" class="cards">
+    <div class="card" id="card-total"><div class="k">待归类轮次</div><div class="v" id="stat-total">-</div><div class="s">按用户轮次去重后的分组数</div></div>
+    <div class="card" id="card-classified"><div class="k">已归类</div><div class="v" id="stat-classified">-</div><div class="s">整组同版本一致才算已归类</div></div>
+    <div class="card" id="card-unclassified"><div class="k">未归类</div><div class="v" id="stat-unclassified">-</div><div class="s">含新沉淀、版本过期与不完整组</div></div>
+  </section>
+
+  <h2>类目分布(17 类)</h2>
+  <section id="distribution">
+    <div id="topics-chart"></div>
+    <div class="caption">按用户轮次去重,多标签问题可计入多个类目</div>
+  </section>
+</div>
+
+<script>
+var SVGNS = "http://www.w3.org/2000/svg";
+
+function el(tag, attrs, text) {
+  var n = document.createElement(tag);
+  if (attrs) Object.keys(attrs).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+  if (text !== undefined && text !== null) n.textContent = text;
+  return n;
+}
+function sel(id) { return document.getElementById(id); }
+
+function api(path, opts) {
+  return fetch(path, opts).then(function (r) {
+    if (!r.ok) { var e = new Error("HTTP " + r.status); e.status = r.status; throw e; }
+    return r.json();
+  });
+}
+
+/* ---------- SVG 图(全部 DOM API,不拼 HTML 字符串) ---------- */
+function svgEl(tag, attrs, text) {
+  var n = document.createElementNS(SVGNS, tag);
+  if (attrs) Object.keys(attrs).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+  if (text !== undefined && text !== null) n.textContent = text;
+  return n;
+}
+
+/* ---------- 状态条:无异常时隐藏 ---------- */
+function setState(kind, text) {
+  var sb = sel("state-banner");
+  if (!kind) { sb.hidden = true; sb.replaceChildren(); return; }
+  sb.className = "banner " + kind;
+  sb.textContent = text;                     // 外部字符串只走 textContent
+  sb.hidden = false;
+}
+
+/* ---------- 渲染 ---------- */
+function renderMeta(d) {
+  var v = d.classifier_version;
+  var th = (d.classifier_metadata || {}).effective_threshold;
+  sel("meta-line").textContent =
+    "分类版本 " + (v ? String(v).slice(0, 12) : "-") +
+    " | 有效阈值 " + (typeof th === "number" ? th.toFixed(2) : "-") +
+    " | 最近归类时间 " + (d.classified_at || "-");
+}
+
+function renderStats(d) {
+  sel("stat-total").textContent = String(d.total);
+  sel("stat-classified").textContent = String(d.classified);
+  sel("stat-unclassified").textContent = String(d.unclassified);
+}
+
+/* 横条图:后端已按 count 降序(并列按权威顺序)排好,前端直渲不重排 */
+function renderChart(d) {
+  var mount = sel("topics-chart");
+  mount.replaceChildren();
+  var counts = d.counts || [];
+  if (!counts.length) {
+    mount.appendChild(el("div", {class: "muted"}, "(无类目数据)"));
+    return;
+  }
+  var W = 760, rowH = 24, padT = 10, padL = 96, padR = 56;
+  var H = padT * 2 + counts.length * rowH;
+  var barMax = W - padL - padR;
+  var maxV = 1;
+  counts.forEach(function (c) { maxV = Math.max(maxV, c.count || 0); });
+  var svg = svgEl("svg", {width: W, height: H, role: "img"});
+  counts.forEach(function (c, i) {
+    var y = padT + i * rowH;
+    svg.appendChild(svgEl("text", {x: padL - 8, y: y + 15, "text-anchor": "end",
+                                   "font-size": 12, fill: "#3d3a33"}, c.label));
+    var w = c.count > 0 ? Math.max(2, (c.count / maxV) * barMax) : 0;
+    if (w > 0) {
+      var rect = svgEl("rect", {x: padL, y: y + 3, width: w, height: rowH - 9,
+                                rx: 2, fill: "#c96442"});
+      rect.appendChild(svgEl("title", null,
+        c.label + ":" + c.count + " 轮(占比基于已归类 " + d.classified + " 轮)"));
+      svg.appendChild(rect);
+    }
+    svg.appendChild(svgEl("text", {x: padL + w + 6, y: y + 15, "font-size": 11,
+                                   fill: "#6b675c"}, String(c.count)));
+  });
+  mount.appendChild(svg);
+}
+
+function render(d) {
+  renderMeta(d);
+  renderStats(d);
+  renderChart(d);
+  if (d.total === 0) {
+    setState("warn", "暂无数据:还没有可归类的低置信问题,飞轮沉淀后再来看分布。");
+  } else if (d.stale) {
+    setState("warn", "类目版本已过期,请重新归类");
+  } else {
+    setState(null);
+  }
+}
+
+/* ---------- 取数:失败保留上次数据,仅提示 ---------- */
+function loadDistribution() {
+  api("/api/topics/distribution").then(function (d) {
+    render(d);
+  }).catch(function (e) {
+    if (e.status === 409) setState("err", "分类结果版本冲突,请重新归类(已保留上次数据)");
+    else if (e.status === 503) setState("err", "主题推理服务暂不可用(已保留上次数据)");
+    else setState("err", "分布加载失败:HTTP " + (e.status || "?") + "(已保留上次数据)");
+  });
+}
+
+/* ---------- 触发归类 ---------- */
+sel("classify-btn").addEventListener("click", function () {
+  var btn = sel("classify-btn");
+  btn.disabled = true;
+  btn.textContent = "归类中…";
+  sel("classify-status").textContent = "";
+  function release() {
+    btn.disabled = false;
+    btn.textContent = "立即归类";
+  }
+  api("/api/topics/classify", {method: "POST"}).then(function (r) {
+    sel("classify-status").textContent =
+      "归类完成:写入 " + r.written_rows + " 行(归类 " + r.classified_questions +
+      " 组、跳过 " + r.skipped_questions + " 组)";
+    release();
+    loadDistribution();                     // 成功后重拉分布
+  }).catch(function (e) {
+    if (e.status === 409) setState("err", "归类未完成:已有归类作业在进行或分类结果版本冲突(已保留上次数据)");
+    else if (e.status === 503) setState("err", "归类失败:主题推理服务暂不可用(已保留上次数据)");
+    else setState("err", "归类失败:HTTP " + (e.status || "?") + "(已保留上次数据)");
+    release();
+  });
+});
+
+loadDistribution();
+</script>
+</body>
+</html>
