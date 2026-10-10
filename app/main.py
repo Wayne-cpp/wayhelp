@@ -43,8 +43,10 @@ from app.routers.rag_eval import eval_runs_router
 from app.routers.rag_eval import router as rag_eval_router
 from app.routers.review import router as review_router
 from app.routers.stats import router as stats_router
+from app.routers.topics import router as topics_router
 from app.services import eval_runs as eval_runs_service
 from app.services import rag_eval as rag_eval_service
+from app.services import topic_classify
 from app.services.cost_stats import CostStatsError
 from app.services.rag_eval import ReportCorruptError
 from app.services.review_service import ReviewError
@@ -250,6 +252,7 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
     app.include_router(eval_runs_router)
     app.include_router(review_router)
     app.include_router(stats_router)
+    app.include_router(topics_router)
 
     root_dir = Path(__file__).resolve().parent.parent
     app.state.rag_eval_report_path = root_dir / "evals" / "results" / "rag_eval.json"
@@ -349,6 +352,19 @@ def create_app(settings: Settings | None = None, model: Any | None = None,
         return JSONResponse(status_code=502,
                             content=_error_body("rag_eval_report_corrupt",
                                                 "评估报告文件损坏或契约不合法"))
+
+    @app.exception_handler(topic_classify.TopicJobBusyError)
+    async def _(request: Request, exc: topic_classify.TopicJobBusyError) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_error_body(exc.code, "已有归类作业在进行"))
+
+    @app.exception_handler(topic_classify.TopicVersionConflictError)
+    async def _(request: Request, exc: topic_classify.TopicVersionConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content=_error_body(exc.code, "分类结果版本冲突,请重新归类"))
+
+    @app.exception_handler(topic_classify.TopicError)
+    async def _(request: Request, exc: topic_classify.TopicError) -> JSONResponse:
+        # ch10 spec §7.3/§8:推理不可达/契约失败均 503;DB 失败走泛化 500 路径
+        return JSONResponse(status_code=503, content=_error_body(exc.code, "主题推理服务暂不可用"))
 
     @app.exception_handler(Exception)
     async def _(request: Request, exc: Exception) -> JSONResponse:

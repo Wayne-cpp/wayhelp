@@ -190,3 +190,24 @@ def test_tool_timeout_overrides_rejects_bad_json():
         Settings(_env_file=None, openai_base_url="http://t", openai_api_key="k",
                  model_name="m", database_url="mysql+pymysql://u:p@h/d",
                  tool_timeout_overrides="{not json")
+
+
+def test_ch10_config_defaults():
+    s = Settings(_env_file=None, openai_base_url="http://t/v1", openai_api_key="k",
+                 model_name="m",
+                 database_url="mysql+pymysql://u:p@127.0.0.1:9/wayhelp")
+    assert s.topic_inference_url == "http://127.0.0.1:8103"
+    assert s.topic_classify_batch_size == 32
+    assert s.topic_inference_timeout_seconds == 60.0
+    assert s.topic_label_threshold is None
+
+
+def test_ch10_config_validation():
+    base = dict(openai_base_url="http://t/v1", openai_api_key="k", model_name="m",
+                database_url="mysql+pymysql://u:p@127.0.0.1:9/wayhelp")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, topic_classify_batch_size=0, **base)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, topic_classify_batch_size=257, **base)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, topic_label_threshold=1.5, **base)
