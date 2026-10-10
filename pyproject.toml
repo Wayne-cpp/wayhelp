@@ -43,6 +43,7 @@ train = [
   "onnx>=1.16",
   "onnxruntime>=1.17",
   "optimum[onnx]>=1.23",
+  "accelerate>=0.26",
 ]
 
 [tool.pytest.ini_options]
