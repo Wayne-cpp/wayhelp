@@ -13,7 +13,7 @@ docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversation
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch07-ddl.sql
 # 已有 ch07 数据卷的老库升级(不得删卷;docker 首启自动含 db/init/06-ddl.sql,新装可跳过):
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch08-ddl.sql
-uv run pytest                 # 测试 738 条(DB 用例需 Docker 在线)
+uv run pytest                 # 测试 745 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
