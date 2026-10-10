@@ -258,3 +258,16 @@ class EvalRun(Base):
     dataset_version: Mapped[str] = mapped_column(String(64))
     metrics: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TopicClassification(Base):
+    __tablename__ = "topic_classifications"
+
+    id: Mapped[int] = mapped_column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    question_id: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), ForeignKey("low_confidence_questions.id"),
+        unique=True, nullable=False)
+    labels: Mapped[list] = mapped_column(JSON)
+    classifier_version: Mapped[str] = mapped_column(String(64))
+    classifier_metadata: Mapped[dict] = mapped_column(JSON)
+    classified_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

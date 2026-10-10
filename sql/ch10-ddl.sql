@@ -12,6 +12,8 @@ CREATE TABLE topic_classifications (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
   question_id   BIGINT UNSIGNED NOT NULL                COMMENT '归类的问题,指向 low_confidence_questions.id',
   labels        JSON            NOT NULL                COMMENT '多标签,17 类权威类目里命中的若干个',
+  classifier_version CHAR(64)   NOT NULL                COMMENT '分类版本:{model_version,effective_threshold,decoder_version} 的规范化 SHA-256',
+  classifier_metadata JSON      NOT NULL                COMMENT '与写入版本相符的元数据(model_version/taxonomy_version/effective_threshold/labels/decoder_version)',
   classified_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '归类时间',
   PRIMARY KEY (id),
   UNIQUE KEY uk_question_id (question_id),

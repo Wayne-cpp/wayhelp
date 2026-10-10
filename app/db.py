@@ -76,3 +76,24 @@ def check_ch09_tables(engine) -> None:
             f"缺少 ch09 表结构(缺表 {missing},lcq 缺列 "
             f"{sorted(_CH09_LCQ_COLS - cols)}):请先执行 "
             f"mysql wayhelp < sql/ch09-ddl.sql")
+
+
+_CH10_TABLES = ("topic_classifications",)
+_CH10_COLS = {"id", "question_id", "labels", "classifier_version",
+              "classifier_metadata", "classified_at"}
+
+
+def check_ch10_tables(engine) -> None:
+    """缺 ch10 表/列启动失败并提示升级命令(spec §8)。"""
+    with engine.connect() as conn:
+        tables = {r[0] for r in conn.execute(text("SHOW TABLES"))}
+        missing = [t for t in _CH10_TABLES if t not in tables]
+        cols = set()
+        if not missing:
+            cols = {r[0] for r in conn.execute(
+                text("SHOW COLUMNS FROM topic_classifications"))}
+    if missing or not _CH10_COLS <= cols:
+        raise RuntimeError(
+            f"缺少 ch10 表结构(缺表 {missing},缺列 "
+            f"{sorted(_CH10_COLS - cols)}):请先执行 "
+            f"mysql wayhelp < sql/ch10-ddl.sql")
