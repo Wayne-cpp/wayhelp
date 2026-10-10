@@ -13,7 +13,7 @@ docker compose up -d          # 启动 MySQL(首启自动建表 faq/conversation
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch07-ddl.sql
 # 已有 ch07 数据卷的老库升级(不得删卷;docker 首启自动含 db/init/06-ddl.sql,新装可跳过):
 docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch08-ddl.sql
-uv run pytest                 # 测试 745 条(DB 用例需 Docker 在线)
+uv run pytest                 # 测试 807 条(DB 用例需 Docker 在线)
 uv run uvicorn app.main:create_app --factory   # 起服
 # 浏览器打开 http://127.0.0.1:8000/
 ```
@@ -200,3 +200,50 @@ make mcp-after-sales     # 起售后 MCP Server(:8102)
 - 审核通过(写回知识库)与建库/向量化/挖掘/选择性重建/全量重建/手工录入共用一把进程级知识库作业锁:锁忙返回 409 job_busy,审核项不变,稍后重试;写入中 = 人工已核准、允许发布的冻结内容,不代表「未发布」
 - 选择性重建只删 `knowledge_docs/` 来源的块,保留 `review:<id>` 审核来源与其他来源;全量重建会先清空再从 knowledge_docs 重灌并重放全部「通过/写入中」审核的冻结 FAQ 块
 - 飞轮 probe(烧额度、手跑不进 pytest):`uv run python evals/probe_flywheel.py`(标准化/查重标注样例)
+
+## 主题分类器(ch10 新增)
+
+- 17 类权威主题分类器(`training/taxonomy.json` 类目表冻结):把飞轮攒下的低置信度问题池按主题旁路批量归类,结果落 topic_classifications 表,后台 `/topics` 页展示主题分布(按用户轮次去重,多标签问题可计入多个类目);实时对话主链路不调用分类器,归类为手动 API 触发
+- 训练管线在独立 `training/` 包,重依赖走 uv dependency-group——普通 `uv sync` 不装 torch,下述命令一律 `uv run --group train`;数据/模型产物落 `data/topic_classifier/` 与 `models/`(gitignore,不入库)。管线命令序列(带 LLM 的步骤烧 API 额度、手跑不进 pytest):
+
+```bash
+uv run --group train python -m training.prep_generate --per-class 100 --multi-ratio 0.2 \
+  --out data/topic_classifier/raw_synthetic.jsonl     # ① LLM 按类目边界合成(~1700 条,~20% 多诉求句)
+uv run --group train python -m training.prep_clean \
+  data/topic_classifier/raw_synthetic.jsonl data/topic_classifier/cleaned_synthetic.jsonl  # ② 确定性清洗 + LLM 错别字校对
+uv run --group train python -m training.prep_clean --real \
+  data/topic_classifier/cleaned_synthetic.jsonl data/topic_classifier/cleaned_all.jsonl   # ②b 并入 lcq 真实池(只走确定性清洗)
+uv run --group train python -m training.prep_label prelabel \
+  data/topic_classifier/cleaned_all.jsonl data/topic_classifier/labeled.jsonl             # ③ LLM 预标
+uv run --group train python -m training.prep_label export-review \
+  data/topic_classifier/labeled.jsonl data/topic_classifier/review_sample.md              # ③b 每类 ~10% 人工抽审导出
+# 人工过 review_sample.md、修正写 data/topic_classifier/corrections.jsonl 后回灌:
+uv run --group train python -m training.prep_label apply-corrections \
+  data/topic_classifier/labeled.jsonl data/topic_classifier/corrections.jsonl data/topic_classifier/labeled.jsonl
+uv run --group train python -m training.prep_split \
+  data/topic_classifier/labeled.jsonl data/topic_classifier/   # ④ 分层切分 80/10/10(来源组不可拆,seed 42)
+uv run --group train python -m training.prep_augment \
+  --manifest data/topic_classifier/split_manifest.json          # ⑤ 只扩训练集(×1.3,val/test 不动)
+uv run --group train python -m training.train --smoke          # ⑥ 冒烟(50 条)先验管线
+uv run --group train python -m training.train                  # ⑦ 全量 CPU 慢训(hfl/chinese-roberta-wwm-ext 全参微调,本机无 GPU)
+uv run --group train python -m training.evaluate               # ⑧ 留出测试报告 → evals/results/<时间戳>_topic_eval.md
+uv run --group train python -m training.export_onnx \
+  --ckpt models/topic_classifier_work/best --out models/topic_classifier  # ⑨ ONNX 导出,一致性验证过才写 manifest
+```
+
+- 推理是独立进程(主服不背 torch 重依赖):`make topic-inference`(= `uv run --group train python -m training.serve`,ONNX + onnxruntime CPU,127.0.0.1:8103);启动校验模型包文件哈希与 labels.json,每进程固定一个模型包,换包须重启;`TOPIC_LABEL_THRESHOLD` 仅该进程读取(覆盖即改变 classifier_version,主服务不消费)
+- 主服归类与展示(需主服与 :8103 推理服务都在线):
+  - `POST /api/topics/classify`:手动触发旁路批量归类——读 lcq 快照按轮次归组 → 分批调推理服务逐批契约校验 → 全部成功才开唯一写事务原子提交;忙时 409 job_busy,推理不可达/契约不符 503 且零写入;同版本重复触发只补漏(written_rows=0),换版本重算全部
+  - `GET /api/topics/distribution`:17 类计数(降序,并列按类目权威顺序)+ 版本元信息;类目版本过期(stale)计数清零并提示重新归类,结果版本混杂 409
+  - `/topics` 页:三卡概览(总问题/已归类/未归类)+ 手写 SVG 横条图 + 「立即归类」按钮与空数据/stale/409/503 状态横幅
+
+### 数据库初始化与升级
+
+- 全新环境:`docker compose up -d` 首启自动执行 db/init 全部 DDL(含 ch10 的 08-ddl.sql:topic_classifications)
+- 已有 ch09 数据卷的升级(不得删卷):`docker exec -i wayhelp-mysql mysql -uroot -proot-password wayhelp < sql/ch10-ddl.sql`(docker 首启自动含 db/init/08-ddl.sql,新装可跳过)
+
+### 运行约束
+
+- 归类作业锁是进程内锁,沿用单 Uvicorn worker 前提;taxonomy/阈值/解码任一改动 = 新 classifier_version(存量结果按旧版本处理)
+- export_onnx 的 `--ckpt` 不得位于 `--out` 内(out 目录先被清空,几何硬守卫);训练 checkpoint 落 `models/topic_classifier_work/`,模型包落 `models/topic_classifier/`
+- 代理红线(同前):curl 本机服务加 `--noproxy '*'`;起 uvicorn 与推理服务带 `no_proxy=127.0.0.1,localhost`
